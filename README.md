@@ -140,7 +140,7 @@ binary there.
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential make ca-certificates curl tar
+sudo apt install -y build-essential make pkg-config ca-certificates curl tar
 
 # Install Go 1.27 from upstream. The distribution package may be older.
 GO_VERSION=1.27.3
@@ -177,7 +177,7 @@ make build GO="$HOME/.local/go/bin/go"
 ### Fedora, RHEL, Rocky Linux, and AlmaLinux
 
 ```bash
-sudo dnf install -y gcc make curl tar ca-certificates
+sudo dnf install -y gcc make pkgconf-pkg-config curl tar ca-certificates
 
 GO_VERSION=1.27.3
 curl -fsSLO "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
@@ -191,7 +191,7 @@ echo 'export PATH="$PATH:/usr/local/go/bin"' >> "$HOME/.bashrc"
 ### openSUSE and SLES
 
 ```bash
-sudo zypper install -y gcc make curl tar ca-certificates
+sudo zypper install -y gcc make pkg-config curl tar ca-certificates
 
 GO_VERSION=1.27.3
 curl -fsSLO "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
@@ -204,14 +204,14 @@ export PATH="$PATH:/usr/local/go/bin"
 ### Arch Linux
 
 ```bash
-sudo pacman -S --needed go gcc make curl tar
+sudo pacman -S --needed go gcc make pkgconf curl tar
 go version
 ```
 
 ### Alpine Linux (build environment only)
 
 ```bash
-sudo apk add go gcc musl-dev make curl tar
+sudo apk add go gcc musl-dev make pkgconf curl tar
 go version
 ```
 
@@ -232,6 +232,28 @@ docker version
 
 For other distributions, use the official Docker installation instructions:
 <https://docs.docker.com/engine/install/>.
+
+### Optional: use the distribution's SQLCipher instead of Docker
+
+If you do not want Docker but want the production driver instead of the legacy
+development driver, install the SQLCipher development files and run:
+
+```bash
+# Fedora / RHEL family
+sudo dnf install -y sqlcipher-devel
+
+# Debian / Ubuntu
+sudo apt install -y libsqlcipher-dev
+
+# openSUSE / SLES
+sudo zypper install -y sqlcipher-devel
+
+make build-system
+```
+
+`make build-system` links against the distribution's SQLCipher and uses the
+patched `mattn/go-sqlite3` driver. The resulting binary is dynamically linked;
+release artifacts still use the static Docker build.
 
 ### Verify the toolchain
 
@@ -1418,6 +1440,7 @@ commands.
 make help           # list targets and the Go-path override
 make bootstrap      # install Go locally if needed, then make build
 make build          # development build, CGO + dynamic libc
+make build-system   # production driver against system SQLCipher (no Docker)
 make test           # Go tests (development driver)
 make vet            # go vet
 make static         # development static ELF + ldd check

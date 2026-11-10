@@ -3,13 +3,16 @@ CC ?= gcc
 BIN ?= dist/hibp
 TAGS ?= sqlite_omit_load_extension netgo osusergo
 PROD_TAGS ?= sqlcipher_mattn libsqlcipher netgo osusergo sqlite_omit_load_extension
+SQLCIPHER_CFLAGS ?= $(shell pkg-config --cflags sqlcipher 2>/dev/null)
+SQLCIPHER_LDFLAGS ?= $(shell pkg-config --libs sqlcipher 2>/dev/null)
 
-.PHONY: help check-go check-cc check-docker bootstrap build test race vet static production static-production validate package clean
+.PHONY: help check-go check-cc check-docker check-sqlcipher bootstrap build build-system test race vet static production static-production validate package clean
 
 help:
 	@echo "HIBP build targets:"
 	@echo "  make bootstrap          install Go locally if needed, then build"
 	@echo "  make build              development build (Go + CGO + gcc)"
+	@echo "  make build-system       production driver against system SQLCipher"
 	@echo "  make test               Go tests (development driver)"
 	@echo "  make race               race-detector tests"
 	@echo "  make static             development static ELF"
@@ -39,6 +42,13 @@ check-cc:
 		exit 1; \
 	}
 
+check-sqlcipher:
+	@pkg-config --exists sqlcipher 2>/dev/null || { \
+		echo "ERROR: SQLCipher development files were not found."; \
+		echo "Install sqlcipher-devel (Fedora/RHEL), libsqlcipher-dev (Debian/Ubuntu), or use make production."; \
+		exit 1; \
+	}
+
 check-docker:
 	@command -v docker >/dev/null 2>&1 || { \
 		echo "ERROR: Docker was not found."; \
@@ -49,6 +59,14 @@ check-docker:
 build: check-go check-cc
 	mkdir -p dist
 	CGO_ENABLED=1 $(GO) build -trimpath -tags "$(TAGS)" -o $(BIN) ./cmd/hibp
+
+# Production driver using the distribution's dynamic SQLCipher. This is useful
+# for local testing when Docker is unavailable; release artifacts must use the
+# static Docker build.
+build-system: check-go check-cc check-sqlcipher
+	mkdir -p dist
+	CGO_ENABLED=1 CGO_CFLAGS="$(SQLCIPHER_CFLAGS)" CGO_LDFLAGS="$(SQLCIPHER_LDFLAGS)" \
+		$(GO) build -trimpath -tags "$(PROD_TAGS)" -o $(BIN) ./cmd/hibp
 
 test: check-go check-cc
 	CGO_ENABLED=1 $(GO) test ./...
