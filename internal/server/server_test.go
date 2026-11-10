@@ -287,6 +287,22 @@ func TestPasswordAuthRequiresManualPassword(t *testing.T) {
 	}
 }
 
+func TestSudoAuthFailureDetection(t *testing.T) {
+	for _, output := range []string{
+		"sudo: interactive authentication is required",
+		"sudo: a password is required",
+		"sudo: no tty present and no askpass program specified",
+		"sudo: a terminal is required to read the password",
+	} {
+		if !looksLikeSudoAuthFailure(output) {
+			t.Fatalf("expected sudo auth failure for %q", output)
+		}
+	}
+	if looksLikeSudoAuthFailure("Reading package lists...") {
+		t.Fatal("normal package output must not be classified as sudo failure")
+	}
+}
+
 func TestExportNeutralizesCSVInjection(t *testing.T) {
 	ts, _ := testServer(t)
 	body := `{"name":"=cmd","address":"10.0.0.10","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519"}`

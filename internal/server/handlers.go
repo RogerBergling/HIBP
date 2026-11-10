@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/RogerBergling/hibp/internal/crypto"
@@ -238,6 +239,24 @@ func remoteHostKey(key *store.HostKey) *remote.HostKey {
 	return &remote.HostKey{KeyType: key.KeyType, Fingerprint: key.Fingerprint}
 }
 
+var errSudoPasswordRequired = errors.New("sudo requires a password on the target; install the restricted NOPASSWD helper rule described in packaging/README.md")
+
+func looksLikeSudoAuthFailure(output string) bool {
+	lower := strings.ToLower(output)
+	for _, needle := range []string{
+		"interactive authentication is required",
+		"a password is required",
+		"no tty present",
+		"no askpass program specified",
+		"a terminal is required",
+	} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) runHelper(ctx context.Context, host store.Host, action, password string, timeout time.Duration) (string, int, error) {
 	switch action {
 	case "facts", "check", "apply":
@@ -252,7 +271,14 @@ func (s *Server) runHelper(ctx context.Context, host store.Host, action, passwor
 		return "", 0, errors.New("host key is not trusted; test and trust the host first")
 	}
 	command := "sudo -n /usr/local/libexec/hibp/hibp-helper " + action
-	return remote.Run(ctx, s.hostTarget(host, password), &remote.HostKey{KeyType: key.KeyType, Fingerprint: key.Fingerprint}, command, timeout)
+	output, code, err := remote.Run(ctx, s.hostTarget(host, password), &remote.HostKey{KeyType: key.KeyType, Fingerprint: key.Fingerprint}, command, timeout)
+	if err != nil {
+		return output, code, err
+	}
+	if code != 0 && looksLikeSudoAuthFailure(output) {
+		return output, code, errSudoPasswordRequired
+	}
+	return output, code, nil
 }
 
 func (s *Server) handleFacts(w http.ResponseWriter, r *http.Request) {
@@ -277,6 +303,10 @@ func (s *Server) handleFacts(w http.ResponseWriter, r *http.Request) {
 		password = request.Password
 	}
 	output, code, err := s.runHelper(r.Context(), host, "facts", password, 2*time.Minute)
+	if errors.Is(err, errSudoPasswordRequired) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "sudo_password_required"})
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -345,6 +375,10 @@ func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
 		timeout = 45 * time.Minute
 	}
 	output, code, err := s.runHelper(r.Context(), host, action, password, timeout)
+	if errors.Is(err, errSudoPasswordRequired) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "sudo_password_required"})
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return

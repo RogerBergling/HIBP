@@ -33,6 +33,7 @@ and can back up. A CLI and a background service use the same core.
 - [Install a release](#install-a-release-recommended)
 - [Install prerequisites](#install-prerequisites)
 - [Quick start (source build)](#quick-start-source-build)
+- [Target sudo setup](#target-sudo-setup)
 - [What HIBP is](#what-hibp-is)
 - [Why it exists](#why-it-exists)
 - [Goals](#goals)
@@ -360,6 +361,95 @@ passphrase must be at least 12 characters. Use `make static` for the development
 static ELF, or `make production` for the current-SQLCipher Docker build. The
 target helper installation and sudoers example are in
 [`packaging/README.md`](packaging/README.md).
+
+## Target sudo setup
+
+HIBP uses `sudo -n` on targets. It never stores a sudo password, and it does not
+send one in a command line or environment variable. The supported automation
+model is a **root-owned helper with a restricted NOPASSWD rule**.
+
+The helper accepts only four fixed actions:
+
+```text
+facts
+check
+apply
+reboot-check
+```
+
+It does not accept package names, host names, or arbitrary shell fragments. This
+is not equivalent to `NOPASSWD: ALL`.
+
+### Install the helper on each target
+
+Copy the same `hibp` binary to the fixed helper path:
+
+```bash
+sudo install -d -m 0755 /usr/local/libexec/hibp
+sudo install -m 0755 /path/to/hibp /usr/local/libexec/hibp/hibp-helper
+```
+
+Then create a sudoers rule. Replace `hibp` with the SSH account the controller
+uses to log in:
+
+```bash
+sudo tee /etc/sudoers.d/hibp-helper >/dev/null <<'EOF'
+# Replace "hibp" with the SSH account used by the controller.
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper facts
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper check
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper apply
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper reboot-check
+EOF
+sudo chmod 0440 /etc/sudoers.d/hibp-helper
+sudo visudo -cf /etc/sudoers.d/hibp-helper
+```
+
+Verify from the controller account:
+
+```bash
+ssh user@target 'sudo -n /usr/local/libexec/hibp/hibp-helper facts'
+```
+
+You should see the helper JSON, not a password prompt.
+
+### If the SSH account is not `hibp`
+
+Use the actual account name. For example, if the controller logs in as `roger`:
+
+```bash
+sudo sed -i 's/^hibp /roger /' /etc/sudoers.d/hibp-helper
+sudo visudo -cf /etc/sudoers.d/hibp-helper
+```
+
+A dedicated account such as `hibp` with its own SSH key is preferable: it keeps
+the sudo rule narrow and makes the audit trail clear.
+
+### If you cannot change sudoers
+
+HIBP will not store or use your sudo password. In that environment you can:
+
+- install the restricted helper rule as above;
+- use a dedicated account that is allowed to run only the helper;
+- run the helper manually from a root shell;
+- wait for the agent mode, which will run as root under systemd without an SSH
+  login or sudo password.
+
+Scheduled patching through HIBP requires passwordless execution of the helper.
+An interactive sudo password cannot be supplied to an unattended schedule.
+
+### Troubleshooting `sudo: interactive authentication is required`
+
+This means the `sudo -n` rule is missing, the username is wrong, the helper path
+is different, or the command arguments do not match exactly. Check:
+
+```bash
+sudo -l -U <ssh-user>
+sudo visudo -cf /etc/sudoers.d/hibp-helper
+ls -l /usr/local/libexec/hibp/hibp-helper
+```
+
+The helper must be owned by `root:root`, must not be writable by the SSH
+account, and the sudoers path must match exactly.
 
 ## Why it exists
 
