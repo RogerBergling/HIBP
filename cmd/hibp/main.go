@@ -22,7 +22,7 @@ import (
 	"golang.org/x/term"
 )
 
-const version = "0.1.0-dev"
+var version = "0.1.0-dev"
 
 func main() {
 	// SQLite creates -wal and -shm files; keep every file created by HIBP

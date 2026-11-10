@@ -5,6 +5,8 @@
 
 FROM golang:1.27-alpine AS build
 
+ARG VERSION=0.1.0-dev
+
 ARG SQLCIPHER_VERSION=4.20.0
 
 RUN apk add --no-cache \
@@ -52,7 +54,7 @@ RUN mkdir -p /out \
        CGO_LDFLAGS="-L/opt/sqlcipher/usr/local/lib -lsqlcipher -lssl -lcrypto -lz -lzstd -lm -lpthread -ldl" \
        go build -trimpath \
          -tags "sqlcipher_mattn libsqlcipher netgo osusergo sqlite_omit_load_extension" \
-         -ldflags '-s -w -linkmode external -extldflags "-static"' \
+         -ldflags "-s -w -linkmode external -extldflags '-static' -X main.version=${VERSION}" \
          -o /out/hibp ./cmd/hibp \
     && file /out/hibp \
     && (ldd /out/hibp 2>&1 || true) | tee /tmp/ldd \

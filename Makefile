@@ -5,6 +5,7 @@ TAGS ?= sqlite_omit_load_extension netgo osusergo
 PROD_TAGS ?= sqlcipher_mattn libsqlcipher netgo osusergo sqlite_omit_load_extension
 SQLCIPHER_CFLAGS ?= $(shell pkg-config --cflags sqlcipher 2>/dev/null)
 SQLCIPHER_LDFLAGS ?= $(shell pkg-config --libs sqlcipher 2>/dev/null)
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo 0.1.0-dev)
 
 .PHONY: help check-go check-cc check-docker check-sqlcipher bootstrap build build-system test race vet static production static-production validate package clean
 
@@ -88,7 +89,7 @@ static: check-go check-cc
 # Production artifact: current SQLCipher + patched mattn driver in a pinned
 # Alpine/musl build image. Requires Docker.
 production: check-docker
-	docker build -f packaging/Dockerfile -t hibp-production .
+	docker build --build-arg VERSION="$(VERSION)" -f packaging/Dockerfile -t hibp-production .
 
 # Local production build when SQLCIPHER_CFLAGS and SQLCIPHER_LDFLAGS point at
 # a current static SQLCipher (normally supplied by the Alpine build image).
