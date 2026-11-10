@@ -1,0 +1,14 @@
+# HIBP target helper sudoers example.
+#
+# Install the helper as root:root 0755 at:
+#   /usr/local/libexec/hibp/hibp-helper
+#
+# The helper only accepts the fixed actions below. It never accepts package
+# names, host names, or arbitrary shell fragments from the controller.
+#
+# Replace "hibp" with the account used by the controller for SSH access.
+
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper facts
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper check
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper apply
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper reboot-check

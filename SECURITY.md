@@ -1,0 +1,70 @@
+# Security policy
+
+HIBP is a privileged remote administration tool. It can run package-manager
+operations as root on managed Linux hosts. Treat the controller and its database
+as high-value assets.
+
+## Supported versions
+
+Only the latest release is supported with security fixes. The `main` branch is
+the development branch and may contain unreleased changes.
+
+## Reporting a vulnerability
+
+Do not open a public issue with a working exploit, credentials, private keys, or
+host details.
+
+Use GitHub's private vulnerability reporting for this repository:
+
+https://github.com/RogerBergling/HIBP/security/advisories/new
+
+If private reporting is unavailable, contact the maintainer through the GitHub
+profile and ask for a private channel.
+
+Include:
+
+- affected version or commit,
+- impact and affected component,
+- reproduction steps or a proof of concept,
+- whether the issue requires a trusted host, a local user, or network access,
+- any suggested mitigation.
+
+## Scope
+
+In scope:
+
+- SQLCipher database handling, key derivation, sidecar handling, backup/restore
+- browser UI authentication, CSRF, XSS, local API exposure
+- SSH host-key verification, key handling, command construction
+- sudo helper argument validation and privilege boundaries
+- audit-chain integrity and log redaction
+- import/export parsing, CSV injection, path traversal
+- privilege escalation from the controller or a managed target
+
+Out of scope:
+
+- vulnerabilities in a distribution's package manager or repository
+- a compromised controller while the database is unlocked
+- a compromised target or a malicious OS administrator
+- social engineering, physical access, or stolen unlocked laptops
+- denial of service caused by intentionally patching a host into a bad state
+
+## Known M1 security debt
+
+- The M1 build uses `mutecomm/go-sqlcipher` v4.4.2, which bundles SQLCipher
+  4.4.2 and an old libtomcrypt. Replace it with the maintained-driver build
+  before production use.
+- Password SSH fallback, RBAC, external audit anchoring, TPM-sealed keys, agent
+  mode, and signed playbooks are not implemented yet.
+- The browser UI token is a bearer secret. Protect the terminal, SSH tunnel, and
+  browser profile that hold it.
+
+## Operational guidance
+
+- Use a unique database passphrase and full-disk encryption.
+- Keep the database, backups, and SSH keys at mode `0600`.
+- Verify host-key fingerprints through an independent channel.
+- Do not use `NOPASSWD: ALL`; use the narrow helper rule.
+- Keep at least one encrypted backup off the controller and test restores.
+- Treat the UI token and the SSH tunnel as credentials.
+- Review playbooks before approval. Arbitrary shell is intentionally disabled.

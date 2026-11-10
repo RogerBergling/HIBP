@@ -1,10 +1,11 @@
 # HIBP - Have I Been Patched
 
-> **Status: design phase.** This repository currently contains documentation and
-> a README validation script. There is no application code, build system, or test
-> suite yet. The sections below define the intended product, the recommended
-> architecture, and the first implementation milestones. Items marked *proposed*
-> require a decision before implementation.
+> **Status: M1 prototype.** The repository now contains a working Go server,
+> browser UI, SQLCipher storage, host CRUD/import, SSH host-key approval, fact
+> collection, audit chain, backup, helper actions, tests, and CI. It is **not
+> production-ready**: the SQLCipher driver is still the 2020 spike driver,
+> password fallback is not implemented, and real patching requires the
+> root-owned helper on targets.
 >
 > **Name:** HIBP stands for **Have I Been Patched**. It is not affiliated with
 > Have I Been Pwned (haveibeenpwned.com).
@@ -19,14 +20,16 @@ and can back up. A CLI and a background service use the same core.
 
 ## Screenshots
 
-> The application is in design phase. This image is a UI mockup of the planned
-> browser interface, not a screenshot of a running build.
+> Screenshot of the M1 build running with demo data. The browser UI, encrypted
+> database, host list, facts, and audit chain are real. Real patch execution
+> requires the root-owned helper and SSH access to targets.
 
 ![HIBP fleet overview](docs/screenshots/dashboard.png)
 
 ## Contents
 
 - [Screenshots](#screenshots)
+- [Quick start](#quick-start)
 - [What HIBP is](#what-hibp-is)
 - [Why it exists](#why-it-exists)
 - [Goals](#goals)
@@ -63,6 +66,23 @@ does not try to be Ansible, Puppet, Chef, or Salt. It focuses on package
 updates, reboot state, evidence, and the safe execution of those updates across
 different Linux distributions.
 
+## Quick start
+
+```bash
+# Build the controller
+make build
+
+# Create the encrypted database and start the local UI
+./dist/hibp server --db ~/.local/share/hibp/hibp.db --create
+
+# Open the printed http://127.0.0.1:8443/?token=... URL
+```
+
+Requires Go 1.27+, a C toolchain, and CGO. The passphrase must be at least 12
+characters. Use `make static` to produce a statically linked ELF. The target
+helper installation and sudoers example are in
+[`packaging/README.md`](packaging/README.md).
+
 ## Why it exists
 
 Linux fleets are rarely homogeneous. A single environment may contain Ubuntu,
@@ -80,9 +100,10 @@ as core features rather than afterthoughts.
 
 ## Goals
 
-- **G1 - One Linux executable.** A Go binary with `server`, `client`, `cli`, and
-  (later) `agent` modes. The browser UI assets are embedded; there is no
-  separate web folder, runtime, or web server to install.
+- **G1 - One Linux executable.** A Go binary with `server`, `helper`, and
+  `version` commands; future `client` and `agent` modes reuse the same core. The
+  browser UI assets are embedded; there is no separate web folder, runtime, or
+  web server to install.
 - **G2 - Always-on server, laptop client and optional target.** The server owns
   the encrypted database, scheduler, credentials, and job queue. The laptop is a
   thin client and never opens the database directly; it can also be enrolled as
@@ -149,9 +170,9 @@ as core features rather than afterthoughts.
 
 - `hibp server` runs on an always-on Linux host. It owns the encrypted database,
   scheduler, job queue, SSH credentials, and audit log.
-- `hibp client` runs on the laptop. It is a thin client: it connects to the
-  server over an SSH tunnel (recommended) or TLS, and it never opens the
-  database directly.
+- The laptop uses the browser UI through an SSH tunnel. A future `hibp client`
+  command can provide a native shell; it would still never open the database
+  directly.
 - The laptop can also be enrolled as a managed target. It is still a client, not
   the server; patching it follows the same policy and helper rules as any host.
 - The server binds to a Unix socket or `127.0.0.1` by default. It must not listen
@@ -299,7 +320,7 @@ The profile layer must be data-driven and testable. First implementation
 priority: **Debian, Ubuntu, Kali, Fedora, and SUSE**. Arch and Alpine are
 supported by the profile model but are scheduled after the first five.
 
-The always-on server baseline is **Ubuntu LTS 22.04/24.04**. The static binary
+The always-on server baseline is **Ubuntu LTS 24.04/26.04; 22.04 best-effort**. The static binary
 may run on other distributions, but Ubuntu is the supported and tested server
 platform.
 
@@ -467,9 +488,9 @@ hibp agent (systemd timer) ── outbound mTLS ──► hibp server
 
 ## Security model
 
-HIBP is a privileged remote administration tool. The security model must be
-written down before code exists, because the architecture is much harder to
-change later.
+HIBP is a privileged remote administration tool. See [`SECURITY.md`](SECURITY.md)
+for vulnerability reporting and scope. The security model below is the design
+baseline; the M1 implementation status is called out explicitly.
 
 ### Assets
 
@@ -766,11 +787,40 @@ Agent mode is optional and later; v1 uses SSH from the always-on server.
   remote-code-execution feature.
 - Consider reproducible builds for the server and agent binaries.
 
+### Implemented in M1
+
+- SQLCipher database with Argon2id-derived keys and a validated `.meta` sidecar.
+- `0600` database, sidecar, key, and backup files; wrong-passphrase test.
+- Bearer-token UI authentication, Host/Origin checks, CSP, and security headers.
+- SSH host-key TOFU with explicit fingerprint approval and changed-key failure.
+- Fixed helper actions (`facts`, `check`, `apply`, `reboot-check`) with absolute
+  binary paths, a sanitized environment, no shell, and output limits.
+- Hash-chained audit log with verification.
+- CSV import limits, preview/commit, duplicate policy, and CSV-injection
+  neutralization on export.
+- Online encrypted backup with sidecar copy and verification.
+- Unit, integration, race, README, and Python validator tests.
+
+### Known security gaps in M1
+
+- The SQLCipher driver is the 2020 `mutecomm/go-sqlcipher` v4.4.2 spike driver
+  (SQLCipher 4.4.2 + old libtomcrypt). Replace it before production.
+- Password SSH fallback is not implemented yet; keys/agent/certificates only.
+- No RBAC, external audit anchor, TPM-sealed key, agent mode, or signed
+  playbooks yet.
+- The browser UI token is a bearer secret; protect the SSH tunnel and terminal.
+- Systemd hardening has not been validated against every distribution.
+- Real target testing is limited to local unit/integration tests so far.
+
 ## Data model
 
 The schema is proposed, not implemented. It is designed for SQLite/SQLCipher
 first and a future server database second. Domain objects use UUIDs, timestamps
 are UTC ISO 8601, and durations are stored in seconds.
+
+> **M1 implementation:** `schema_migrations`, `app_meta`, `hosts`,
+> `host_facts`, `host_keys`, `runs` (table only), and `audit_log` exist. The
+> remaining tables are planned.
 
 | Table | Purpose | Key fields |
 |---|---|---|
@@ -996,11 +1046,21 @@ changes:
 
 ### Current state
 
-There is no build system, application source code, or test suite in this
-repository yet. The repository currently contains `README.md`, `.gitignore`,
-`LICENSE`, `scripts/validate_readme.py`, and the UI mockup under
-`docs/screenshots/`. The stack and deployment choices are confirmed;
-implementation details remain proposals until the production build is complete.
+M1 is implemented in Go:
+
+- `cmd/hibp` server and helper commands
+- `internal/crypto` Argon2id key derivation and `.meta` sidecar
+- `internal/store` SQLCipher database, migrations, hosts, facts, host keys,
+  backup, and hash-chained audit
+- `internal/remote` SSH transport and host-key policy
+- `internal/helper` fixed target actions
+- `internal/server` browser UI/API, token auth, Host/Origin checks, and security
+  headers
+- `internal/webui` embedded HTML/CSS/JS
+- tests, `Makefile`, and GitHub Actions CI
+
+The current M1 build uses the 2020 `mutecomm/go-sqlcipher` spike driver. That is
+documented security debt, not the production driver.
 
 ### The "single executable, no dependencies" constraint
 
@@ -1024,22 +1084,23 @@ library and requires CGO. The build plan is:
   cross-compiler.
 - Link with `-linkmode external -extldflags "-static"`.
 - Verify with `ldd` that the release binary is "not a dynamic executable".
-- Run this as a **build spike before feature work**. If static SQLCipher cannot
-  be made reliable, the fallback options are: accept a dynamic `libsqlcipher`
-  (violates the no-dependency goal), use pure-Go SQLite with application-level
-  encryption (not recommended), or revisit Rust. Decide with evidence, not hope.
+- Add `netgo` and `osusergo` to the build tags so a static binary uses Go's
+  resolver instead of glibc NSS.
+- Verify with `ldd` that the release binary is "not a dynamic executable".
+- If static SQLCipher cannot be made reliable, the fallback options are: accept
+  a dynamic `libsqlcipher` (violates the no-dependency goal), use pure-Go SQLite
+  with application-level encryption (not recommended), or revisit Rust.
 
-**Build spike result (2026-11-10):** Go 1.27.3 with
+**Build result (2026-11-10):** Go 1.27.3 with
 `github.com/mutecomm/go-sqlcipher/v4` v4.4.2 produced a statically linked ELF on
-Ubuntu/glibc using `-tags sqlite_omit_load_extension` and
+Ubuntu/glibc using `-tags "sqlite_omit_load_extension netgo osusergo"` and
 `-ldflags '-linkmode external -extldflags "-static"'`. `ldd` reported
 "not a dynamic executable", and an encrypted write/read round-trip succeeded.
-This proves the static Go + SQLCipher approach is viable.
 
-**Decision:** the 2020 driver is spike-only. Production uses a locally patched,
+**Security debt:** the 2020 driver is M1-only. Production uses a locally patched,
 maintained `mattn/go-sqlite3` linked against a current SQLCipher built in a
 pinned Alpine/musl image. This avoids shipping the old SQLCipher/libtomcrypt
-stack. M0 must prove this build before feature work.
+stack. M0 must prove this build before production.
 
 ### Why Go
 
@@ -1053,41 +1114,33 @@ Go is the chosen stack:
 - Cross-compilation is straightforward; CGO is the only complication, and it is
   confined to SQLCipher.
 
-### Proposed dependencies (Go)
+### Dependencies (M1)
 
-- `golang.org/x/crypto/ssh` for SSH.
-- `github.com/mattn/go-sqlite3` with a local `libsqlcipher` build tag patch,
-  linked against a current SQLCipher built in the pinned Alpine/musl image. This
-  requires CGO. The `mutecomm` driver used in the spike is not the production
-  choice.
-- `github.com/google/uuid` for domain IDs.
-- `github.com/robfig/cron/v3` for cron parsing.
-- `github.com/spf13/cobra` for CLI commands.
-- `github.com/zalando/go-keyring` for OS keyring integration.
-- `github.com/coreos/go-systemd/v22` for systemd notification/watchdog support.
-- `log/slog` for structured logging.
-- `github.com/prometheus/client_golang` only if metrics are in scope.
-- `github.com/stretchr/testify` for tests.
-- `embed`, `net/http`, and `crypto/tls` from the standard library for the
-  browser UI and local API.
-- A small CSRF helper or a random per-session token for the local UI.
+- `github.com/mutecomm/go-sqlcipher/v4` v4.4.2 — SQLCipher driver. **M1 only;
+  replace before production.**
+- `golang.org/x/crypto` — SSH, Argon2id, and BLAKE2b.
+- `golang.org/x/term` — terminal passphrase prompt.
+- `github.com/google/uuid` — host and run IDs.
+- Standard library: `embed`, `net/http`, `database/sql`, `encoding/csv`,
+  `crypto/rand`, `log/slog`.
 
-All of these are compiled into the binary. The only runtime requirement on the
-server is the Linux kernel and the target hosts' SSH/package managers.
+All dependencies are compiled into the binary. The only runtime requirement on
+the server is the Linux kernel and the target hosts' SSH/package managers.
 
 ### Packaging and "single executable"
 
-- One static ELF named `hibp`, with `server`, `client`, `cli`, and optional
-  `agent` subcommands.
+- One static ELF named `hibp`, with `server`, `helper`, and `version` commands.
+  A future `client`/`agent` command can reuse the same core.
 - Embedded browser UI; no `web/` directory, Node/Python runtime, or external web
   server.
-- systemd unit for `hibp server`; optional unit for `hibp agent`.
-- Primary artifact: `hibp-linux-x86_64` tarball with the binary and unit files.
-  `.deb`/`.rpm` are convenience wrappers around the same binary.
+- `make static` builds with `sqlite_omit_load_extension netgo osusergo` and
+  verifies the ELF with `ldd`.
+- systemd unit example in `packaging/hibp.service`; target helper and sudoers
+  example in `packaging/`.
+- Primary artifact: `dist/hibp` plus the packaging files. `.deb`/`.rpm` are
+  future convenience wrappers around the same binary.
 - No Flatpak in v1. The sandbox complicates SSH agent/key access, and the
   browser UI already avoids GUI toolkit dependencies.
-- Verify with `ldd` that the release binary has no unexpected shared-library
-  dependencies.
 - Publish SHA-256 checksums and an SBOM. Sign releases if possible.
 
 ### Cross-distro validation
@@ -1096,8 +1149,8 @@ Use containers or disposable VMs to test the server and the profiles. First
 priority: Debian, Ubuntu, Kali, Fedora, and SUSE. Add Arch and Alpine after the
 first five.
 
-- Server baseline: Ubuntu 22.04 and 24.04.
-- Targets: Ubuntu 22.04/24.04, Debian 12, Kali rolling, Fedora current and
+- Server baseline: Ubuntu 24.04 and 26.04; 22.04 best-effort.
+- Targets: Ubuntu 24.04/26.04, Debian 12, Kali rolling, Fedora current and
   previous, and openSUSE Leap/Tumbleweed or SLES if available.
 - Arch Linux and Alpine Linux in the second wave.
 - Test SSH into the container/VM, host key approval, sudo helper installation,
@@ -1106,52 +1159,43 @@ first five.
 - Test the server binary on the distributions you intend to support. A static
   binary should run broadly.
 
-### Proposed commands
+### Build and validation commands
 
 ```bash
-# Build a static ELF (run in an Alpine/musl container or with a musl toolchain)
-CGO_ENABLED=1 go build -trimpath -tags libsqlcipher \
-  -ldflags '-s -w -linkmode external -extldflags "-static"' \
-  -o dist/hibp ./cmd/hibp
+make build          # CGO build, dynamic libc
+make test           # Go tests
+make vet            # go vet
+make static         # statically linked ELF + ldd check
+make validate       # tests, vet, README validator, Python tests, git diff check
+make package        # static binary + packaging tarball
 
-# Verify no dynamic dependencies
-ldd dist/hibp || true
-
-go test ./...
-go vet ./...
-golangci-lint run
-govulncheck ./...
-make validate       # docs checks, tests, lint, vulnerability scan
-make package        # tarball, systemd units, optional deb/rpm
+# Run
+./dist/hibp server --db ~/.local/share/hibp/hibp.db --create
 ```
 
-The pinned build image supplies `CGO_CFLAGS` and `CGO_LDFLAGS` for the static
-SQLCipher build. The exact flags will be fixed by the M0 build.
+CI runs `go test ./...`, `go vet ./...`, the README validator, the Python
+validator tests, the static build, and `govulncheck`.
 
 ## Repository layout
 
-Proposed Go layout:
+Implemented layout:
 
 ```text
-cmd/hibp/              main entry point and subcommands
-internal/app/          application wiring
-internal/server/       server mode, local UI/API, systemd integration
-internal/client/       laptop client and tunnel-aware UI
-internal/db/           SQLCipher open, migrations, backup, restore
-internal/crypto/       Argon2id, envelope encryption, zeroization
-internal/domain/       hosts, jobs, runs, policies, schedules
-internal/ssh/          transport, authentication, host keys, sudo
-internal/distro/       apt, dnf, pacman, zypper, apk profiles
-internal/scheduler/    cron, windows, jitter, missed runs
-internal/agent/        optional agent mode, local policy, mTLS
-internal/api/          local API and CLI contracts
-internal/audit/        hash chain and export
-internal/notify/       webhook and ntfy in v1; email/Slack/Teams later
-web/                   embedded HTML/CSS/JS UI
-migrations/            SQL migrations and fixtures
-packaging/             systemd, deb, rpm, tarball
-docs/                  design, security, operations, upgrade notes
-tests/                 unit, integration, and end-to-end tests
+go.mod / go.sum           Go module and pinned dependencies
+Makefile                  build, test, static, validate, package
+cmd/hibp/main.go          server, helper, and version commands
+internal/crypto/          Argon2id, sidecar, tokens, zeroization
+internal/store/           SQLCipher, migrations, hosts, facts, keys, backup, audit
+internal/store/migrations SQL schema
+internal/remote/          SSH transport and host-key policy
+internal/helper/          fixed target actions
+internal/server/          browser UI/API, auth, security headers, import/export
+internal/webui/           embedded HTML/CSS/JS
+packaging/                systemd unit, sudoers example, install notes
+scripts/                  README validator
+tests/                    Python validator tests
+docs/screenshots/         real M1 screenshot
+.github/workflows/        CI
 ```
 
 ## Roadmap
@@ -1166,20 +1210,24 @@ tests/                 unit, integration, and end-to-end tests
 - Do not ship the 2020 `mutecomm` spike driver. It proved the approach but needs
   a security review and updates before production.
 
-### M1 - Server, client, and encrypted storage
+### M1 - Implemented prototype
 
-- Go module, build scripts, and the static SQLCipher build.
-- Server mode with a browser UI/API bound to `127.0.0.1` or a Unix socket.
-- Laptop client mode through an SSH tunnel; the laptop can also be added as a
-  target.
-- Create/open/backup/restore the encrypted database.
-- Add hosts manually and via CSV/TXT import.
-- SSH key authentication, host key approval, and connection test.
-- Fact collection: OS, kernel, uptime, boot time, disk, time sync, pending
-  updates, reboot required.
-- Dashboard and host list.
-- Acceptance: import 10 hosts, test connections, collect facts, back up, restore,
-  and verify the audit chain.
+Implemented:
+
+- Go module, Makefile, tests, CI, and static build.
+- Server mode with a browser UI/API bound to `127.0.0.1`.
+- Encrypted SQLCipher database with Argon2id sidecar.
+- Host CRUD and CSV/TXT import with preview and duplicate policy.
+- SSH key authentication, host-key approval, and connection test.
+- Fact collection through the fixed helper.
+- Dashboard, host list, audit viewer, backup, and restore to a new path.
+- Audit chain verification and CSV-injection-neutralized export.
+
+Not yet:
+
+- Real target matrix and sudo helper install test.
+- Password fallback, scheduler, playbooks, and agent.
+- Production SQLCipher driver.
 
 ### M2 - Patch now
 
@@ -1290,15 +1338,16 @@ These are settled unless you explicitly change them:
   client and can also be enrolled as a managed target. The same binary supports
   server, client, and optional standalone modes. The server owns the database,
   scheduler, credentials, and audit log.
-- **Server OS:** Ubuntu LTS (22.04/24.04) is the supported server baseline. The
+- **Server OS:** Ubuntu LTS (24.04/26.04; 22.04 best-effort) is the supported server baseline. The
   static binary may run on other distributions, but Ubuntu is what we test and
   support first.
 - **UI:** browser-based. The server embeds the HTML/CSS/JS and serves it on
   `127.0.0.1` or a Unix socket; the laptop uses a browser through an SSH tunnel.
   No GTK/WebKit dependency.
-- **Stack:** Go. The production SQLCipher driver is a locally patched,
-  maintained `mattn/go-sqlite3` linked against a current SQLCipher built in a
-  pinned Alpine/musl image. The 2020 `mutecomm` driver is spike-only.
+- **Stack:** Go. M1 currently uses the 2020 `mutecomm/go-sqlcipher` driver. The
+  production SQLCipher driver is a locally patched, maintained
+  `mattn/go-sqlite3` linked against a current SQLCipher built in a pinned
+  Alpine/musl image.
 - **Database:** SQLite with SQLCipher, stored as a user-chosen file with a
   `.meta` sidecar. No PostgreSQL in v1.
 - **Unattended unlock:** manual. The server starts locked after a reboot and
@@ -1395,15 +1444,15 @@ No architecture-blocking decisions remain. These are intentionally deferred:
 
 ## Validation
 
-The repository currently has no build system or test suite. Documentation and
-repository checks are the available validation:
-
 ```bash
-# Whitespace and conflict-marker checks
-git diff --check
+# Go tests, vet, README validator, Python validator tests, whitespace checks
+make validate
 
-# README structure, local links, anchors, and code fences
-python3 scripts/validate_readme.py
+# Static ELF build and ldd check
+make static
+
+# Race detector
+CGO_ENABLED=1 go test -race ./...
 
 # Repository verification without network access (when git-create is installed)
 git-create check --offline
@@ -1412,10 +1461,15 @@ git-create check --offline
 git-create secrets .
 ```
 
-Once the Go module and static build spike exist, `make validate` should run the
-documentation checks, unit tests, integration tests, linting, and vulnerability
-scanning. A release must also pass the cross-distro matrix and a
-restore-from-backup test.
+M1 validation status:
+
+- `go test ./...` passes.
+- `go vet ./...` passes.
+- `go test -race ./...` passes.
+- `make static` produces an ELF with no dynamic dependencies.
+- README validator and Python validator tests pass.
+- A release must still pass the cross-distro matrix, real target tests, and a
+  restore-from-backup test.
 
 ## License
 

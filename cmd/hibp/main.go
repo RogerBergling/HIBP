@@ -1,0 +1,235 @@
+// Command hibp is the HIBP server and target helper.
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/RogerBergling/hibp/internal/crypto"
+	"github.com/RogerBergling/hibp/internal/helper"
+	"github.com/RogerBergling/hibp/internal/server"
+	"github.com/RogerBergling/hibp/internal/store"
+	"golang.org/x/term"
+)
+
+const version = "0.1.0-dev"
+const driverNote = "mutecomm/go-sqlcipher v4.4.2 (SQLCipher 4.4.2, 2020; M1 spike driver)"
+
+func main() {
+	// SQLite creates -wal and -shm files; keep every file created by HIBP
+	// owner-only even if the service manager uses a permissive umask.
+	syscall.Umask(0o077)
+	if len(os.Args) < 2 {
+		usage()
+		os.Exit(2)
+	}
+	var err error
+	switch os.Args[1] {
+	case "server":
+		err = runServer(os.Args[2:])
+	case "helper":
+		err = runHelper(os.Args[2:])
+	case "version", "--version", "-version":
+		fmt.Println("hibp " + version)
+		fmt.Println("sqlcipher driver:", driverNote)
+	case "help", "--help", "-h":
+		usage()
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", os.Args[1])
+		usage()
+		os.Exit(2)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
+
+func usage() {
+	fmt.Fprintln(os.Stderr, `HIBP - Have I Been Patched
+
+Usage:
+  hibp server [flags]     Run the local browser UI and API
+  hibp helper <action>    Run a fixed target action (facts|check|apply|reboot-check)
+  hibp version            Print the version
+
+Server flags:
+  -db string              Database path (default: XDG data directory)
+  -listen string          Listen address (default: 127.0.0.1:8443)
+  -create                 Create the database if it does not exist
+  -passphrase-file string Read the database passphrase from a 0600 file
+  -demo                   Seed sample hosts when the database is empty
+  -version                Print the version`)
+}
+
+func defaultDBPath() string {
+	if dir := os.Getenv("XDG_DATA_HOME"); dir != "" {
+		return filepath.Join(dir, "hibp", "hibp.db")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "hibp.db"
+	}
+	return filepath.Join(home, ".local", "share", "hibp", "hibp.db")
+}
+
+func readPassphrase(path string) ([]byte, error) {
+	if path != "" {
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, err
+		}
+		if info.Mode().Perm()&0o077 != 0 {
+			return nil, fmt.Errorf("passphrase file %s must not be accessible by group or others", path)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		return []byte(strings.TrimRight(string(data), "\r\n")), nil
+	}
+	fmt.Fprint(os.Stderr, "Database passphrase: ")
+	pass, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return nil, fmt.Errorf("read passphrase: %w", err)
+	}
+	return pass, nil
+}
+
+func runServer(args []string) error {
+	flags := flag.NewFlagSet("server", flag.ContinueOnError)
+	dbPath := flags.String("db", defaultDBPath(), "database path")
+	listen := flags.String("listen", "127.0.0.1:8443", "listen address")
+	create := flags.Bool("create", false, "create the database if it does not exist")
+	passphraseFile := flags.String("passphrase-file", "", "read passphrase from a 0600 file")
+	demo := flags.Bool("demo", false, "seed sample hosts when empty")
+	showVersion := flags.Bool("version", false, "print version")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *showVersion {
+		fmt.Println("hibp " + version)
+		return nil
+	}
+	if *listen != "127.0.0.1:8443" && !strings.HasPrefix(*listen, "127.0.0.1:") && !strings.HasPrefix(*listen, "localhost:") {
+		return fmt.Errorf("refusing to listen on %q: use 127.0.0.1 or localhost; use an SSH tunnel for remote access", *listen)
+	}
+
+	passphrase, err := readPassphrase(*passphraseFile)
+	if err != nil {
+		return err
+	}
+	defer crypto.Zero(passphrase)
+	if len(passphrase) < 12 {
+		return fmt.Errorf("passphrase must be at least 12 characters")
+	}
+
+	opts := store.DefaultOptions()
+	opts.Create = *create
+	db, err := store.Open(*dbPath, passphrase, opts)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	if *demo {
+		if err := seedDemo(db); err != nil {
+			return err
+		}
+	}
+
+	token, err := crypto.RandomToken()
+	if err != nil {
+		return err
+	}
+	app, err := server.New(server.Config{Store: db, Token: token, Version: version})
+	if err != nil {
+		return err
+	}
+
+	listener, err := net.Listen("tcp", *listen)
+	if err != nil {
+		return err
+	}
+	url := fmt.Sprintf("http://%s/?token=%s", listener.Addr().String(), token)
+	fmt.Fprintf(os.Stderr, "HIBP %s\n", version)
+	fmt.Fprintf(os.Stderr, "WARNING: %s\n", driverNote)
+	fmt.Fprintf(os.Stderr, "This M1 build is not production-ready until the SQLCipher driver is replaced.\n")
+	fmt.Fprintf(os.Stderr, "Database: %s\n", db.Path())
+	fmt.Fprintf(os.Stderr, "Open:     %s\n", url)
+	fmt.Fprintln(os.Stderr, "Press Ctrl+C to stop.")
+
+	httpServer := &http.Server{
+		Handler:           app.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	errCh := make(chan error, 1)
+	go func() { errCh <- httpServer.Serve(listener) }()
+	select {
+	case err := <-errCh:
+		if err != nil && err != http.ErrServerClosed {
+			return err
+		}
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func runHelper(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: hibp helper <facts|check|apply|reboot-check>")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+	defer cancel()
+	return helper.Run(ctx, args[0], os.Stdout)
+}
+
+func seedDemo(db *store.Store) error {
+	count, err := db.CountHosts()
+	if err != nil || count > 0 {
+		return err
+	}
+	samples := []struct {
+		host  store.Host
+		facts store.Facts
+	}{
+		{store.Host{Name: "web01", Address: "10.20.0.11", Port: 22, Username: "ubuntu", AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519", Tags: "web,prod", GroupName: "web-prod", Status: "reachable"}, store.Facts{UptimeSeconds: 41 * 86400, Kernel: "6.8.0-51", OSPrettyName: "Ubuntu 24.04 LTS", PackageManager: "apt", PendingUpdates: 4, RebootRequired: true, DiskFreeBytes: 42 << 30, TimeSyncOK: true}},
+		{store.Host{Name: "db01", Address: "10.20.0.21", Port: 22, Username: "root", AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519", Tags: "db,prod", GroupName: "db-prod", Status: "reachable"}, store.Facts{UptimeSeconds: 112 * 86400, Kernel: "6.1.0-34", OSPrettyName: "Debian 12", PackageManager: "apt", PendingUpdates: 0, DiskFreeBytes: 80 << 30, TimeSyncOK: true}},
+		{store.Host{Name: "fedora01", Address: "10.20.0.31", Port: 22, Username: "fedora", AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519", Tags: "web,prod", GroupName: "web-prod", Status: "reachable"}, store.Facts{UptimeSeconds: 12 * 86400, Kernel: "6.12.4", OSPrettyName: "Fedora 41", PackageManager: "dnf", PendingUpdates: 7, RebootRequired: true, DiskFreeBytes: 35 << 30, TimeSyncOK: true}},
+		{store.Host{Name: "kali-lab", Address: "10.20.0.41", Port: 22, Username: "kali", AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519", Tags: "lab", GroupName: "lab", Status: "reachable"}, store.Facts{UptimeSeconds: 3 * 86400, Kernel: "6.12.9", OSPrettyName: "Kali GNU/Linux 2026.1", PackageManager: "apt", PendingUpdates: 2, DiskFreeBytes: 18 << 30, TimeSyncOK: false}},
+		{store.Host{Name: "suse01", Address: "10.20.0.51", Port: 22, Username: "root", AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519", Tags: "db,prod", GroupName: "db-prod", Status: "reachable"}, store.Facts{UptimeSeconds: 27 * 86400, Kernel: "6.4.0", OSPrettyName: "openSUSE Leap 15.6", PackageManager: "zypper", PendingUpdates: 1, DiskFreeBytes: 60 << 30, TimeSyncOK: true}},
+		{store.Host{Name: "arch01", Address: "10.20.0.61", Port: 22, Username: "roger", AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519", Tags: "lab", GroupName: "lab", Status: "reachable"}, store.Facts{UptimeSeconds: 8 * 86400, Kernel: "6.13.1", OSPrettyName: "Arch Linux", PackageManager: "pacman", PendingUpdates: 0, DiskFreeBytes: 25 << 30, TimeSyncOK: true}},
+	}
+	for _, sample := range samples {
+		host, err := db.CreateHost(sample.host)
+		if err != nil {
+			return err
+		}
+		sample.facts.CollectedAt = crypto.Now()
+		sample.facts.BootTime = time.Now().UTC().Add(-time.Duration(sample.facts.UptimeSeconds) * time.Second).Format(time.RFC3339)
+		if err := db.SaveFacts(host.ID, sample.facts); err != nil {
+			return err
+		}
+	}
+	slog.Info("seeded demo hosts", "count", len(samples))
+	return nil
+}

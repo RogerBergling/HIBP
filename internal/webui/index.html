@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HIBP — Have I Been Patched</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="token-screen" class="token-screen">
+    <form id="token-form" class="token-card">
+      <div class="brand-mark large">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 3l7 3v5.2c0 4.4-2.9 7.6-7 9.8-4.1-2.2-7-5.4-7-9.8V6l7-3z" stroke="#5eead4" stroke-width="1.6" fill="rgba(45,212,191,.08)"/>
+          <path d="M9 12.2l2 2 4.2-4.4" stroke="#5eead4" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <h1>Have I Been Patched</h1>
+      <p>Paste the UI token printed by <code>hibp server</code>.</p>
+      <label for="token-input">UI token</label>
+      <input id="token-input" type="password" autocomplete="off" spellcheck="false" placeholder="64-character token">
+      <button class="btn primary" type="submit">Unlock UI</button>
+      <p class="hint">The token is stored in this browser tab only.</p>
+    </form>
+  </div>
+
+  <div id="app" class="app hidden">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 3l7 3v5.2c0 4.4-2.9 7.6-7 9.8-4.1-2.2-7-5.4-7-9.8V6l7-3z" stroke="#5eead4" stroke-width="1.6" fill="rgba(45,212,191,.08)"/>
+            <path d="M9 12.2l2 2 4.2-4.4" stroke="#5eead4" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div>
+          <div class="brand-title">HIBP</div>
+          <div class="brand-sub">Have I Been Patched</div>
+        </div>
+      </div>
+
+      <div class="nav-label">Workspace</div>
+      <nav class="nav">
+        <button class="nav-item active" data-view="dashboard">
+          <span class="ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 13h6V4H4v9zm10 7h6v-9h-6v9zM4 20h6v-3H4v3zm10-13h6V4h-6v3z" stroke="currentColor" stroke-width="1.6"/></svg></span>
+          Dashboard
+        </button>
+        <button class="nav-item" data-view="hosts">
+          <span class="ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="3.5" y="4" width="17" height="6" rx="1.5" stroke="currentColor" stroke-width="1.6"/><rect x="3.5" y="14" width="17" height="6" rx="1.5" stroke="currentColor" stroke-width="1.6"/><circle cx="7" cy="7" r="1" fill="currentColor"/><circle cx="7" cy="17" r="1" fill="currentColor"/></svg></span>
+          Hosts
+          <span id="nav-host-count" class="nav-badge">0</span>
+        </button>
+        <button class="nav-item" data-view="audit">
+          <span class="ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 3l7 3v5.2c0 4.4-2.9 7.6-7 9.8-4.1-2.2-7-5.4-7-9.8V6l7-3z" stroke="currentColor" stroke-width="1.6"/><path d="M9 12.2l2 2 4.2-4.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          Audit log
+        </button>
+      </nav>
+
+      <div class="nav-sep"></div>
+      <div class="nav-label">Operations</div>
+      <nav class="nav">
+        <button class="nav-item" id="import-button">
+          <span class="ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2h16v-2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          Import CSV
+        </button>
+        <button class="nav-item" id="backup-button">
+          <span class="ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M5 4h14v16H5z" stroke="currentColor" stroke-width="1.6"/><path d="M8 4v6h8V4M8 20v-6h8v6" stroke="currentColor" stroke-width="1.6"/></svg></span>
+          Backup database
+        </button>
+        <button class="nav-item" id="restore-button">
+          <span class="ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 12a8 8 0 108-8M4 4v8h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          Restore backup
+        </button>
+        <button class="nav-item" id="refresh-button">
+          <span class="ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M20 12a8 8 0 10-2.3 5.7M20 5v7h-7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          Refresh
+        </button>
+      </nav>
+
+      <div class="server-card">
+        <div class="server-top"><span class="status-dot"></span> hibp-server</div>
+        <div class="server-meta">
+          <b id="server-version">dev</b><br>
+          Database <b>unlocked</b><br>
+          <span id="server-hosts">0 hosts</span> · <span id="server-time">—</span>
+        </div>
+        <div class="user-row">
+          <div class="avatar">RB</div>
+          <div>
+            <div class="user-name">local</div>
+            <div class="user-role">Single-user · SSH tunnel</div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div class="crumb">Fleet / <b id="crumb-view">Overview</b></div>
+        <div class="topbar-right">
+          <div class="last-check"><span class="dot"></span> <span id="last-refresh">not loaded</span></div>
+          <button class="btn" id="top-refresh">Refresh</button>
+          <button class="btn primary" id="top-add-host"><span class="plus">+</span> Add host</button>
+        </div>
+      </div>
+
+      <section id="view-dashboard">
+        <div class="page-head">
+          <div>
+            <div class="page-title">Fleet overview</div>
+            <div class="page-sub" id="page-sub">Loading hosts…</div>
+          </div>
+        </div>
+
+        <div class="stats" id="stats"></div>
+
+        <div class="content">
+          <section class="card table-card">
+            <div class="card-head">
+              <div class="card-title">Hosts</div>
+              <div class="card-sub" id="hosts-sub">0 hosts</div>
+              <div class="card-actions"><button class="link-button" id="table-import">Import CSV</button></div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th style="width:21%">Host</th>
+                    <th style="width:15%">OS</th>
+                    <th style="width:9%">Pending</th>
+                    <th style="width:12%">Last check</th>
+                    <th style="width:7%">Uptime</th>
+                    <th style="width:7%">Reboot</th>
+                    <th style="width:11%">Status</th>
+                    <th style="width:18%">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="hosts-body"></tbody>
+              </table>
+              <div id="empty-state" class="empty-state hidden">
+                <h3>No hosts yet</h3>
+                <p>Add a host or import a CSV to start collecting facts.</p>
+                <button class="btn primary" id="empty-add">Add your first host</button>
+              </div>
+            </div>
+          </section>
+
+          <aside class="side">
+            <section class="card">
+              <div class="card-head">
+                <div class="card-title">Audit chain</div>
+                <div class="card-actions"><button class="link-button" id="verify-audit">Verify</button></div>
+              </div>
+              <div class="audit-mini" id="audit-mini"></div>
+            </section>
+            <section class="card">
+              <div class="card-head"><div class="card-title">M1 status</div></div>
+              <div class="status-list">
+                <div><span>Encrypted database</span><b class="ok">SQLCipher</b></div>
+                <div><span>UI authentication</span><b class="ok">Bearer token</b></div>
+                <div><span>Host key policy</span><b class="ok">TOFU + approval</b></div>
+                <div><span>Target helper</span><b class="ok">fixed actions</b></div>
+                <div><span>Password SSH</span><b class="muted">manual fallback planned</b></div>
+              </div>
+            </section>
+            <section class="card">
+              <div class="card-head"><div class="card-title">Next step</div></div>
+              <div class="next-step">
+                <p>Trust a host key, collect facts, then run a dry-run patch check.</p>
+                <p class="muted">Real patching requires the root-owned helper on the target.</p>
+              </div>
+            </section>
+          </aside>
+        </div>
+      </section>
+
+      <section id="view-hosts" class="hidden">
+        <div class="page-head">
+          <div>
+            <div class="page-title">Hosts</div>
+            <div class="page-sub" id="hosts-page-sub">All managed hosts</div>
+          </div>
+        </div>
+        <section class="card table-card">
+          <div class="card-head">
+            <div class="card-title">Managed hosts</div>
+            <div class="card-actions"><button class="link-button" id="hosts-import">Import CSV</button></div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th style="width:21%">Host</th>
+                  <th style="width:15%">OS</th>
+                  <th style="width:9%">Pending</th>
+                  <th style="width:12%">Last check</th>
+                  <th style="width:7%">Uptime</th>
+                  <th style="width:7%">Reboot</th>
+                  <th style="width:11%">Status</th>
+                  <th style="width:18%">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="hosts-body-full"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section id="view-audit" class="hidden">
+        <div class="page-head">
+          <div>
+            <div class="page-title">Audit log</div>
+            <div class="page-sub">Hash-chained local events. Verify the chain before relying on it.</div>
+          </div>
+          <div class="head-actions"><button class="btn" id="audit-verify">Verify chain</button></div>
+        </div>
+        <section class="card">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th style="width:8%">ID</th><th style="width:16%">Time</th><th style="width:12%">Actor</th><th style="width:14%">Action</th><th style="width:18%">Entity</th><th>Detail</th></tr></thead>
+              <tbody id="audit-body"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <div class="footer-note">HIBP · single binary · encrypted SQLCipher database · local browser UI</div>
+    </main>
+  </div>
+
+  <div id="modal-root"></div>
+  <div id="toast" class="toast hidden"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
