@@ -467,6 +467,19 @@ sudo visudo -cf /etc/sudoers.d/hibp-helper
 A dedicated account such as `hibp` with its own SSH key is preferable: it keeps
 the sudo rule narrow and makes the audit trail clear.
 
+### SELinux
+
+On Fedora, RHEL, or SUSE with SELinux enforcing, an execution denial means the
+uploaded helper has the wrong file context. Check and repair it:
+
+```bash
+ls -lZ /usr/local/libexec/hibp/hibp-helper
+sudo restorecon -RF /usr/local/libexec/hibp
+```
+
+The Setup action runs the candidate helper before replacing a working install,
+so an execution denial is reported instead of silently leaving a broken helper.
+
 ### Manual sudo password fallback
 
 If the target cannot use a `NOPASSWD` rule yet, the UI can prompt for the sudo
