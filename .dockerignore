@@ -2,7 +2,6 @@
 .gitignore
 dist
 docs
-packaging
 scripts
 tests
 README.md

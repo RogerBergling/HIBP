@@ -88,7 +88,7 @@ static: check-go check-cc
 # Production artifact: current SQLCipher + patched mattn driver in a pinned
 # Alpine/musl build image. Requires Docker.
 production: check-docker
-	docker build -f build/Dockerfile -t hibp-production .
+	docker build -f packaging/Dockerfile -t hibp-production .
 
 # Local production build when SQLCIPHER_CFLAGS and SQLCIPHER_LDFLAGS point at
 # a current static SQLCipher (normally supplied by the Alpine build image).

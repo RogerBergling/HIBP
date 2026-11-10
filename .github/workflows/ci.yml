@@ -44,6 +44,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build production image
-        run: docker build -f build/Dockerfile -t hibp-production .
+        run: docker build -f packaging/Dockerfile -t hibp-production .
       - name: Verify production binary
         run: docker run --rm hibp-production version

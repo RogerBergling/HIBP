@@ -1337,7 +1337,7 @@ M1 is implemented in Go:
 The development build uses the 2020 `mutecomm/go-sqlcipher` spike driver. The
 production build uses the local `third_party/go-sqlite3` patch, which calls
 `sqlite3_key` immediately after `sqlite3_open_v2`, linked against current
-SQLCipher 4.20.0 built statically in `build/Dockerfile`.
+SQLCipher 4.20.0 built statically in `packaging/Dockerfile`.
 
 ### The "single executable, no dependencies" constraint
 
@@ -1370,7 +1370,7 @@ statically linked ELF on Ubuntu/glibc using
 `-ldflags '-linkmode external -extldflags "-static"'`. This is for development
 only and prints a warning.
 
-**Production build:** `build/Dockerfile` builds SQLCipher 4.20.0 from source
+**Production build:** `packaging/Dockerfile` builds SQLCipher 4.20.0 from source
 with the OpenSSL backend, links it statically with musl, and uses the local
 `third_party/go-sqlite3` patch that calls `sqlite3_key` before any schema read.
 The driver path was tested against current system `libsqlcipher` with the full
@@ -1410,7 +1410,7 @@ the server is the Linux kernel and the target hosts' SSH/package managers.
 - Embedded browser UI; no `web/` directory, Node/Python runtime, or external web
   server.
 - `make static` builds the development ELF; `make production` builds the
-  current-SQLCipher production image via `build/Dockerfile`.
+  current-SQLCipher production image via `packaging/Dockerfile`.
 - systemd unit example in `packaging/hibp.service`; target helper and sudoers
   example in `packaging/`.
 - Primary artifact: the production image or the binary extracted from it.
@@ -1474,7 +1474,7 @@ internal/helper/          fixed target actions
 internal/server/          browser UI/API, auth, security headers, import/export
 internal/webui/           embedded HTML/CSS/JS
 third_party/go-sqlite3/   patched mattn driver with sqlite3_key before open
-build/Dockerfile          production SQLCipher 4.20 + musl static build
+packaging/Dockerfile          production SQLCipher 4.20 + musl static build
 packaging/                systemd unit, sudoers example, install notes
 scripts/                  README validator, release installer, developer bootstrap
 tests/                    Python validator tests
@@ -1486,7 +1486,7 @@ docs/screenshots/         real M1 screenshot
 
 ### M0 - Production build (implemented)
 
-- Production SQLCipher build implemented in `build/Dockerfile`: SQLCipher 4.20,
+- Production SQLCipher build implemented in `packaging/Dockerfile`: SQLCipher 4.20,
   patched `third_party/go-sqlite3`, static musl ELF.
 - The production driver passes the store/server suite, including backup and
   restore, against current system `libsqlcipher`.
@@ -1507,7 +1507,7 @@ Implemented:
 - Fact collection through the fixed helper.
 - Dashboard, host list, audit viewer, backup, and restore to a new path.
 - Audit chain verification and CSV-injection-neutralized export.
-- Production SQLCipher build path in `build/Dockerfile`.
+- Production SQLCipher build path in `packaging/Dockerfile`.
 
 Not yet:
 
