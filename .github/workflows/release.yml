@@ -1,0 +1,56 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build production image
+        run: docker build -f build/Dockerfile -t "hibp:${GITHUB_REF_NAME}" .
+
+      - name: Extract production binary
+        run: |
+          mkdir -p dist
+          cid=$(docker create "hibp:${GITHUB_REF_NAME}")
+          docker cp "$cid:/hibp" dist/hibp
+          docker rm "$cid"
+          chmod 0755 dist/hibp
+          file dist/hibp
+          ldd dist/hibp 2>&1 | tee /tmp/hibp-release-ldd.txt || true
+          grep -q 'not a dynamic executable' /tmp/hibp-release-ldd.txt
+
+      - name: Create release assets
+        run: |
+          tar -czf "dist/hibp-${GITHUB_REF_NAME}-linux-amd64.tar.gz" -C dist hibp
+          rm -f dist/hibp
+          cp scripts/install.sh dist/install.sh
+          (cd dist && sha256sum hibp-*.tar.gz > SHA256SUMS)
+          ls -lh dist
+
+      - name: Publish container image
+        run: |
+          owner=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          image="ghcr.io/${owner}/hibp"
+          echo "${{ github.token }}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          docker tag "hibp:${GITHUB_REF_NAME}" "${image}:${GITHUB_REF_NAME}"
+          docker tag "hibp:${GITHUB_REF_NAME}" "${image}:latest"
+          docker push "${image}:${GITHUB_REF_NAME}"
+          docker push "${image}:latest"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --title "HIBP ${GITHUB_REF_NAME}" \
+            --generate-notes

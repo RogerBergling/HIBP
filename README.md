@@ -30,8 +30,9 @@ and can back up. A CLI and a background service use the same core.
 ## Contents
 
 - [Screenshots](#screenshots)
+- [Install a release](#install-a-release-recommended)
 - [Install prerequisites](#install-prerequisites)
-- [Quick start](#quick-start)
+- [Quick start (source build)](#quick-start-source-build)
 - [What HIBP is](#what-hibp-is)
 - [Why it exists](#why-it-exists)
 - [Goals](#goals)
@@ -68,11 +69,68 @@ does not try to be Ansible, Puppet, Chef, or Salt. It focuses on package
 updates, reboot state, evidence, and the safe execution of those updates across
 different Linux distributions.
 
+## Install a release (recommended)
+
+End users should not need Go or a compiler.
+
+1. Download the latest release from
+   <https://github.com/RogerBergling/HIBP/releases/latest>.
+2. Or run the installer (inspect it first):
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/RogerBergling/HIBP/main/scripts/install.sh -o install.sh
+   less install.sh
+   sh install.sh
+   ```
+
+   The installer downloads the release archive, verifies it against the
+   published `SHA256SUMS`, and installs `hibp` into `~/.local/bin` by default.
+
+   ```bash
+   # Install a specific version
+   sh install.sh --version v0.2.0
+
+   # Install system-wide (run as a user with write access to /usr/local/bin)
+   sudo HIBP_PREFIX=/usr/local/bin sh install.sh
+
+   # Then
+   hibp version
+   hibp server --db "$HOME/.local/share/hibp/hibp.db" --create
+   ```
+
+   Release artifacts are built with the production SQLCipher driver. The
+   release automation currently publishes **linux-amd64**; build from source or
+   use Docker for other architectures.
+
+3. Docker option (once a release image is published):
+
+   ```bash
+   docker pull ghcr.io/rogerbergling/hibp:latest
+   mkdir -p /var/lib/hibp
+   chown 65532:65532 /var/lib/hibp
+   docker run --rm -it --network host      -v /var/lib/hibp:/var/lib/hibp      ghcr.io/rogerbergling/hibp:latest      server --db /var/lib/hibp/hibp.db --create --listen 127.0.0.1:8443
+   ```
+
+You do **not** need the prerequisites below unless you are building from source.
+
 ## Install prerequisites
+
+These prerequisites are only needed when you build HIBP from source.
 
 HIBP's development build needs **Go 1.27 or newer** and a **C compiler** because
 the SQLCipher driver uses CGO. The production build uses **Docker** and builds
 Go, SQLCipher, and OpenSSL inside the image.
+
+If you want the repository to install Go locally for you, run:
+
+```bash
+sh scripts/setup-dev.sh
+# or
+make bootstrap
+```
+
+The script uses Go from `PATH` when available; otherwise it downloads Go into
+`$HOME/.local` and builds. It does not use sudo.
 
 You do **not** need Go or a compiler on managed targets. Targets only need an
 SSH server and their native package manager; the controller runs the helper
@@ -187,7 +245,14 @@ make --version
 
 **`go: command not found`**
 
-Go is not on `PATH`. If you installed it from the tarball:
+The easiest source-build fix is:
+
+```bash
+make bootstrap
+```
+
+It downloads Go into `$HOME/.local` if needed and runs the build. Or install Go
+from the tarball and add it to `PATH`:
 
 ```bash
 export PATH="$PATH:/usr/local/go/bin"
@@ -242,7 +307,9 @@ method above.
 - `git` for cloning the repository.
 - `sqlite3` is not required by HIBP; the database is SQLCipher.
 
-## Quick start
+## Quick start (source build)
+
+For a prebuilt binary, use [Install a release](#install-a-release-recommended) instead.
 
 ```bash
 # Install the prerequisites above first.
@@ -1349,6 +1416,7 @@ commands.
 
 ```bash
 make help           # list targets and the Go-path override
+make bootstrap      # install Go locally if needed, then make build
 make build          # development build, CGO + dynamic libc
 make test           # Go tests (development driver)
 make vet            # go vet
@@ -1381,7 +1449,7 @@ internal/webui/           embedded HTML/CSS/JS
 third_party/go-sqlite3/   patched mattn driver with sqlite3_key before open
 build/Dockerfile          production SQLCipher 4.20 + musl static build
 packaging/                systemd unit, sudoers example, install notes
-scripts/                  README validator
+scripts/                  README validator, release installer, developer bootstrap
 tests/                    Python validator tests
 docs/screenshots/         real M1 screenshot
 .github/workflows/        CI

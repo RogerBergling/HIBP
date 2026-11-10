@@ -4,20 +4,24 @@ BIN ?= dist/hibp
 TAGS ?= sqlite_omit_load_extension netgo osusergo
 PROD_TAGS ?= sqlcipher_mattn libsqlcipher netgo osusergo sqlite_omit_load_extension
 
-.PHONY: help check-go check-cc check-docker build test race vet static production static-production validate package clean
+.PHONY: help check-go check-cc check-docker bootstrap build test race vet static production static-production validate package clean
 
 help:
 	@echo "HIBP build targets:"
+	@echo "  make bootstrap          install Go locally if needed, then build"
 	@echo "  make build              development build (Go + CGO + gcc)"
 	@echo "  make test               Go tests (development driver)"
 	@echo "  make race               race-detector tests"
 	@echo "  make static             development static ELF"
-	@echo "  make production         production Docker image (current SQLCipher)"
+	@echo "  make production         production Docker image (requires Docker)"
 	@echo "  make validate           tests, vet, README and Python checks"
 	@echo "  make package            static binary + packaging tarball"
 	@echo ""
 	@echo "If Go is not on PATH:"
 	@echo "  make build GO=/usr/local/go/bin/go"
+
+bootstrap:
+	sh scripts/setup-dev.sh
 
 check-go:
 	@command -v "$(GO)" >/dev/null 2>&1 || { \
