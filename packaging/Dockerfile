@@ -33,7 +33,7 @@ RUN curl -fsSL \
       -o /tmp/sqlcipher.tar.gz \
     && tar -xzf /tmp/sqlcipher.tar.gz -C /tmp \
     && cd "/tmp/sqlcipher-${SQLCIPHER_VERSION}" \
-    && CFLAGS="-DSQLITE_HAS_CODEC -DSQLCIPHER_CRYPTO_OPENSSL" ./configure \
+    && CFLAGS="-DSQLITE_HAS_CODEC -DSQLCIPHER_CRYPTO_OPENSSL -DSQLITE_EXTRA_INIT=sqlcipher_extra_init -DSQLITE_EXTRA_SHUTDOWN=sqlcipher_extra_shutdown -DSQLITE_TEMP_STORE=2" ./configure \
          --disable-shared \
          --enable-static \
          --disable-tcl \
