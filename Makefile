@@ -1,24 +1,61 @@
 GO ?= go
+CC ?= gcc
 BIN ?= dist/hibp
 TAGS ?= sqlite_omit_load_extension netgo osusergo
 PROD_TAGS ?= sqlcipher_mattn libsqlcipher netgo osusergo sqlite_omit_load_extension
 
-.PHONY: build test race vet static production static-production validate package clean
+.PHONY: help check-go check-cc check-docker build test race vet static production static-production validate package clean
 
-build:
+help:
+	@echo "HIBP build targets:"
+	@echo "  make build              development build (Go + CGO + gcc)"
+	@echo "  make test               Go tests (development driver)"
+	@echo "  make race               race-detector tests"
+	@echo "  make static             development static ELF"
+	@echo "  make production         production Docker image (current SQLCipher)"
+	@echo "  make validate           tests, vet, README and Python checks"
+	@echo "  make package            static binary + packaging tarball"
+	@echo ""
+	@echo "If Go is not on PATH:"
+	@echo "  make build GO=/usr/local/go/bin/go"
+
+check-go:
+	@command -v "$(GO)" >/dev/null 2>&1 || { \
+		echo "ERROR: Go was not found: $(GO)"; \
+		echo "Install Go 1.27+ from https://go.dev/dl/ and add it to PATH."; \
+		echo "See 'Install prerequisites' in README.md."; \
+		echo "Or run: make build GO=/path/to/go"; \
+		exit 1; \
+	}
+
+check-cc:
+	@command -v "$(CC)" >/dev/null 2>&1 || { \
+		echo "ERROR: C compiler was not found: $(CC)"; \
+		echo "Install build-essential (Debian/Ubuntu), gcc (Fedora/SUSE), or base-devel (Arch)."; \
+		exit 1; \
+	}
+
+check-docker:
+	@command -v docker >/dev/null 2>&1 || { \
+		echo "ERROR: Docker was not found."; \
+		echo "Install Docker to run 'make production', or use 'make build' for the development build."; \
+		exit 1; \
+	}
+
+build: check-go check-cc
 	mkdir -p dist
 	CGO_ENABLED=1 $(GO) build -trimpath -tags "$(TAGS)" -o $(BIN) ./cmd/hibp
 
-test:
+test: check-go check-cc
 	CGO_ENABLED=1 $(GO) test ./...
 
-race:
+race: check-go check-cc
 	CGO_ENABLED=1 $(GO) test -race ./...
 
-vet:
+vet: check-go check-cc
 	CGO_ENABLED=1 $(GO) vet ./...
 
-static:
+static: check-go check-cc
 	mkdir -p dist
 	CGO_ENABLED=1 $(GO) build -trimpath -tags "$(TAGS)" \
 		-ldflags '-s -w -linkmode external -extldflags "-static"' \
@@ -28,12 +65,12 @@ static:
 
 # Production artifact: current SQLCipher + patched mattn driver in a pinned
 # Alpine/musl build image. Requires Docker.
-production:
+production: check-docker
 	docker build -f build/Dockerfile -t hibp-production .
 
 # Local production build when SQLCIPHER_CFLAGS and SQLCIPHER_LDFLAGS point at
 # a current static SQLCipher (normally supplied by the Alpine build image).
-static-production:
+static-production: check-go check-cc
 	mkdir -p dist
 	CGO_ENABLED=1 CGO_CFLAGS="$(SQLCIPHER_CFLAGS)" CGO_LDFLAGS="$(SQLCIPHER_LDFLAGS)" \
 		$(GO) build -trimpath -tags "$(PROD_TAGS)" \

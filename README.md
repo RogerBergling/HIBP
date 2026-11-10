@@ -30,6 +30,7 @@ and can back up. A CLI and a background service use the same core.
 ## Contents
 
 - [Screenshots](#screenshots)
+- [Install prerequisites](#install-prerequisites)
 - [Quick start](#quick-start)
 - [What HIBP is](#what-hibp-is)
 - [Why it exists](#why-it-exists)
@@ -67,10 +68,184 @@ does not try to be Ansible, Puppet, Chef, or Salt. It focuses on package
 updates, reboot state, evidence, and the safe execution of those updates across
 different Linux distributions.
 
+## Install prerequisites
+
+HIBP's development build needs **Go 1.27 or newer** and a **C compiler** because
+the SQLCipher driver uses CGO. The production build uses **Docker** and builds
+Go, SQLCipher, and OpenSSL inside the image.
+
+You do **not** need Go or a compiler on managed targets. Targets only need an
+SSH server and their native package manager; the controller runs the helper
+binary there.
+
+### Ubuntu, Debian, and Kali
+
+```bash
+sudo apt update
+sudo apt install -y build-essential make ca-certificates curl tar
+
+# Install Go 1.27 from upstream. The distribution package may be older.
+GO_VERSION=1.27.3
+curl -fsSLO "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+sudo rm -rf /usr/local/go
+sudo tar -C /usr/local -xzf "go${GO_VERSION}.linux-amd64.tar.gz"
+rm "go${GO_VERSION}.linux-amd64.tar.gz"
+
+# Add Go to PATH for the current shell and future login shells.
+export PATH="$PATH:/usr/local/go/bin"
+echo 'export PATH="$PATH:/usr/local/go/bin"' >> "$HOME/.profile"
+
+go version
+gcc --version
+```
+
+For ARM64, replace `linux-amd64` with `linux-arm64` in the download name.
+
+If you do not have sudo, install Go under your home directory instead:
+
+```bash
+mkdir -p "$HOME/.local"
+curl -fsSL "https://go.dev/dl/go1.27.3.linux-amd64.tar.gz" \
+  | tar -xz -C "$HOME/.local"
+export PATH="$HOME/.local/go/bin:$PATH"
+```
+
+Then run `make build` normally, or pass the binary path explicitly:
+
+```bash
+make build GO="$HOME/.local/go/bin/go"
+```
+
+### Fedora, RHEL, Rocky Linux, and AlmaLinux
+
+```bash
+sudo dnf install -y gcc make curl tar ca-certificates
+
+GO_VERSION=1.27.3
+curl -fsSLO "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+sudo rm -rf /usr/local/go
+sudo tar -C /usr/local -xzf "go${GO_VERSION}.linux-amd64.tar.gz"
+rm "go${GO_VERSION}.linux-amd64.tar.gz"
+export PATH="$PATH:/usr/local/go/bin"
+echo 'export PATH="$PATH:/usr/local/go/bin"' >> "$HOME/.bashrc"
+```
+
+### openSUSE and SLES
+
+```bash
+sudo zypper install -y gcc make curl tar ca-certificates
+
+GO_VERSION=1.27.3
+curl -fsSLO "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+sudo rm -rf /usr/local/go
+sudo tar -C /usr/local -xzf "go${GO_VERSION}.linux-amd64.tar.gz"
+rm "go${GO_VERSION}.linux-amd64.tar.gz"
+export PATH="$PATH:/usr/local/go/bin"
+```
+
+### Arch Linux
+
+```bash
+sudo pacman -S --needed go gcc make curl tar
+go version
+```
+
+### Alpine Linux (build environment only)
+
+```bash
+sudo apk add go gcc musl-dev make curl tar
+go version
+```
+
+Alpine's packaged Go may lag behind 1.27. If `go version` is older than 1.27,
+use the official tarball for musl or build in the Docker image.
+
+### Docker for the production build
+
+The production build does not use your local Go installation. It needs Docker:
+
+```bash
+# Ubuntu / Debian
+sudo apt install -y docker.io
+sudo usermod -aG docker "$USER"
+# Log out and back in so the group change applies.
+docker version
+```
+
+For other distributions, use the official Docker installation instructions:
+<https://docs.docker.com/engine/install/>.
+
+### Verify the toolchain
+
+```bash
+go version       # must report go1.27 or newer
+gcc --version    # must be available
+make --version
+```
+
+### Troubleshooting
+
+**`go: command not found`**
+
+Go is not on `PATH`. If you installed it from the tarball:
+
+```bash
+export PATH="$PATH:/usr/local/go/bin"
+command -v go
+go version
+```
+
+For a permanent shell fix, add that export to `~/.profile` or `~/.bashrc`.
+You can also pass the path directly:
+
+```bash
+make build GO=/usr/local/go/bin/go
+```
+
+**`gcc: command not found`**
+
+Install the C toolchain:
+
+```bash
+# Ubuntu / Debian / Kali
+sudo apt install -y build-essential
+# Fedora / RHEL family
+sudo dnf install -y gcc make
+# openSUSE / SLES
+sudo zypper install -y gcc make
+# Arch
+sudo pacman -S --needed gcc make
+```
+
+**`CGO_ENABLED=0` errors**
+
+HIBP requires CGO for SQLCipher. Do not set `CGO_ENABLED=0`; the Makefile sets
+`CGO_ENABLED=1` for the development build.
+
+**`docker: command not found` when running `make production`**
+
+Install Docker or use the development build:
+
+```bash
+make build
+```
+
+**Permission errors in `/usr/local`**
+
+Do not run `sudo make build`. Install Go and the compiler with sudo, then build
+as your normal user. If you cannot install Go system-wide, use the home-directory
+method above.
+
+### Optional tools
+
+- `python3` 3.9+ for the README validator and its tests.
+- `git` for cloning the repository.
+- `sqlite3` is not required by HIBP; the database is SQLCipher.
+
 ## Quick start
 
 ```bash
-# Build the controller
+# Install the prerequisites above first.
 make build
 
 # Create the encrypted database and start the local UI
@@ -1169,7 +1344,11 @@ first five.
 
 ### Build and validation commands
 
+See [Install prerequisites](#install-prerequisites) before running these
+commands.
+
 ```bash
+make help           # list targets and the Go-path override
 make build          # development build, CGO + dynamic libc
 make test           # Go tests (development driver)
 make vet            # go vet
