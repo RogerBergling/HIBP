@@ -28,23 +28,24 @@ func main() {
 	// SQLite creates -wal and -shm files; keep every file created by HIBP
 	// owner-only even if the service manager uses a permissive umask.
 	syscall.Umask(0o077)
-	if len(os.Args) < 2 {
+	args := normalizeArgs(os.Args)
+	if len(args) < 1 {
 		usage()
 		os.Exit(2)
 	}
 	var err error
-	switch os.Args[1] {
+	switch args[0] {
 	case "server":
-		err = runServer(os.Args[2:])
+		err = runServer(args[1:])
 	case "helper":
-		err = runHelper(os.Args[2:])
+		err = runHelper(args[1:])
 	case "version", "--version", "-version":
 		fmt.Println("hibp " + version)
 		fmt.Println("sqlcipher driver:", store.DriverName)
 	case "help", "--help", "-h":
 		usage()
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", args[0])
 		usage()
 		os.Exit(2)
 	}
@@ -52,6 +53,26 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+// normalizeArgs lets the same binary run as /usr/local/libexec/hibp/hibp-helper
+// with the action as the first argument, while preserving "hibp helper <action>"
+// for the normal binary name and the preflight .hibp-helper.<suffix> candidate.
+func normalizeArgs(argv []string) []string {
+	if len(argv) == 0 {
+		return nil
+	}
+	args := argv[1:]
+	if filepath.Base(argv[0]) != "hibp-helper" {
+		return args
+	}
+	if len(args) > 0 {
+		switch args[0] {
+		case "helper", "version", "--version", "-version", "help", "--help", "-h":
+			return args
+		}
+	}
+	return append([]string{"helper"}, args...)
 }
 
 func usage() {
