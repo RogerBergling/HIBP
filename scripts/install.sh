@@ -85,11 +85,18 @@ need install
 
 if [ "$VERSION" = "latest" ]; then
     need sed
-    TAG=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+    if ! RELEASE_JSON=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null); then
+        echo "error: no published GitHub release found for ${REPO}." >&2
+        echo "Build from source instead: make bootstrap" >&2
+        echo "Or publish a release by pushing a v* tag; see README.md." >&2
+        exit 1
+    fi
+    TAG=$(printf '%s\n' "$RELEASE_JSON" \
         | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
         | head -n 1)
     if [ -z "$TAG" ]; then
-        echo "error: could not determine the latest release for ${REPO}" >&2
+        echo "error: could not determine the latest release for ${REPO}." >&2
+        echo "Build from source instead: make bootstrap" >&2
         exit 1
     fi
 else
@@ -105,8 +112,15 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
 echo "Downloading ${ASSET}…"
-curl -fsSL "${BASE}/${ASSET}" -o "${TMP}/${ASSET}"
-curl -fsSL "${BASE}/SHA256SUMS" -o "${TMP}/SHA256SUMS"
+if ! curl -fsSL "${BASE}/${ASSET}" -o "${TMP}/${ASSET}" 2>/dev/null; then
+    echo "error: release asset not found: ${BASE}/${ASSET}" >&2
+    echo "Check the release tag and architecture (${ARCH})." >&2
+    exit 1
+fi
+if ! curl -fsSL "${BASE}/SHA256SUMS" -o "${TMP}/SHA256SUMS" 2>/dev/null; then
+    echo "error: SHA256SUMS not found for release ${TAG}" >&2
+    exit 1
+fi
 
 if ! grep -E "[[:space:]]${ASSET}$" "${TMP}/SHA256SUMS" >/dev/null 2>&1; then
     echo "error: ${ASSET} is missing from SHA256SUMS" >&2

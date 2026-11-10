@@ -111,6 +111,10 @@ End users should not need Go or a compiler.
    docker run --rm -it --network host      -v /var/lib/hibp:/var/lib/hibp      ghcr.io/rogerbergling/hibp:latest      server --db /var/lib/hibp/hibp.db --create --listen 127.0.0.1:8443
    ```
 
+> **No release yet?** The installer only works after a GitHub release exists. If
+> it reports `no published GitHub release found`, use `make bootstrap` to build
+> from source, or create a `v*` tag to run the release workflow.
+
 You do **not** need the prerequisites below unless you are building from source.
 
 ## Install prerequisites
