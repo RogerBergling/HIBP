@@ -2,8 +2,9 @@
 
 > **Status: M1 feature set with a production build path.** The repository
 > contains a working Go server, browser UI, SQLCipher storage, host CRUD/import,
-> SSH host-key approval, remote helper installation, fact collection, audit
-> chain, backup/restore, helper actions, tests, and CI. `make production`
+> SSH host-key approval, remote helper installation, fact collection, reboot
+> control, SSH config import, audit chain, backup/restore, helper actions,
+> tests, and CI. `make production`
 > builds against current SQLCipher 4.20 in a pinned Alpine/musl image; the
 > development build still uses the 2020 spike driver and prints a warning.
 > Password and sudo fallbacks are manual-run only.
@@ -360,6 +361,11 @@ directories with a comma-separated flag:
   --key-dir "$HOME/.ssh,/etc/hibp/ssh"
 ```
 
+The **SSH config** button reads the local `~/.ssh/config` and prefills a host
+form from a concrete alias. It follows simple `Include` files, skips wildcard
+and `Match` blocks, and never returns private key contents. Override the config
+path with `--ssh-config /path/to/config`.
+
 Requires Go 1.27+, a C toolchain, and CGO for the development build. The
 passphrase must be at least 12 characters. Use `make static` for the development
 static ELF, or `make production` for the current-SQLCipher Docker build. The
@@ -373,12 +379,13 @@ it does not send one in a command line or environment variable. The supported
 unattended automation model is a **root-owned helper with a restricted NOPASSWD
 rule**.
 
-The helper accepts only four fixed actions:
+The helper accepts only five fixed actions:
 
 ```text
 facts
 check
 apply
+reboot
 reboot-check
 ```
 
@@ -441,6 +448,7 @@ sudo tee /etc/sudoers.d/hibp-helper >/dev/null <<'EOF'
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper facts
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper check
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper apply
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper reboot
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper reboot-check
 EOF
 sudo chmod 0440 /etc/sudoers.d/hibp-helper
@@ -454,6 +462,14 @@ ssh user@target 'sudo -n /usr/local/libexec/hibp/hibp-helper facts'
 ```
 
 You should see the helper JSON, not a password prompt.
+
+### Reboot
+
+The host row has a **Reboot** button. It asks for explicit confirmation and
+runs the fixed `reboot` helper action as root. The helper uses
+`systemctl reboot --no-block` when systemd is available and falls back to
+`shutdown -r now`. HIBP never reboots automatically. Later/scheduled reboots are
+part of the scheduler work.
 
 ### If the SSH account is not `hibp`
 
@@ -705,9 +721,9 @@ as core features rather than afterthoughts.
   and `zypper` locks instead of killing another package manager.
 - Allow cancellation. Cancellation must terminate the process group, record the
   cancellation, and leave the host in a known state where possible.
-- Detect whether a reboot is required after the run. Offer **Reboot now** or
-  **Reboot later**; never reboot automatically. Scheduled runs record the
-  requirement and notify.
+- Detect whether a reboot is required after the run. Offer **Reboot now** from
+  the host row. Later/scheduled reboots are part of the scheduler work; HIBP
+  never reboots automatically.
 
 ### Scheduling
 
@@ -1114,7 +1130,7 @@ That authority must be narrow and auditable.
 - Use a dedicated account for HIBP where possible, not a personal admin account.
 - Prefer a root-owned helper installed on the target, invoked through a
   restricted sudoers rule. The helper accepts a small allowlist of actions
-  (`facts`, `check`, `apply`, `reboot-check`, `custom:<approved-id>`) and
+  (`facts`, `check`, `apply`, `reboot`, `reboot-check`, `custom:<approved-id>`) and
   validates its arguments.
 - Example sudoers shape (illustrative, not a complete hardening guide):
 
@@ -1122,6 +1138,7 @@ That authority must be narrow and auditable.
   hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper facts
   hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper check
   hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper apply
+  hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper reboot
   hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper reboot-check
   ```
 
@@ -1148,7 +1165,7 @@ code execution as root. It must be designed as a first-class, audited feature.
 **Decision: versioned, approved playbooks only. Arbitrary shell is not supported
 in v1.**
 
-- Built-in actions cover normal patching: facts, check, apply, and reboot-check.
+- Built-in actions cover normal patching: facts, check, apply, reboot, and reboot-check.
 - A playbook is a named, versioned, reviewed script or profile with a SHA-256
   hash and optional signature.
 - The browser UI shows the content, hash, author, approver, and approval time
@@ -1246,8 +1263,11 @@ Agent mode is optional and later; v1 uses SSH from the always-on server.
 - SSH host-key TOFU with explicit fingerprint approval and changed-key failure.
 - Manual SSH and sudo password fallbacks with per-run prompts; no password storage.
 - SSH key browser limited to configured directories; it never returns key contents.
-- Fixed helper actions (`facts`, `check`, `apply`, `reboot-check`) with absolute
+- Fixed helper actions (`facts`, `check`, `apply`, `reboot`, `reboot-check`) with absolute
   binary paths, a sanitized environment, no shell, and output limits.
+- Explicit-confirmation reboot action through the fixed helper.
+- Local SSH config reader for prefilling hosts, with simple `Include` support,
+  wildcard/`Match` filtering, and no private-key reads.
 - Remote helper installation from the UI with `visudo` validation, a restricted
   per-host sudoers rule, and passwordless verification.
 - Hash-chained audit log with verification.

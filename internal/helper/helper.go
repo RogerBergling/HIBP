@@ -35,7 +35,7 @@ type Facts struct {
 	TimeSyncOK     bool   `json:"time_sync_ok"`
 }
 
-// Result is the JSON contract for check/apply/reboot-check.
+// Result is the JSON contract for check/apply/reboot/reboot-check.
 type Result struct {
 	Action   string `json:"action"`
 	OK       bool   `json:"ok"`
@@ -60,6 +60,8 @@ var lookPath = func(name string) (string, error) {
 		"apk":              {"/sbin/apk", "/usr/sbin/apk", "/usr/bin/apk"},
 		"needs-restarting": {"/usr/bin/needs-restarting", "/bin/needs-restarting"},
 		"timedatectl":      {"/usr/bin/timedatectl", "/bin/timedatectl"},
+		"systemctl":        {"/usr/bin/systemctl", "/bin/systemctl"},
+		"shutdown":         {"/usr/sbin/shutdown", "/sbin/shutdown", "/usr/bin/shutdown", "/bin/shutdown"},
 	}
 	for _, path := range candidates[name] {
 		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
@@ -98,6 +100,9 @@ func Run(ctx context.Context, action string, out io.Writer) error {
 	case "apply":
 		output, code, err := applyUpdates(ctx)
 		return writeResult(out, "apply", output, code, err)
+	case "reboot":
+		output, code, err := rebootHost(ctx)
+		return writeResult(out, "reboot", string(output), code, err)
 	case "reboot-check":
 		required, err := rebootRequired(ctx)
 		result := Result{Action: "reboot-check", OK: err == nil, ExitCode: 0}
@@ -325,6 +330,16 @@ func applyUpdates(ctx context.Context) (string, int, error) {
 	default:
 		return "", 0, fmt.Errorf("unsupported package manager %q", packageManager)
 	}
+}
+
+func rebootHost(ctx context.Context) ([]byte, int, error) {
+	// Prefer systemd's non-blocking request so the helper can return its JSON
+	// result before the SSH connection drops. Fall back to shutdown(8) on
+	// non-systemd targets.
+	if _, err := lookPath("systemctl"); err == nil {
+		return runBinary(ctx, "systemctl", "reboot", "--no-block")
+	}
+	return runBinary(ctx, "shutdown", "-r", "now")
 }
 
 func rebootRequired(ctx context.Context) (bool, error) {

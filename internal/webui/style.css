@@ -248,6 +248,11 @@ label.field { display: flex; flex-direction: column; gap: 5px; color: var(--mute
 label.field input, label.field textarea, label.field select { width: 100%; border-radius: 7px; border: 1px solid var(--border); background: #0a1220; color: var(--text); padding: 8px 9px; outline: none; }
 label.field input:focus, label.field textarea:focus, label.field select:focus { border-color: rgba(45, 212, 191, .5); box-shadow: 0 0 0 3px rgba(45, 212, 191, .07); }
 label.field textarea { min-height: 110px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; }
+.password-field { position: relative; overflow: hidden; border-radius: 7px; border: 1px solid var(--border); background: #0a1220; }
+.password-field:focus-within { border-color: rgba(45, 212, 191, .5); box-shadow: 0 0 0 3px rgba(45, 212, 191, .07); }
+label.field .password-field input { width: 100%; border: 0; background: transparent; color: transparent; caret-color: var(--text); padding: 8px 9px; outline: none; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 1.25; box-shadow: none; }
+label.field .password-field input:focus { border-color: transparent; box-shadow: none; }
+.password-mask { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 1.25; color: var(--text); pointer-events: none; user-select: none; white-space: pre; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .key-box { background: #08101d; border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; color: #bae6fd; word-break: break-all; }
 .import-preview { max-height: 220px; overflow: auto; border: 1px solid var(--border-soft); border-radius: 8px; }
@@ -257,7 +262,7 @@ label.field textarea { min-height: 110px; resize: vertical; font-family: ui-mono
 .badge.green { color: #6ee7b7; background: var(--green-bg); }
 .badge.amber { color: #fcd34d; background: var(--amber-bg); }
 .badge.red { color: #fca5a5; background: var(--red-bg); }
-@media (max-width: 1100px) {
+@media (max-width: 1400px) {
   .content { grid-template-columns: 1fr; }
   .stats { grid-template-columns: repeat(2, 1fr); }
   .sidebar { width: 210px; flex-basis: 210px; }
@@ -270,6 +275,8 @@ label.field textarea { min-height: 110px; resize: vertical; font-family: ui-mono
 .file-list { max-height: 340px; overflow: auto; border: 1px solid var(--border-soft); border-radius: 8px; background: #08101d; }
 .file-row { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-bottom: 1px solid rgba(29, 44, 70, .55); }
 .file-row:last-child { border-bottom: none; }
+.ssh-config-entry { flex: 1; min-width: 0; }
+.ssh-config-entry .file-meta { overflow: hidden; text-overflow: ellipsis; }
 .file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: none; background: none; color: #dbe8f9; text-align: left; padding: 0; font-size: 11px; }
 .file-name:hover { color: #5eead4; }
 .file-meta { color: var(--muted); font-size: 9.5px; white-space: nowrap; }

@@ -80,7 +80,7 @@ func usage() {
 
 Usage:
   hibp server [flags]     Run the local browser UI and API
-  hibp helper <action>    Run a fixed target action (facts|check|apply|reboot-check)
+  hibp helper <action>    Run a fixed target action (facts|check|apply|reboot|reboot-check)
   hibp version            Print the version
 
 Server flags:
@@ -89,6 +89,7 @@ Server flags:
   -create                 Create the database if it does not exist
   -passphrase-file string Read the database passphrase from a 0600 file
   -key-dir string         SSH key directory, comma-separated (default: ~/.ssh)
+  -ssh-config string      OpenSSH client config (default: ~/.ssh/config)
   -demo                   Seed sample hosts when the database is empty
   -version                Print the version`)
 }
@@ -154,6 +155,7 @@ func runServer(args []string) error {
 	create := flags.Bool("create", false, "create the database if it does not exist")
 	passphraseFile := flags.String("passphrase-file", "", "read passphrase from a 0600 file")
 	keyDir := flags.String("key-dir", defaultKeyDir(), "SSH key directory, comma-separated for multiple")
+	sshConfig := flags.String("ssh-config", filepath.Join(defaultKeyDir(), "config"), "local OpenSSH client config")
 	demo := flags.Bool("demo", false, "seed sample hosts when empty")
 	showVersion := flags.Bool("version", false, "print version")
 	if err := flags.Parse(args); err != nil {
@@ -195,10 +197,11 @@ func runServer(args []string) error {
 		return err
 	}
 	app, err := server.New(server.Config{
-		Store:   db,
-		Token:   token,
-		Version: version,
-		KeyDirs: splitList(*keyDir),
+		Store:         db,
+		Token:         token,
+		Version:       version,
+		KeyDirs:       splitList(*keyDir),
+		SSHConfigPath: *sshConfig,
 	})
 	if err != nil {
 		return err
@@ -244,7 +247,7 @@ func runServer(args []string) error {
 
 func runHelper(args []string) error {
 	if len(args) != 1 {
-		return fmt.Errorf("usage: hibp helper <facts|check|apply|reboot-check>")
+		return fmt.Errorf("usage: hibp helper <facts|check|apply|reboot|reboot-check>")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()

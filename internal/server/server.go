@@ -20,21 +20,23 @@ import (
 
 // Config configures the local server.
 type Config struct {
-	Store   *store.Store
-	Token   string
-	Version string
-	Actor   string
-	KeyDirs []string
+	Store         *store.Store
+	Token         string
+	Version       string
+	Actor         string
+	KeyDirs       []string
+	SSHConfigPath string
 }
 
 // Server is the HIBP HTTP server.
 type Server struct {
-	store   *store.Store
-	token   string
-	version string
-	actor   string
-	keyDirs []string
-	mux     *http.ServeMux
+	store         *store.Store
+	token         string
+	version       string
+	actor         string
+	keyDirs       []string
+	sshConfigPath string
+	mux           *http.ServeMux
 }
 
 // New creates a server.
@@ -65,7 +67,18 @@ func New(cfg Config) (*Server, error) {
 		}
 		keyDirs = append(keyDirs, abs)
 	}
-	s := &Server{store: cfg.Store, token: cfg.Token, version: cfg.Version, actor: cfg.Actor, keyDirs: keyDirs, mux: http.NewServeMux()}
+	sshConfigPath, err := resolveHomePath(cfg.SSHConfigPath)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(cfg.SSHConfigPath) == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, err
+		}
+		sshConfigPath = filepath.Join(home, ".ssh", "config")
+	}
+	s := &Server{store: cfg.Store, token: cfg.Token, version: cfg.Version, actor: cfg.Actor, keyDirs: keyDirs, sshConfigPath: sshConfigPath, mux: http.NewServeMux()}
 	s.routes()
 	return s, nil
 }
@@ -91,6 +104,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/facts", s.auth(s.handleFacts))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/bootstrap", s.auth(s.handleBootstrap))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/patch", s.auth(s.handlePatch))
+	s.mux.HandleFunc("POST /api/v1/hosts/{id}/reboot", s.auth(s.handleReboot))
 	s.mux.HandleFunc("POST /api/v1/import", s.auth(s.handleImport))
 	s.mux.HandleFunc("GET /api/v1/audit", s.auth(s.handleAudit))
 	s.mux.HandleFunc("GET /api/v1/audit/verify", s.auth(s.handleAuditVerify))
@@ -98,6 +112,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/backup", s.auth(s.handleBackup))
 	s.mux.HandleFunc("POST /api/v1/restore", s.auth(s.handleRestore))
 	s.mux.HandleFunc("GET /api/v1/keys", s.auth(s.handleListKeys))
+	s.mux.HandleFunc("GET /api/v1/ssh/config", s.auth(s.handleSSHConfig))
 }
 
 // Handler returns the middleware-wrapped handler.
@@ -199,6 +214,25 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, value any) error {
 		return errors.New("request body must contain exactly one JSON value")
 	}
 	return nil
+}
+
+func resolveHomePath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", nil
+	}
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		if path == "~" {
+			path = home
+		} else {
+			path = filepath.Join(home, path[2:])
+		}
+	}
+	return filepath.Abs(path)
 }
 
 func (s *Server) hostTarget(host store.Host, password string) remote.Target {

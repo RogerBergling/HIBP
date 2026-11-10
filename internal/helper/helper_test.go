@@ -82,3 +82,61 @@ func TestUnknownActionRejected(t *testing.T) {
 func writeTestFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o600)
 }
+
+func TestRebootUsesSystemdNoBlock(t *testing.T) {
+	restoreLook := SetLookPathForTest(func(name string) (string, error) {
+		if name == "systemctl" {
+			return "/usr/bin/systemctl", nil
+		}
+		return "", errors.New("not found")
+	})
+	defer restoreLook()
+	var gotName string
+	var gotArgs []string
+	restoreRun := SetRunnerForTest(func(_ context.Context, name string, args ...string) ([]byte, int, error) {
+		gotName = name
+		gotArgs = args
+		return []byte("reboot requested"), 0, nil
+	})
+	defer restoreRun()
+
+	var output strings.Builder
+	if err := Run(context.Background(), "reboot", &output); err != nil {
+		t.Fatal(err)
+	}
+	if gotName != "/usr/bin/systemctl" || strings.Join(gotArgs, " ") != "reboot --no-block" {
+		t.Fatalf("unexpected command: %s %v", gotName, gotArgs)
+	}
+	if !strings.Contains(output.String(), `"action":"reboot"`) || !strings.Contains(output.String(), `"ok":true`) {
+		t.Fatalf("unexpected result: %s", output.String())
+	}
+}
+
+func TestRebootFallsBackToShutdown(t *testing.T) {
+	restoreLook := SetLookPathForTest(func(name string) (string, error) {
+		if name == "systemctl" {
+			return "", errors.New("not found")
+		}
+		if name == "shutdown" {
+			return "/sbin/shutdown", nil
+		}
+		return "", errors.New("not found")
+	})
+	defer restoreLook()
+	var gotName string
+	var gotArgs []string
+	restoreRun := SetRunnerForTest(func(_ context.Context, name string, args ...string) ([]byte, int, error) {
+		gotName = name
+		gotArgs = args
+		return []byte("shutdown requested"), 0, nil
+	})
+	defer restoreRun()
+
+	var output strings.Builder
+	if err := Run(context.Background(), "reboot", &output); err != nil {
+		t.Fatal(err)
+	}
+	if gotName != "/sbin/shutdown" || strings.Join(gotArgs, " ") != "-r now" {
+		t.Fatalf("unexpected command: %s %v", gotName, gotArgs)
+	}
+}

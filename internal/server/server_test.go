@@ -25,7 +25,15 @@ func testServer(t *testing.T) (*httptest.Server, *store.Store) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	app, err := New(Config{Store: db, Token: "test-token", Version: "test"})
+	sshDir := filepath.Join(dir, "ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sshConfigPath := filepath.Join(sshDir, "config")
+	if err := os.WriteFile(sshConfigPath, []byte("Host testhost\n  HostName test.example\n  User ubuntu\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app, err := New(Config{Store: db, Token: "test-token", Version: "test", SSHConfigPath: sshConfigPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,6 +292,61 @@ func TestPasswordAuthRequiresManualPassword(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 without password, got %d", resp.StatusCode)
+	}
+}
+
+func TestSSHConfigEndpoint(t *testing.T) {
+	ts, _ := testServer(t)
+	resp := request(t, http.MethodGet, ts.URL+"/api/v1/ssh/config", "test-token", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, data)
+	}
+	var payload struct {
+		Exists bool `json:"exists"`
+		Hosts  []struct {
+			Alias    string `json:"alias"`
+			HostName string `json:"hostname"`
+			Port     int    `json:"port"`
+			User     string `json:"user"`
+		} `json:"hosts"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.Exists || len(payload.Hosts) != 1 {
+		t.Fatalf("unexpected payload: %+v", payload)
+	}
+	host := payload.Hosts[0]
+	if host.Alias != "testhost" || host.HostName != "test.example" || host.Port != 22 || host.User != "ubuntu" {
+		t.Fatalf("unexpected host: %+v", host)
+	}
+}
+
+func TestRebootRequiresConfirmation(t *testing.T) {
+	ts, _ := testServer(t)
+	body := `{"name":"web01","address":"10.0.0.10","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519"}`
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/hosts", "test-token", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, data)
+	}
+	var host store.Host
+	if err := json.NewDecoder(resp.Body).Decode(&host); err != nil {
+		t.Fatal(err)
+	}
+
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/hosts/"+host.ID+"/reboot", "test-token", `{}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400, got %d: %s", resp.StatusCode, data)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(data), "confirm") {
+		t.Fatalf("expected confirmation error, got %s", data)
 	}
 }
 

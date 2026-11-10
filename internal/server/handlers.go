@@ -273,7 +273,7 @@ func looksLikeSudoAuthFailure(output string) bool {
 
 func (s *Server) runHelper(ctx context.Context, host store.Host, action, sshPassword, sudoPassword string, timeout time.Duration) (string, int, error) {
 	switch action {
-	case "facts", "check", "apply":
+	case "facts", "check", "apply", "reboot":
 	default:
 		return "", 0, errors.New("invalid helper action")
 	}
@@ -404,6 +404,58 @@ func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
 	}
 	result := helper.Result{Action: action, OK: code == 0, ExitCode: code, Output: output}
 	if err := s.store.AddAudit(s.actor, "patch-"+action, "host", host.ID, fmt.Sprintf("exit=%d", code)); err != nil {
+		_ = err
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+type rebootRequest struct {
+	Confirm      string `json:"confirm"`
+	Password     string `json:"password"`
+	SudoPassword string `json:"sudo_password"`
+}
+
+func (s *Server) handleReboot(w http.ResponseWriter, r *http.Request) {
+	host, err := s.store.GetHost(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "host not found")
+		return
+	}
+	var request rebootRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if request.Confirm != "reboot" {
+		writeError(w, http.StatusBadRequest, "confirm must be \"reboot\" to reboot the host")
+		return
+	}
+	password := ""
+	if host.AuthType == "password" {
+		if request.Password == "" {
+			writeError(w, http.StatusBadRequest, "password is required for password authentication")
+			return
+		}
+		password = request.Password
+	}
+	output, code, err := s.runHelper(r.Context(), host, "reboot", password, request.SudoPassword, 2*time.Minute)
+	if errors.Is(err, errSudoPasswordInvalid) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "sudo_password_invalid"})
+		return
+	}
+	if errors.Is(err, errSudoPasswordRequired) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "sudo_password_required"})
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	result := helper.Result{Action: "reboot", OK: code == 0, ExitCode: code, Output: output}
+	if code == 0 {
+		_ = s.store.SetHostStatus(host.ID, "unknown")
+	}
+	if err := s.store.AddAudit(s.actor, "reboot", "host", host.ID, fmt.Sprintf("exit=%d", code)); err != nil {
 		_ = err
 	}
 	writeJSON(w, http.StatusOK, result)

@@ -198,6 +198,7 @@ function hostRow(host) {
   actions.append(actionButton('Setup', () => bootstrapHost(host)));
   actions.append(actionButton('Facts', () => collectFacts(host)));
   actions.append(actionButton('Patch', () => showPatchModal(host)));
+  actions.append(actionButton('Reboot', () => rebootHost(host), 'danger'));
   actionsTd.append(actions);
 
   tr.append(hostTd, osTd, pendingTd, checkTd, uptimeTd, rebootTd, statusTd, actionsTd);
@@ -263,18 +264,82 @@ function formatUptime(seconds) {
   return hours + 'h';
 }
 
-function passwordFor(host) {
+function askPassword(title, message) {
+  return new Promise((resolve) => {
+    const body = el('div', 'modal-body');
+    body.append(el('p', 'muted', message));
+    const wrapper = el('label', 'field', 'Password');
+    const field = el('div', 'password-field');
+    const input = el('input');
+    input.type = 'password';
+    input.autocomplete = 'off';
+    input.autocapitalize = 'off';
+    input.autocorrect = 'off';
+    input.spellcheck = false;
+    const mask = el('span', 'password-mask');
+    mask.setAttribute('aria-hidden', 'true');
+    const syncMask = () => { mask.textContent = '*'.repeat(Array.from(input.value).length); };
+    for (const eventName of ['input', 'change', 'keyup', 'focus']) {
+      input.addEventListener(eventName, syncMask);
+    }
+    field.append(input, mask);
+    wrapper.append(field);
+    body.append(wrapper);
+
+    const actions = el('div', 'modal-actions');
+    const cancel = el('button', 'btn', 'Cancel');
+    cancel.type = 'button';
+    const submit = el('button', 'btn primary', 'Continue');
+    submit.type = 'button';
+    actions.append(cancel, submit);
+    body.append(actions);
+
+    let settled = false;
+    let submitting = false;
+    const resolveOnce = (value) => {
+      if (settled) return;
+      settled = true;
+      input.value = '';
+      syncMask();
+      resolve(value);
+    };
+    const close = openModal(title, body, () => {
+      if (!submitting) resolveOnce(null);
+    });
+    const finish = () => {
+      const value = input.value;
+      if (!value) {
+        input.focus();
+        return;
+      }
+      submitting = true;
+      close();
+      resolveOnce(value);
+    };
+    cancel.addEventListener('click', close);
+    submit.addEventListener('click', finish);
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        finish();
+      }
+    });
+    setTimeout(() => { input.focus(); syncMask(); }, 0);
+  });
+}
+
+async function passwordFor(host) {
   if (host.auth_type !== 'password') return '';
   if (state.passwords.has(host.id)) return state.passwords.get(host.id);
-  const value = prompt('SSH password for ' + host.name + ' (not stored):');
+  const value = await askPassword('SSH password — ' + host.name, 'Used for this connection only. It is not stored. Characters are shown as *.');
   if (value === null) throw new Error('cancelled');
   state.passwords.set(host.id, value);
   return value;
 }
 
-function sudoPasswordFor(host) {
+async function sudoPasswordFor(host) {
   if (state.sudoPasswords.has(host.id)) return state.sudoPasswords.get(host.id);
-  const value = prompt('sudo password for ' + host.name + ' (not stored; used for this session):');
+  const value = await askPassword('sudo password — ' + host.name, 'Used for this request only. It is not stored. Characters are shown as *.');
   if (value === null) throw new Error('cancelled');
   state.sudoPasswords.set(host.id, value);
   return value;
@@ -289,7 +354,7 @@ async function requestWithSudo(host, path, payloadFor, options = {}) {
     return await request('');
   } catch (error) {
     if (error.status === 409 && error.data && error.data.code === 'sudo_password_required') {
-      return request(sudoPasswordFor(host));
+      return request(await sudoPasswordFor(host));
     }
     if (error.status === 400 && error.data && error.data.code === 'sudo_password_invalid') {
       state.sudoPasswords.delete(host.id);
@@ -300,7 +365,7 @@ async function requestWithSudo(host, path, payloadFor, options = {}) {
 
 async function testHost(host) {
   try {
-    const password = passwordFor(host);
+    const password = await passwordFor(host);
     await api('/api/v1/hosts/' + encodeURIComponent(host.id) + '/test', { method: 'POST', body: JSON.stringify({ password }) });
     toast('Connection and host key verified for ' + host.name, 'ok');
     await loadAll();
@@ -346,7 +411,7 @@ async function bootstrapHost(host) {
   if (!confirm('Install the HIBP helper and restricted sudo rule on ' + host.name + '?')) return;
   toast('Installing helper on ' + host.name + '…');
   try {
-    const password = passwordFor(host);
+    const password = await passwordFor(host);
     const result = await requestWithSudo(
       host,
       '/api/v1/hosts/' + encodeURIComponent(host.id) + '/bootstrap',
@@ -373,7 +438,7 @@ async function bootstrapHost(host) {
 async function collectFacts(host) {
   toast('Collecting facts from ' + host.name + '…');
   try {
-    const password = passwordFor(host);
+    const password = await passwordFor(host);
     await requestWithSudo(
       host,
       '/api/v1/hosts/' + encodeURIComponent(host.id) + '/facts',
@@ -422,7 +487,7 @@ async function patchHost(host, dryRun) {
   if (!dryRun && !confirm('Apply updates on ' + host.name + '? This runs the root-owned helper on the target.')) return;
   toast((dryRun ? 'Checking' : 'Applying updates on') + ' ' + host.name + '…');
   try {
-    const password = passwordFor(host);
+    const password = await passwordFor(host);
     const result = await requestWithSudo(
       host,
       '/api/v1/hosts/' + encodeURIComponent(host.id) + '/patch',
@@ -430,6 +495,27 @@ async function patchHost(host, dryRun) {
       { method: 'POST' },
     );
     showOutputModal((dryRun ? 'Patch check' : 'Patch run') + ' — ' + host.name, result);
+    await loadAll();
+  } catch (error) {
+    if (error.message !== 'cancelled') toast(error.message, 'error');
+  }
+}
+
+async function rebootHost(host) {
+  if (!confirm('Reboot ' + host.name + ' now? The host will go down immediately and the SSH connection may drop.')) return;
+  toast('Rebooting ' + host.name + '…');
+  try {
+    const password = await passwordFor(host);
+    const result = await requestWithSudo(
+      host,
+      '/api/v1/hosts/' + encodeURIComponent(host.id) + '/reboot',
+      (sudoPassword) => ({ confirm: 'reboot', password, sudo_password: sudoPassword }),
+      { method: 'POST' },
+    );
+    showOutputModal('Reboot requested — ' + host.name, {
+      ...result,
+      output: result.output || 'Reboot request accepted. The host may disconnect now.',
+    });
     await loadAll();
   } catch (error) {
     if (error.message !== 'cancelled') toast(error.message, 'error');
@@ -460,7 +546,7 @@ function showOutputModal(title, result) {
   close.addEventListener('click', closeFn);
 }
 
-function openModal(title, content) {
+function openModal(title, content, onClose) {
   const root = $('modal-root');
   root.replaceChildren();
   const backdrop = el('div', 'modal-backdrop');
@@ -472,16 +558,25 @@ function openModal(title, content) {
   modal.append(head, content);
   backdrop.append(modal);
   root.append(backdrop);
-  const closeFn = () => root.replaceChildren();
+  let closed = false;
+  let closeFn;
+  const onKey = (event) => { if (event.key === 'Escape') closeFn(); };
+  closeFn = () => {
+    if (closed) return;
+    closed = true;
+    document.removeEventListener('keydown', onKey);
+    root.replaceChildren();
+    if (onClose) onClose();
+  };
   close.addEventListener('click', closeFn);
   backdrop.addEventListener('click', (event) => { if (event.target === backdrop) closeFn(); });
-  const onKey = (event) => { if (event.key === 'Escape') { closeFn(); document.removeEventListener('keydown', onKey); } };
   document.addEventListener('keydown', onKey);
   return closeFn;
 }
 
-function showAddHostModal(host = null) {
+function showAddHostModal(host = null, prefill = null) {
   const editing = Boolean(host);
+  const source = host || prefill || {};
   const form = el('form', 'modal-body');
   const name = inputField(form, 'Name', 'name', 'web01');
   const address = inputField(form, 'Address', 'address', '10.0.0.10');
@@ -491,7 +586,7 @@ function showAddHostModal(host = null) {
   form.append(row);
   const authRow = el('div', 'form-row');
   const authType = selectField(authRow, 'Auth type', 'auth_type', [['key', 'SSH key'], ['agent', 'ssh-agent'], ['certificate', 'SSH certificate'], ['password', 'Password (manual fallback)']]);
-  const keyPath = keyPathField(authRow, host?.key_path || '');
+  const keyPath = keyPathField(authRow, source.key_path || '');
   form.append(authRow);
   const groupRow = el('div', 'form-row');
   const group = inputField(groupRow, 'Group', 'group_name', 'web-prod');
@@ -499,14 +594,14 @@ function showAddHostModal(host = null) {
   form.append(groupRow);
   const cmdb = inputField(form, 'CMDB CI ID', 'cmdb_ci_id', 'CI-123');
 
-  name.value = host?.name || '';
-  address.value = host?.address || '';
-  port.value = String(host?.port || 22);
-  username.value = host?.username || '';
-  authType.value = host?.auth_type || 'key';
-  group.value = host?.group_name || '';
-  tags.value = host?.tags || '';
-  cmdb.value = host?.cmdb_ci_id || '';
+  name.value = source.name || source.alias || '';
+  address.value = source.address || source.hostname || '';
+  port.value = String(source.port || 22);
+  username.value = source.username || source.user || '';
+  authType.value = source.auth_type || 'key';
+  group.value = source.group_name || '';
+  tags.value = source.tags || (prefill ? 'ssh-config' : '');
+  cmdb.value = source.cmdb_ci_id || '';
 
   const actions = el('div', 'modal-actions');
   const cancel = el('button', 'btn', 'Cancel');
@@ -515,7 +610,7 @@ function showAddHostModal(host = null) {
   save.type = 'submit';
   actions.append(cancel, save);
   form.append(actions);
-  const close = openModal(editing ? 'Edit host — ' + host.name : 'Add host', form);
+  const close = openModal(editing ? 'Edit host — ' + host.name : prefill ? 'Add host from SSH config' : 'Add host', form);
   cancel.addEventListener('click', close);
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -535,6 +630,51 @@ function showAddHostModal(host = null) {
       toast(error.message, 'error');
     }
   });
+}
+
+async function showSSHConfigModal() {
+  const body = el('div', 'modal-body');
+  const pathLine = el('p', 'muted', 'Reading local SSH config…');
+  const list = el('div', 'file-list');
+  body.append(pathLine, list);
+  const actions = el('div', 'modal-actions');
+  const closeButton = el('button', 'btn', 'Close');
+  closeButton.type = 'button';
+  actions.append(closeButton);
+  body.append(actions);
+  const close = openModal('SSH config', body);
+  closeButton.addEventListener('click', close);
+  try {
+    const result = await api('/api/v1/ssh/config');
+    pathLine.textContent = result.path + (result.exists ? '' : ' (not found)');
+    list.replaceChildren();
+    if (!result.exists) {
+      list.append(el('div', 'empty-state', 'No SSH config file found.'));
+      return;
+    }
+    if (!result.hosts || result.hosts.length === 0) {
+      list.append(el('div', 'empty-state', 'No concrete host entries found. Wildcard-only blocks are skipped.'));
+      return;
+    }
+    for (const host of result.hosts) {
+      const row = el('div', 'file-row');
+      const entry = el('div', 'ssh-config-entry');
+      entry.append(
+        el('div', 'file-name', host.alias),
+        el('div', 'file-meta', (host.user ? host.user + '@' : '') + host.hostname + ':' + host.port + (host.key_path ? ' · ' + host.key_path : ' · no key candidate')),
+      );
+      const use = el('button', 'btn small', 'Use');
+      use.type = 'button';
+      use.addEventListener('click', () => {
+        close();
+        showAddHostModal(null, host);
+      });
+      row.append(entry, use);
+      list.append(row);
+    }
+  } catch (error) {
+    pathLine.textContent = error.message;
+  }
 }
 
 function keyPathField(parent, value) {
@@ -829,6 +969,8 @@ function bind() {
   $('import-button').addEventListener('click', showImportModal);
   $('table-import').addEventListener('click', showImportModal);
   $('hosts-import').addEventListener('click', showImportModal);
+  $('table-ssh-config').addEventListener('click', showSSHConfigModal);
+  $('hosts-ssh-config').addEventListener('click', showSSHConfigModal);
   $('backup-button').addEventListener('click', showBackupModal);
   $('restore-button').addEventListener('click', showRestoreModal);
   $('verify-audit').addEventListener('click', verifyAudit);

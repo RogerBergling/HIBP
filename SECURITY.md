@@ -67,6 +67,12 @@ Out of scope:
 - Keep the database, backups, and SSH keys at mode `0600`.
 - Verify host-key fingerprints through an independent channel.
 - Do not use `NOPASSWD: ALL`; use the narrow helper rule.
+- The reboot action is destructive. HIBP requires explicit confirmation in the
+  API and UI and runs only the fixed helper action. It never reboots
+  automatically; later/scheduled reboots are part of the scheduler work.
+- The local SSH config reader returns aliases, hostnames, users, ports, and key
+  paths only. It never returns private key contents. Treat the config path and
+  the imported metadata as sensitive.
 - Remote helper installation uploads the controller binary to the target. Use
   the static release build, keep the host key pinned, and use the Setup flow
   only against hosts you intend to manage.
