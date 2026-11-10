@@ -287,6 +287,21 @@ func TestPasswordAuthRequiresManualPassword(t *testing.T) {
 	}
 }
 
+func TestSudoPasswordInvalidDetection(t *testing.T) {
+	for _, output := range []string{
+		"Sorry, try again.",
+		"sudo: incorrect password",
+		"Authentication failure",
+	} {
+		if !looksLikeSudoPasswordInvalid(output) {
+			t.Fatalf("expected invalid sudo password for %q", output)
+		}
+	}
+	if looksLikeSudoPasswordInvalid("Reading package lists...") {
+		t.Fatal("normal package output must not be classified as invalid sudo password")
+	}
+}
+
 func TestSudoAuthFailureDetection(t *testing.T) {
 	for _, output := range []string{
 		"sudo: interactive authentication is required",

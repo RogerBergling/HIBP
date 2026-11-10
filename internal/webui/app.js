@@ -7,6 +7,7 @@ const state = {
   status: {},
   view: 'dashboard',
   passwords: new Map(),
+  sudoPasswords: new Map(),
 };
 
 const $ = (id) => document.getElementById(id);
@@ -270,6 +271,32 @@ function passwordFor(host) {
   return value;
 }
 
+function sudoPasswordFor(host) {
+  if (state.sudoPasswords.has(host.id)) return state.sudoPasswords.get(host.id);
+  const value = prompt('sudo password for ' + host.name + ' (not stored; used for this session):');
+  if (value === null) throw new Error('cancelled');
+  state.sudoPasswords.set(host.id, value);
+  return value;
+}
+
+async function requestWithSudo(host, path, payloadFor, options = {}) {
+  const request = (sudoPassword) => api(path, {
+    ...options,
+    body: JSON.stringify(payloadFor(sudoPassword)),
+  });
+  try {
+    return await request('');
+  } catch (error) {
+    if (error.status === 409 && error.data && error.data.code === 'sudo_password_required') {
+      return request(sudoPasswordFor(host));
+    }
+    if (error.status === 400 && error.data && error.data.code === 'sudo_password_invalid') {
+      state.sudoPasswords.delete(host.id);
+    }
+    throw error;
+  }
+}
+
 async function testHost(host) {
   try {
     const password = passwordFor(host);
@@ -318,11 +345,16 @@ async function collectFacts(host) {
   toast('Collecting facts from ' + host.name + '…');
   try {
     const password = passwordFor(host);
-    await api('/api/v1/hosts/' + encodeURIComponent(host.id) + '/facts', { method: 'POST', body: JSON.stringify({ password }) });
+    await requestWithSudo(
+      host,
+      '/api/v1/hosts/' + encodeURIComponent(host.id) + '/facts',
+      (sudoPassword) => ({ password, sudo_password: sudoPassword }),
+      { method: 'POST' },
+    );
     toast('Facts collected from ' + host.name, 'ok');
     await loadAll();
   } catch (error) {
-    toast(error.message, 'error');
+    if (error.message !== 'cancelled') toast(error.message, 'error');
   }
 }
 
@@ -362,14 +394,16 @@ async function patchHost(host, dryRun) {
   toast((dryRun ? 'Checking' : 'Applying updates on') + ' ' + host.name + '…');
   try {
     const password = passwordFor(host);
-    const result = await api('/api/v1/hosts/' + encodeURIComponent(host.id) + '/patch', {
-      method: 'POST',
-      body: JSON.stringify({ dry_run: dryRun, confirm: dryRun ? '' : 'apply', password }),
-    });
+    const result = await requestWithSudo(
+      host,
+      '/api/v1/hosts/' + encodeURIComponent(host.id) + '/patch',
+      (sudoPassword) => ({ dry_run: dryRun, confirm: dryRun ? '' : 'apply', password, sudo_password: sudoPassword }),
+      { method: 'POST' },
+    );
     showOutputModal((dryRun ? 'Patch check' : 'Patch run') + ' — ' + host.name, result);
     await loadAll();
   } catch (error) {
-    toast(error.message, 'error');
+    if (error.message !== 'cancelled') toast(error.message, 'error');
   }
 }
 

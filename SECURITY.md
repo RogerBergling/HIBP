@@ -54,9 +54,10 @@ Out of scope:
 - The **development** build uses `mutecomm/go-sqlcipher` v4.4.2. Do not deploy
   it. Production artifacts must be built with `make production`, which uses
   current SQLCipher 4.20 and the patched `third_party/go-sqlite3` driver.
-- Password SSH fallback is manual-run only and never stored. Vault-backed
-  scheduled password authentication, RBAC, external audit anchoring,
-  TPM-sealed keys, agent mode, and signed playbooks are not implemented yet.
+- Password SSH and sudo password fallbacks are manual-run only and never
+  stored. Vault-backed scheduled password authentication, RBAC, external audit
+  anchoring, TPM-sealed keys, agent mode, and signed playbooks are not
+  implemented yet.
 - The browser UI token is a bearer secret. Protect the terminal, SSH tunnel, and
   browser profile that hold it.
 

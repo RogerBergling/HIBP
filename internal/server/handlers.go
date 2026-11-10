@@ -20,7 +20,8 @@ import (
 )
 
 type passwordRequest struct {
-	Password string `json:"password"`
+	Password     string `json:"password"`
+	SudoPassword string `json:"sudo_password"`
 }
 
 type hostRequest struct {
@@ -240,6 +241,17 @@ func remoteHostKey(key *store.HostKey) *remote.HostKey {
 }
 
 var errSudoPasswordRequired = errors.New("sudo requires a password on the target; install the restricted NOPASSWD helper rule described in packaging/README.md")
+var errSudoPasswordInvalid = errors.New("sudo password was rejected by the target")
+
+func looksLikeSudoPasswordInvalid(output string) bool {
+	lower := strings.ToLower(output)
+	for _, needle := range []string{"sorry, try again", "incorrect password", "authentication failure"} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
 
 func looksLikeSudoAuthFailure(output string) bool {
 	lower := strings.ToLower(output)
@@ -257,7 +269,7 @@ func looksLikeSudoAuthFailure(output string) bool {
 	return false
 }
 
-func (s *Server) runHelper(ctx context.Context, host store.Host, action, password string, timeout time.Duration) (string, int, error) {
+func (s *Server) runHelper(ctx context.Context, host store.Host, action, sshPassword, sudoPassword string, timeout time.Duration) (string, int, error) {
 	switch action {
 	case "facts", "check", "apply":
 	default:
@@ -271,9 +283,17 @@ func (s *Server) runHelper(ctx context.Context, host store.Host, action, passwor
 		return "", 0, errors.New("host key is not trusted; test and trust the host first")
 	}
 	command := "sudo -n /usr/local/libexec/hibp/hibp-helper " + action
-	output, code, err := remote.Run(ctx, s.hostTarget(host, password), &remote.HostKey{KeyType: key.KeyType, Fingerprint: key.Fingerprint}, command, timeout)
+	input := ""
+	if sudoPassword != "" {
+		command = "sudo -S -p '' /usr/local/libexec/hibp/hibp-helper " + action
+		input = sudoPassword + "\n"
+	}
+	output, code, err := remote.RunWithInput(ctx, s.hostTarget(host, sshPassword), &remote.HostKey{KeyType: key.KeyType, Fingerprint: key.Fingerprint}, command, input, timeout)
 	if err != nil {
 		return output, code, err
+	}
+	if code != 0 && looksLikeSudoPasswordInvalid(output) {
+		return output, code, errSudoPasswordInvalid
 	}
 	if code != 0 && looksLikeSudoAuthFailure(output) {
 		return output, code, errSudoPasswordRequired
@@ -302,7 +322,11 @@ func (s *Server) handleFacts(w http.ResponseWriter, r *http.Request) {
 		}
 		password = request.Password
 	}
-	output, code, err := s.runHelper(r.Context(), host, "facts", password, 2*time.Minute)
+	output, code, err := s.runHelper(r.Context(), host, "facts", password, request.SudoPassword, 2*time.Minute)
+	if errors.Is(err, errSudoPasswordInvalid) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "sudo_password_invalid"})
+		return
+	}
 	if errors.Is(err, errSudoPasswordRequired) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "sudo_password_required"})
 		return
@@ -340,9 +364,10 @@ func (s *Server) handleFacts(w http.ResponseWriter, r *http.Request) {
 }
 
 type patchRequest struct {
-	DryRun   bool   `json:"dry_run"`
-	Confirm  string `json:"confirm"`
-	Password string `json:"password"`
+	DryRun       bool   `json:"dry_run"`
+	Confirm      string `json:"confirm"`
+	Password     string `json:"password"`
+	SudoPassword string `json:"sudo_password"`
 }
 
 func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
@@ -374,7 +399,11 @@ func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
 		action = "apply"
 		timeout = 45 * time.Minute
 	}
-	output, code, err := s.runHelper(r.Context(), host, action, password, timeout)
+	output, code, err := s.runHelper(r.Context(), host, action, password, request.SudoPassword, timeout)
+	if errors.Is(err, errSudoPasswordInvalid) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "sudo_password_invalid"})
+		return
+	}
 	if errors.Is(err, errSudoPasswordRequired) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "sudo_password_required"})
 		return

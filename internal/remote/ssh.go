@@ -176,6 +176,13 @@ func Test(ctx context.Context, target Target, expected *HostKey) error {
 // Run executes a fixed command over SSH. The command string must not contain
 // user-controlled fragments; callers use it for the fixed helper actions.
 func Run(ctx context.Context, target Target, expected *HostKey, command string, timeout time.Duration) (string, int, error) {
+	return RunWithInput(ctx, target, expected, command, "", timeout)
+}
+
+// RunWithInput executes a fixed command and supplies input on stdin. It is used
+// for sudo -S, so the sudo password never appears in argv, the environment, or
+// the remote command string.
+func RunWithInput(ctx context.Context, target Target, expected *HostKey, command, input string, timeout time.Duration) (string, int, error) {
 	if timeout <= 0 {
 		timeout = 30 * time.Minute
 	}
@@ -193,6 +200,9 @@ func Run(ctx context.Context, target Target, expected *HostKey, command string, 
 		return "", 0, fmt.Errorf("open SSH session: %w", err)
 	}
 	defer session.Close()
+	if input != "" {
+		session.Stdin = strings.NewReader(input)
+	}
 
 	type result struct {
 		output []byte

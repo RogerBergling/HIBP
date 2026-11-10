@@ -424,18 +424,35 @@ sudo visudo -cf /etc/sudoers.d/hibp-helper
 A dedicated account such as `hibp` with its own SSH key is preferable: it keeps
 the sudo rule narrow and makes the audit trail clear.
 
+### Manual sudo password fallback
+
+If the target cannot use a `NOPASSWD` rule, the UI can prompt for the sudo
+password for **manual** Facts, Check, and Apply actions.
+
+- The server first tries `sudo -n`.
+- If the target answers `sudo_password_required`, the UI prompts.
+- The retry uses `sudo -S -p ''`; the password is supplied over SSH stdin.
+- It is never written to the database, logs, argv, environment variables, or
+  browser `localStorage`.
+- It is held in browser/server memory for the tab/session. Close the tab or
+  restart the server to clear it.
+- A wrong password is rejected and the cached value is discarded.
+
+This fallback is for interactive use only. **Scheduled patching still requires
+the restricted `NOPASSWD` helper or agent mode.** An unattended schedule cannot
+answer a sudo prompt.
+
 ### If you cannot change sudoers
 
-HIBP will not store or use your sudo password. In that environment you can:
+Use the manual password fallback for interactive work, or:
 
 - install the restricted helper rule as above;
 - use a dedicated account that is allowed to run only the helper;
 - run the helper manually from a root shell;
-- wait for the agent mode, which will run as root under systemd without an SSH
-  login or sudo password.
+- wait for agent mode, which will run as root under systemd without an SSH login
+  or sudo password.
 
 Scheduled patching through HIBP requires passwordless execution of the helper.
-An interactive sudo password cannot be supplied to an unattended schedule.
 
 ### Troubleshooting `sudo: interactive authentication is required`
 
@@ -450,6 +467,9 @@ ls -l /usr/local/libexec/hibp/hibp-helper
 
 The helper must be owned by `root:root`, must not be writable by the SSH
 account, and the sudoers path must match exactly.
+
+With the manual sudo fallback, repeat the action and enter the sudo password
+when prompted. That works for manual Facts/Check/Apply, not for schedules.
 
 ## Why it exists
 
@@ -1164,7 +1184,7 @@ Agent mode is optional and later; v1 uses SSH from the always-on server.
 - `0600` database, sidecar, key, and backup files; wrong-passphrase test.
 - Bearer-token UI authentication, Host/Origin checks, CSP, and security headers.
 - SSH host-key TOFU with explicit fingerprint approval and changed-key failure.
-- Manual SSH password fallback with per-run prompt; no password storage.
+- Manual SSH and sudo password fallbacks with per-run prompts; no password storage.
 - SSH key browser limited to configured directories; it never returns key contents.
 - Fixed helper actions (`facts`, `check`, `apply`, `reboot-check`) with absolute
   binary paths, a sanitized environment, no shell, and output limits.
@@ -1606,7 +1626,7 @@ Implemented:
 - Host add/edit/delete plus CSV/TXT import with preview and duplicate policy.
 - Server-side SSH key browser scoped to configured key directories.
 - SSH key authentication, host-key approval, and connection test.
-- Manual SSH password fallback with per-run prompts; no password storage.
+- Manual SSH and sudo password fallbacks with per-run prompts; no password storage.
 - Fact collection through the fixed helper.
 - Dashboard, host list, audit viewer, backup, and restore to a new path.
 - Audit chain verification and CSV-injection-neutralized export.
