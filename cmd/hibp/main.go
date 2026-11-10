@@ -67,8 +67,28 @@ Server flags:
   -listen string          Listen address (default: 127.0.0.1:8443)
   -create                 Create the database if it does not exist
   -passphrase-file string Read the database passphrase from a 0600 file
+  -key-dir string         SSH key directory, comma-separated (default: ~/.ssh)
   -demo                   Seed sample hosts when the database is empty
   -version                Print the version`)
+}
+
+func defaultKeyDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ".ssh"
+	}
+	return filepath.Join(home, ".ssh")
+}
+
+func splitList(value string) []string {
+	var result []string
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			result = append(result, part)
+		}
+	}
+	return result
 }
 
 func defaultDBPath() string {
@@ -112,6 +132,7 @@ func runServer(args []string) error {
 	listen := flags.String("listen", "127.0.0.1:8443", "listen address")
 	create := flags.Bool("create", false, "create the database if it does not exist")
 	passphraseFile := flags.String("passphrase-file", "", "read passphrase from a 0600 file")
+	keyDir := flags.String("key-dir", defaultKeyDir(), "SSH key directory, comma-separated for multiple")
 	demo := flags.Bool("demo", false, "seed sample hosts when empty")
 	showVersion := flags.Bool("version", false, "print version")
 	if err := flags.Parse(args); err != nil {
@@ -152,7 +173,12 @@ func runServer(args []string) error {
 	if err != nil {
 		return err
 	}
-	app, err := server.New(server.Config{Store: db, Token: token, Version: version})
+	app, err := server.New(server.Config{
+		Store:   db,
+		Token:   token,
+		Version: version,
+		KeyDirs: splitList(*keyDir),
+	})
 	if err != nil {
 		return err
 	}

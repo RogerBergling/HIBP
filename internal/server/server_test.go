@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -96,6 +98,85 @@ func TestCreateAndListHost(t *testing.T) {
 	}
 	if len(list.Hosts) != 1 || list.Hosts[0].Name != "web01" {
 		t.Fatalf("unexpected hosts: %+v", list.Hosts)
+	}
+}
+
+func TestUpdateHost(t *testing.T) {
+	ts, _ := testServer(t)
+	body := `{"name":"web01","address":"10.0.0.10","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519","tags":"web,prod"}`
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/hosts", "test-token", body)
+	defer resp.Body.Close()
+	var host store.Host
+	if err := json.NewDecoder(resp.Body).Decode(&host); err != nil {
+		t.Fatal(err)
+	}
+	update := `{"name":"web01-updated","address":"10.0.0.11","port":2222,"username":"admin","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519","tags":"web,prod,updated","group_name":"web-prod","cmdb_ci_id":"CI-999"}`
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/api/v1/hosts/"+host.ID, strings.NewReader(update))
+	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("update failed: %d %s", resp.StatusCode, data)
+	}
+	var updated store.Host
+	if err := json.NewDecoder(resp.Body).Decode(&updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != "web01-updated" || updated.Address != "10.0.0.11" || updated.Port != 2222 {
+		t.Fatalf("unexpected updated host: %+v", updated)
+	}
+}
+
+func TestListSSHKeys(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "id_ed25519"), []byte("not a real key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "subdir"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.Open(filepath.Join(t.TempDir(), "inventory.hibp"), []byte("correct horse battery staple"), store.Options{
+		Create: true, KDFTime: 1, KDFMemory: 64 * 1024, KDFThreads: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	app, err := New(Config{Store: db, Token: "test-token", Version: "test", KeyDirs: []string{dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(app.Handler())
+	t.Cleanup(ts.Close)
+
+	resp := request(t, http.MethodGet, ts.URL+"/api/v1/keys?path="+url.QueryEscape(dir), "test-token", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("list keys failed: %d %s", resp.StatusCode, data)
+	}
+	var result struct {
+		Entries []keyEntry `json:"entries"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Entries) != 2 {
+		t.Fatalf("expected 2 entries, got %+v", result.Entries)
+	}
+	if !result.Entries[0].IsDir {
+		t.Fatalf("expected directory first, got %+v", result.Entries)
+	}
+
+	resp = request(t, http.MethodGet, ts.URL+"/api/v1/keys?path="+url.QueryEscape(filepath.Dir(dir)), "test-token", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected traversal to be forbidden, got %d", resp.StatusCode)
 	}
 }
 

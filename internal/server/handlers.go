@@ -87,6 +87,35 @@ func (s *Server) handleCreateHost(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, host)
 }
 
+func (s *Server) handleUpdateHost(w http.ResponseWriter, r *http.Request) {
+	existing, err := s.store.GetHost(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "host not found")
+		return
+	}
+	var request hostRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	host := request.host()
+	host.ID = existing.ID
+	host.CreatedAt = existing.CreatedAt
+	host.Status = existing.Status
+	if host.OSFamily == "" {
+		host.OSFamily = existing.OSFamily
+	}
+	if host.OSVersion == "" {
+		host.OSVersion = existing.OSVersion
+	}
+	updated, err := s.store.UpdateHost(host)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
 func (s *Server) handleGetHost(w http.ResponseWriter, r *http.Request) {
 	host, err := s.store.GetHost(r.PathValue("id"))
 	if err != nil {

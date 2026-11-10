@@ -347,6 +347,14 @@ make build
 # Open the printed http://127.0.0.1:8443/?token=... URL
 ```
 
+The server browses `~/.ssh` in the host form by default. Add more key
+directories with a comma-separated flag:
+
+```bash
+./dist/hibp server --db ~/.local/share/hibp/hibp.db \
+  --key-dir "$HOME/.ssh,/etc/hibp/ssh"
+```
+
 Requires Go 1.27+, a C toolchain, and CGO for the development build. The
 passphrase must be at least 12 characters. Use `make static` for the development
 static ELF, or `make production` for the current-SQLCipher Docker build. The
@@ -455,8 +463,8 @@ as core features rather than afterthoughts.
 
 ### Host inventory and onboarding
 
-- Add a host manually: name, address, SSH port, authentication method, sudo
-  mode, group, tags, schedule, and notes.
+- Add or edit a host manually: name, address, SSH port, authentication method,
+  sudo mode, group, tags, schedule, and notes.
 - Test the connection before saving. Show the resolved OS, host key fingerprint,
   authentication result, and sudo capability.
 - Import hosts from CSV or TXT with a preview and an explicit duplicate policy
@@ -494,6 +502,9 @@ as core features rather than afterthoughts.
 - Host key verification is mandatory. First use requires explicit fingerprint
   approval; a changed key is a hard failure, not a prompt that can be clicked
   away.
+- The host form has a **Browse** button for server-side SSH key directories. It
+  lists names, sizes, and permissions only; it never reads or returns private key
+  contents. The default directory is `~/.ssh`; use `--key-dir` to add more.
 
 ### Patch visibility
 
@@ -1064,6 +1075,7 @@ Agent mode is optional and later; v1 uses SSH from the always-on server.
 - Bearer-token UI authentication, Host/Origin checks, CSP, and security headers.
 - SSH host-key TOFU with explicit fingerprint approval and changed-key failure.
 - Manual SSH password fallback with per-run prompt; no password storage.
+- SSH key browser limited to configured directories; it never returns key contents.
 - Fixed helper actions (`facts`, `check`, `apply`, `reboot-check`) with absolute
   binary paths, a sanitized environment, no shell, and output limits.
 - Hash-chained audit log with verification.
@@ -1501,7 +1513,8 @@ Implemented:
 - Go module, Makefile, tests, CI, and static build.
 - Server mode with a browser UI/API bound to `127.0.0.1`.
 - Encrypted SQLCipher database with Argon2id sidecar.
-- Host CRUD and CSV/TXT import with preview and duplicate policy.
+- Host add/edit/delete plus CSV/TXT import with preview and duplicate policy.
+- Server-side SSH key browser scoped to configured key directories.
 - SSH key authentication, host-key approval, and connection test.
 - Manual SSH password fallback with per-run prompts; no password storage.
 - Fact collection through the fixed helper.

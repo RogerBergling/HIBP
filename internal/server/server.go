@@ -8,6 +8,8 @@ import (
 	"io/fs"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/RogerBergling/hibp/internal/crypto"
@@ -22,6 +24,7 @@ type Config struct {
 	Token   string
 	Version string
 	Actor   string
+	KeyDirs []string
 }
 
 // Server is the HIBP HTTP server.
@@ -30,6 +33,7 @@ type Server struct {
 	token   string
 	version string
 	actor   string
+	keyDirs []string
 	mux     *http.ServeMux
 }
 
@@ -44,7 +48,24 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Actor == "" {
 		cfg.Actor = "local"
 	}
-	s := &Server{store: cfg.Store, token: cfg.Token, version: cfg.Version, actor: cfg.Actor, mux: http.NewServeMux()}
+	if len(cfg.KeyDirs) == 0 {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			cfg.KeyDirs = []string{filepath.Join(home, ".ssh")}
+		}
+	}
+	keyDirs := make([]string, 0, len(cfg.KeyDirs))
+	for _, dir := range cfg.KeyDirs {
+		if strings.TrimSpace(dir) == "" {
+			continue
+		}
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			return nil, err
+		}
+		keyDirs = append(keyDirs, abs)
+	}
+	s := &Server{store: cfg.Store, token: cfg.Token, version: cfg.Version, actor: cfg.Actor, keyDirs: keyDirs, mux: http.NewServeMux()}
 	s.routes()
 	return s, nil
 }
@@ -63,6 +84,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/hosts", s.auth(s.handleListHosts))
 	s.mux.HandleFunc("POST /api/v1/hosts", s.auth(s.handleCreateHost))
 	s.mux.HandleFunc("GET /api/v1/hosts/{id}", s.auth(s.handleGetHost))
+	s.mux.HandleFunc("PUT /api/v1/hosts/{id}", s.auth(s.handleUpdateHost))
 	s.mux.HandleFunc("DELETE /api/v1/hosts/{id}", s.auth(s.handleDeleteHost))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/test", s.auth(s.handleTestHost))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/trust-key", s.auth(s.handleTrustKey))
@@ -74,6 +96,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/export/hosts.csv", s.auth(s.handleExportHosts))
 	s.mux.HandleFunc("POST /api/v1/backup", s.auth(s.handleBackup))
 	s.mux.HandleFunc("POST /api/v1/restore", s.auth(s.handleRestore))
+	s.mux.HandleFunc("GET /api/v1/keys", s.auth(s.handleListKeys))
 }
 
 // Handler returns the middleware-wrapped handler.

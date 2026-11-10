@@ -192,6 +192,7 @@ function hostRow(host) {
 
   const actionsTd = el('td');
   const actions = el('div', 'actions');
+  actions.append(actionButton('Edit', () => showAddHostModal(host)));
   actions.append(actionButton('Test', () => testHost(host)));
   actions.append(actionButton('Facts', () => collectFacts(host)));
   actions.append(actionButton('Patch', () => showPatchModal(host)));
@@ -416,49 +417,158 @@ function openModal(title, content) {
   return closeFn;
 }
 
-function showAddHostModal() {
+function showAddHostModal(host = null) {
+  const editing = Boolean(host);
   const form = el('form', 'modal-body');
   const name = inputField(form, 'Name', 'name', 'web01');
   const address = inputField(form, 'Address', 'address', '10.0.0.10');
   const row = el('div', 'form-row');
   const port = inputField(row, 'Port', 'port', '22', 'number');
-  port.value = '22';
   const username = inputField(row, 'Username', 'username', 'ubuntu');
   form.append(row);
   const authRow = el('div', 'form-row');
   const authType = selectField(authRow, 'Auth type', 'auth_type', [['key', 'SSH key'], ['agent', 'ssh-agent'], ['certificate', 'SSH certificate'], ['password', 'Password (manual fallback)']]);
-  const keyPath = inputField(authRow, 'Key path', 'key_path', '/home/ops/.ssh/id_ed25519');
+  const keyPath = keyPathField(authRow, host?.key_path || '');
   form.append(authRow);
   const groupRow = el('div', 'form-row');
   const group = inputField(groupRow, 'Group', 'group_name', 'web-prod');
   const tags = inputField(groupRow, 'Tags', 'tags', 'web,prod');
   form.append(groupRow);
-  inputField(form, 'CMDB CI ID', 'cmdb_ci_id', 'CI-123');
+  const cmdb = inputField(form, 'CMDB CI ID', 'cmdb_ci_id', 'CI-123');
+
+  name.value = host?.name || '';
+  address.value = host?.address || '';
+  port.value = String(host?.port || 22);
+  username.value = host?.username || '';
+  authType.value = host?.auth_type || 'key';
+  group.value = host?.group_name || '';
+  tags.value = host?.tags || '';
+  cmdb.value = host?.cmdb_ci_id || '';
+
   const actions = el('div', 'modal-actions');
   const cancel = el('button', 'btn', 'Cancel');
   cancel.type = 'button';
-  const save = el('button', 'btn primary', 'Add host');
+  const save = el('button', 'btn primary', editing ? 'Save changes' : 'Add host');
   save.type = 'submit';
   actions.append(cancel, save);
   form.append(actions);
-  const close = openModal('Add host', form);
+  const close = openModal(editing ? 'Edit host — ' + host.name : 'Add host', form);
   cancel.addEventListener('click', close);
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     const payload = {
       name: name.value.trim(), address: address.value.trim(), port: Number(port.value || 22),
       username: username.value.trim(), auth_type: authType.value, key_path: keyPath.value.trim(),
-      group_name: group.value.trim(), tags: tags.value.trim(), cmdb_ci_id: form.querySelector('[name="cmdb_ci_id"]').value.trim(),
+      group_name: group.value.trim(), tags: tags.value.trim(), cmdb_ci_id: cmdb.value.trim(),
     };
     try {
-      await api('/api/v1/hosts', { method: 'POST', body: JSON.stringify(payload) });
+      const url = editing ? '/api/v1/hosts/' + encodeURIComponent(host.id) : '/api/v1/hosts';
+      const method = editing ? 'PUT' : 'POST';
+      await api(url, { method, body: JSON.stringify(payload) });
       close();
-      toast('Host added', 'ok');
+      toast(editing ? 'Host updated' : 'Host added', 'ok');
       await loadAll();
     } catch (error) {
       toast(error.message, 'error');
     }
   });
+}
+
+function keyPathField(parent, value) {
+  const wrapper = el('label', 'field', 'Key path');
+  const row = el('div', 'input-with-button');
+  const input = el('input');
+  input.name = 'key_path';
+  input.type = 'text';
+  input.placeholder = '/home/ops/.ssh/id_ed25519';
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  input.value = value || '';
+  const browse = el('button', 'btn small', 'Browse');
+  browse.type = 'button';
+  browse.addEventListener('click', () => showKeyBrowser((selected) => { input.value = selected; }));
+  row.append(input, browse);
+  wrapper.append(row);
+  parent.append(wrapper);
+  return input;
+}
+
+async function showKeyBrowser(onSelect) {
+  const body = el('div', 'modal-body');
+  const pathBox = el('div', 'key-box', 'Loading…');
+  const rootsBox = el('div', 'file-roots');
+  const list = el('div', 'file-list');
+  body.append(pathBox, rootsBox, list);
+  const actions = el('div', 'modal-actions');
+  const up = el('button', 'btn small', 'Up');
+  up.type = 'button';
+  const refresh = el('button', 'btn small', 'Refresh');
+  refresh.type = 'button';
+  const cancel = el('button', 'btn', 'Cancel');
+  cancel.type = 'button';
+  actions.append(up, refresh, cancel);
+  body.append(actions);
+  const close = openModal('Choose SSH key file', body);
+  let current = '';
+
+  const load = async (path) => {
+    try {
+      const data = await api('/api/v1/keys?path=' + encodeURIComponent(path || ''));
+      current = data.path;
+      pathBox.textContent = current;
+      rootsBox.replaceChildren();
+      up.disabled = (data.roots || []).includes(current);
+      for (const root of data.roots || []) {
+        const rootButton = el('button', 'btn small', root);
+        rootButton.type = 'button';
+        rootButton.addEventListener('click', () => load(root));
+        rootsBox.append(rootButton);
+      }
+      list.replaceChildren();
+      if (!data.entries || data.entries.length === 0) {
+        list.append(el('div', 'next-step', 'This directory is empty.'));
+      }
+      for (const entry of data.entries || []) {
+        const row = el('div', 'file-row');
+        const button = el('button', 'file-name', (entry.is_dir ? '📁 ' : '🔑 ') + entry.name + (entry.is_dir ? '/' : ''));
+        button.type = 'button';
+        button.addEventListener('click', () => {
+          if (entry.is_dir) {
+            load(entry.path);
+          } else {
+            onSelect(entry.path);
+            close();
+          }
+        });
+        row.append(button);
+        row.append(el('span', 'file-meta', entry.is_dir ? 'directory' : entry.mode + ' · ' + formatBytes(entry.size)));
+        if (!entry.is_dir) {
+          const use = el('button', 'btn small', 'Use');
+          use.type = 'button';
+          use.addEventListener('click', () => { onSelect(entry.path); close(); });
+          row.append(use);
+        }
+        list.append(row);
+      }
+    } catch (error) {
+      list.replaceChildren();
+      list.append(el('div', 'next-step', error.message));
+    }
+  };
+  up.addEventListener('click', () => {
+    const parent = current.substring(0, current.lastIndexOf('/')) || '/';
+    load(parent);
+  });
+  refresh.addEventListener('click', () => load(current));
+  cancel.addEventListener('click', close);
+  await load('');
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return '0 B';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KiB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MiB';
 }
 
 function inputField(parent, label, name, placeholder, type = 'text') {
