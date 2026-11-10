@@ -1,14 +1,17 @@
 'use strict';
 
 const state = {
-  token: sessionStorage.getItem('hibp_token') || '',
   hosts: [],
   audit: [],
   status: {},
   view: 'dashboard',
   passwords: new Map(),
   sudoPasswords: new Map(),
+  auth: { user: null, setupRequired: false, authenticated: false, mfaRequired: false, enrollmentRequired: false, webauthnAvailable: false },
+  totpSetup: null,
 };
+
+let activeModalClose = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -32,15 +35,46 @@ function icon(name) {
   return span;
 }
 
-function showTokenScreen() {
-  $('app').classList.add('hidden');
-  $('token-screen').classList.remove('hidden');
-  $('token-input').focus();
+function showApp() {
+  $('auth-screen').classList.add('hidden');
+  $('app').classList.remove('hidden');
 }
 
-function showApp() {
-  $('token-screen').classList.add('hidden');
-  $('app').classList.remove('hidden');
+function closeActiveModal() {
+  if (activeModalClose) activeModalClose();
+}
+
+function showAuthScreenShell() {
+  closeActiveModal();
+  $('app').classList.add('hidden');
+  $('auth-screen').classList.remove('hidden');
+}
+
+function showAuthMessage(message, ok = false) {
+  const node = $('auth-message');
+  node.textContent = message;
+  node.classList.toggle('ok', ok);
+  node.classList.remove('hidden');
+}
+
+function clearAuthMessage() {
+  const node = $('auth-message');
+  node.textContent = '';
+  node.classList.remove('ok');
+  node.classList.add('hidden');
+}
+
+function showAuthStep(id) {
+  for (const node of document.querySelectorAll('.auth-step')) {
+    node.classList.add('hidden');
+  }
+  $(id).classList.remove('hidden');
+}
+
+function updateUserDisplay() {
+  const user = state.auth.user;
+  $('current-user').textContent = user?.username || '—';
+  $('current-user-role').textContent = user?.mfa_enabled ? 'Password + MFA' : 'MFA not configured';
 }
 
 function setView(view) {
@@ -56,27 +90,224 @@ function setView(view) {
 
 async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
-  headers.set('Authorization', 'Bearer ' + state.token);
   if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
-  const response = await fetch(path, { ...options, headers, cache: 'no-store' });
+  const response = await fetch(path, { ...options, headers, cache: 'no-store', credentials: 'same-origin' });
   const text = await response.text();
   let data = {};
   if (text) {
     try { data = JSON.parse(text); } catch { data = { error: text }; }
   }
-  if (response.status === 401) {
-    state.token = '';
-    sessionStorage.removeItem('hibp_token');
-    showTokenScreen();
-    throw new Error('UI token rejected');
-  }
   if (!response.ok) {
+    const sessionExpired = response.status === 401 && data.code === 'login_required';
+    const mfaNeeded = response.status === 403 && data.code === 'mfa_required';
+    if (sessionExpired || mfaNeeded) {
+      showAuthScreen();
+    }
     const error = new Error(data.error || ('HTTP ' + response.status));
     error.data = data;
     error.status = response.status;
     throw error;
   }
   return data;
+}
+
+async function fetchAuthStatus() {
+  const response = await fetch('/api/v1/auth/status', { cache: 'no-store', credentials: 'same-origin' });
+  const text = await response.text();
+  let data = {};
+  if (text) {
+    try { data = JSON.parse(text); } catch { data = { error: text }; }
+  }
+  if (!response.ok) {
+    throw new Error(data.error || ('HTTP ' + response.status));
+  }
+  return data;
+}
+
+async function showAuthScreen() {
+  showAuthScreenShell();
+  clearAuthMessage();
+  try {
+    const status = await fetchAuthStatus();
+    state.auth = status;
+    await renderAuth(status);
+  } catch (error) {
+    showAuthStep('login-form');
+    $('auth-subtitle').textContent = 'Sign in to manage your fleet.';
+    showAuthMessage(error.message);
+  }
+}
+
+async function renderAuth(status) {
+  state.auth = status;
+  if (status.authenticated) {
+    await enterApp();
+    return;
+  }
+  if (status.setup_required) {
+    $('auth-subtitle').textContent = 'Create the local administrator account.';
+    showAuthStep('setup-form');
+    $('setup-username').focus();
+    return;
+  }
+  if (status.mfa_required) {
+    if (status.mfa_enrollment_required) {
+      $('auth-subtitle').textContent = 'Protect this account with a second factor.';
+      showAuthStep('enroll-step');
+      await renderEnrollment(status);
+    } else {
+      $('auth-subtitle').textContent = 'One more step to sign in.';
+      showAuthStep('mfa-step');
+      renderMFA(status);
+    }
+    return;
+  }
+  $('auth-subtitle').textContent = 'Sign in to manage your fleet.';
+  showAuthStep('login-form');
+  $('login-username').focus();
+}
+
+async function enterApp() {
+  showApp();
+  updateUserDisplay();
+  await loadAll();
+}
+
+function renderMFA(status) {
+  const user = status.user || {};
+  const methods = [];
+  if (user.totp_enabled) methods.push('authenticator code');
+  if (user.passkey_count > 0) methods.push('passkey');
+  $('mfa-message').textContent = methods.length
+    ? 'Enter your ' + methods.join(' or ') + '.'
+    : 'No second factor is configured.';
+  $('totp-form').classList.toggle('hidden', !user.totp_enabled);
+  const passkeyAvailable = Boolean(status.webauthn_available && user.passkey_count > 0);
+  $('passkey-login').classList.toggle('hidden', !passkeyAvailable);
+  const note = $('mfa-webauthn-note');
+  if (user.passkey_count > 0 && !status.webauthn_available) {
+    note.textContent = status.webauthn_error || 'Passkeys require opening HIBP via http://localhost:<port>.';
+    note.classList.remove('hidden');
+  } else {
+    note.classList.add('hidden');
+  }
+  if (user.totp_enabled) $('totp-code').focus();
+}
+
+async function renderEnrollment(status) {
+  const user = status.user || {};
+  const totpEnabled = Boolean(user.totp_enabled);
+  $('enroll-totp').classList.toggle('hidden', totpEnabled);
+  $('totp-status').classList.toggle('hidden', !totpEnabled);
+  $('totp-qr').classList.add('hidden');
+  $('totp-secret').classList.add('hidden');
+  $('passkey-note').textContent = status.webauthn_available
+    ? ''
+    : (status.webauthn_error || 'Passkeys require opening HIBP via http://localhost:<port>.');
+  $('passkey-register').disabled = !status.webauthn_available;
+  $('enroll-continue').classList.toggle('hidden', !user.mfa_enabled);
+  if (!totpEnabled) {
+    await startTOTPEnrollment();
+  }
+}
+
+async function startTOTPEnrollment() {
+  if (state.totpSetup) {
+    renderTOTPSetup();
+    return;
+  }
+  try {
+    state.totpSetup = await api('/api/v1/auth/totp/begin', { method: 'POST' });
+    renderTOTPSetup();
+  } catch (error) {
+    showAuthMessage(error.message);
+  }
+}
+
+function renderTOTPSetup() {
+  if (!state.totpSetup) return;
+  $('totp-qr').src = state.totpSetup.qr_png;
+  $('totp-qr').classList.remove('hidden');
+  $('totp-secret').textContent = String(state.totpSetup.secret || '').replace(/(.{4})/g, '$1 ').trim();
+  $('totp-secret').classList.remove('hidden');
+  $('totp-enroll-form').classList.remove('hidden');
+}
+
+function passkeySupported() {
+  return Boolean(window.PublicKeyCredential &&
+    typeof PublicKeyCredential.parseCreationOptionsFromJSON === 'function' &&
+    typeof PublicKeyCredential.parseRequestOptionsFromJSON === 'function');
+}
+
+async function registerPasskey() {
+  clearAuthMessage();
+  if (!passkeySupported()) {
+    showAuthMessage('This browser cannot use passkeys. Use TOTP or update the browser.');
+    return;
+  }
+  try {
+    const options = await api('/api/v1/auth/passkey/register/begin', { method: 'POST' });
+    const publicKey = PublicKeyCredential.parseCreationOptionsFromJSON(options.publicKey);
+    const credential = await navigator.credentials.create({ publicKey });
+    if (!credential || typeof credential.toJSON !== 'function') {
+      throw new Error('Passkey creation failed.');
+    }
+    const result = await api('/api/v1/auth/passkey/register/finish', {
+      method: 'POST',
+      body: JSON.stringify({
+        ceremony_id: options.ceremony_id,
+        credential: credential.toJSON(),
+        name: 'Passkey',
+      }),
+    });
+    state.auth.user = state.auth.user || {};
+    state.auth.user.passkey_count = result.passkey_count;
+    state.auth.user.mfa_enabled = true;
+    state.auth.mfa_enrollment_required = false;
+    $('enroll-continue').classList.remove('hidden');
+    showAuthMessage('Passkey added.', true);
+  } catch (error) {
+    showAuthMessage(error.name === 'NotAllowedError' ? 'Passkey prompt was cancelled.' : error.message);
+  }
+}
+
+async function loginWithPasskey() {
+  clearAuthMessage();
+  if (!passkeySupported()) {
+    showAuthMessage('This browser cannot use passkeys. Use TOTP or update the browser.');
+    return;
+  }
+  try {
+    const options = await api('/api/v1/auth/passkey/login/begin', { method: 'POST' });
+    const publicKey = PublicKeyCredential.parseRequestOptionsFromJSON(options.publicKey);
+    const credential = await navigator.credentials.get({ publicKey });
+    if (!credential || typeof credential.toJSON !== 'function') {
+      throw new Error('Passkey login failed.');
+    }
+    await api('/api/v1/auth/passkey/login/finish', {
+      method: 'POST',
+      body: JSON.stringify({
+        ceremony_id: options.ceremony_id,
+        credential: credential.toJSON(),
+      }),
+    });
+    await showAuthScreen();
+  } catch (error) {
+    showAuthMessage(error.name === 'NotAllowedError' ? 'Passkey prompt was cancelled.' : error.message);
+  }
+}
+
+async function signOut() {
+  try {
+    await api('/api/v1/auth/logout', { method: 'POST', body: '{}' });
+  } catch (error) {
+    // The cookie is cleared server-side even if the session had already expired.
+  }
+  state.passwords.clear();
+  state.sudoPasswords.clear();
+  state.totpSetup = null;
+  state.auth = { user: null, setupRequired: false, authenticated: false, mfaRequired: false, enrollmentRequired: false, webauthnAvailable: false };
+  await showAuthScreen();
 }
 
 async function loadAll() {
@@ -108,6 +339,7 @@ function renderStatus() {
   $('server-hosts').textContent = (state.hosts.length) + ' hosts';
   $('server-time').textContent = state.status.time ? new Date(state.status.time).toLocaleTimeString() : '—';
   $('nav-host-count').textContent = String(state.hosts.length);
+  updateUserDisplay();
 }
 
 function renderStats() {
@@ -566,8 +798,10 @@ function openModal(title, content, onClose) {
     closed = true;
     document.removeEventListener('keydown', onKey);
     root.replaceChildren();
+    if (activeModalClose === closeFn) activeModalClose = null;
     if (onClose) onClose();
   };
+  activeModalClose = closeFn;
   close.addEventListener('click', closeFn);
   backdrop.addEventListener('click', (event) => { if (event.target === backdrop) closeFn(); });
   document.addEventListener('keydown', onKey);
@@ -950,15 +1184,96 @@ function toast(message, type = '') {
 }
 
 function bind() {
-  $('token-form').addEventListener('submit', (event) => {
+  $('setup-form').addEventListener('submit', async (event) => {
     event.preventDefault();
-    const token = $('token-input').value.trim();
-    if (!token) return;
-    state.token = token;
-    sessionStorage.setItem('hibp_token', token);
-    showApp();
-    loadAll();
+    clearAuthMessage();
+    const username = $('setup-username').value.trim();
+    const password = $('setup-password').value;
+    if (Array.from(password).length < 12) {
+      showAuthMessage('Password must be at least 12 characters.');
+      return;
+    }
+    if (password !== $('setup-confirm').value) {
+      showAuthMessage('Passwords do not match.');
+      return;
+    }
+    try {
+      await api('/api/v1/auth/setup', { method: 'POST', body: JSON.stringify({ username, password }) });
+      $('setup-password').value = '';
+      $('setup-confirm').value = '';
+      await showAuthScreen();
+    } catch (error) {
+      showAuthMessage(error.message);
+    }
   });
+
+  $('login-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    clearAuthMessage();
+    try {
+      await api('/api/v1/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({
+          username: $('login-username').value.trim(),
+          password: $('login-password').value,
+        }),
+      });
+      $('login-password').value = '';
+      await showAuthScreen();
+    } catch (error) {
+      showAuthMessage(error.message);
+    }
+  });
+
+  $('totp-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    clearAuthMessage();
+    try {
+      await api('/api/v1/auth/totp/verify', {
+        method: 'POST',
+        body: JSON.stringify({ code: $('totp-code').value.trim() }),
+      });
+      $('totp-code').value = '';
+      await showAuthScreen();
+    } catch (error) {
+      showAuthMessage(error.message);
+    }
+  });
+
+  $('totp-enroll-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    clearAuthMessage();
+    try {
+      await api('/api/v1/auth/totp/verify', {
+        method: 'POST',
+        body: JSON.stringify({ code: $('totp-enroll-code').value.trim() }),
+      });
+      $('totp-enroll-code').value = '';
+      state.totpSetup = null;
+      state.auth.user = state.auth.user || {};
+      state.auth.user.totp_enabled = true;
+      state.auth.user.mfa_enabled = true;
+      state.auth.mfa_enrollment_required = false;
+      $('enroll-totp').classList.add('hidden');
+      $('totp-status').classList.remove('hidden');
+      $('enroll-continue').classList.remove('hidden');
+      showAuthMessage('TOTP enabled.', true);
+    } catch (error) {
+      showAuthMessage(error.message);
+    }
+  });
+
+  $('passkey-register').addEventListener('click', registerPasskey);
+  $('passkey-login').addEventListener('click', loginWithPasskey);
+  $('mfa-back').addEventListener('click', async () => {
+    await api('/api/v1/auth/logout', { method: 'POST', body: '{}' }).catch(() => {});
+    state.totpSetup = null;
+    await showAuthScreen();
+  });
+  $('enroll-continue').addEventListener('click', enterApp);
+  $('enroll-logout').addEventListener('click', signOut);
+  $('sign-out').addEventListener('click', signOut);
+
   for (const button of document.querySelectorAll('.nav-item[data-view]')) {
     button.addEventListener('click', () => setView(button.dataset.view));
   }
@@ -979,21 +1294,7 @@ function bind() {
 
 async function init() {
   bind();
-  const params = new URLSearchParams(location.search);
-  const urlToken = params.get('token');
-  if (urlToken) {
-    state.token = urlToken;
-    sessionStorage.setItem('hibp_token', urlToken);
-    params.delete('token');
-    const query = params.toString();
-    history.replaceState({}, '', location.pathname + (query ? '?' + query : ''));
-  }
-  if (!state.token) {
-    showTokenScreen();
-    return;
-  }
-  showApp();
-  await loadAll();
+  await showAuthScreen();
 }
 
 init();

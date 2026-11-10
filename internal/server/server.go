@@ -11,44 +11,46 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
-	"github.com/RogerBergling/hibp/internal/crypto"
+	"github.com/RogerBergling/hibp/internal/auth"
 	"github.com/RogerBergling/hibp/internal/remote"
 	"github.com/RogerBergling/hibp/internal/store"
 	"github.com/RogerBergling/hibp/internal/webui"
 )
 
+// dummyPasswordHash is computed once so a missing username still pays the
+// Argon2 cost during login, without rebuilding the hash for every test server.
+var dummyPasswordHash = auth.DummyPasswordHash()
+
 // Config configures the local server.
 type Config struct {
 	Store         *store.Store
-	Token         string
 	Version       string
-	Actor         string
 	KeyDirs       []string
 	SSHConfigPath string
 }
 
 // Server is the HIBP HTTP server.
 type Server struct {
-	store         *store.Store
-	token         string
-	version       string
-	actor         string
-	keyDirs       []string
-	sshConfigPath string
-	mux           *http.ServeMux
+	store             *store.Store
+	version           string
+	keyDirs           []string
+	sshConfigPath     string
+	dummyPasswordHash string
+	loginIPLimiter    *attemptLimiter
+	loginUserLimiter  *attemptLimiter
+	mfaLimiter        *attemptLimiter
+	ceremonies        *ceremonyStore
+	setupMu           sync.Mutex
+	mux               *http.ServeMux
 }
 
 // New creates a server.
 func New(cfg Config) (*Server, error) {
 	if cfg.Store == nil {
 		return nil, errors.New("store is required")
-	}
-	if cfg.Token == "" {
-		return nil, errors.New("UI token is required")
-	}
-	if cfg.Actor == "" {
-		cfg.Actor = "local"
 	}
 	if len(cfg.KeyDirs) == 0 {
 		home, err := os.UserHomeDir()
@@ -78,7 +80,18 @@ func New(cfg Config) (*Server, error) {
 		}
 		sshConfigPath = filepath.Join(home, ".ssh", "config")
 	}
-	s := &Server{store: cfg.Store, token: cfg.Token, version: cfg.Version, actor: cfg.Actor, keyDirs: keyDirs, sshConfigPath: sshConfigPath, mux: http.NewServeMux()}
+	s := &Server{
+		store:             cfg.Store,
+		version:           cfg.Version,
+		keyDirs:           keyDirs,
+		sshConfigPath:     sshConfigPath,
+		dummyPasswordHash: dummyPasswordHash,
+		loginIPLimiter:    newAttemptLimiter(10, 15*time.Minute),
+		loginUserLimiter:  newAttemptLimiter(5, 15*time.Minute),
+		mfaLimiter:        newAttemptLimiter(10, 15*time.Minute),
+		ceremonies:        newCeremonyStore(),
+		mux:               http.NewServeMux(),
+	}
 	s.routes()
 	return s, nil
 }
@@ -92,6 +105,18 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /app.js", s.handleAsset("app.js", "application/javascript; charset=utf-8"))
 	s.mux.HandleFunc("GET /style.css", s.handleAsset("style.css", "text/css; charset=utf-8"))
 	s.mux.HandleFunc("GET /favicon.svg", s.handleAsset("favicon.svg", "image/svg+xml"))
+
+	s.mux.HandleFunc("GET /api/v1/auth/status", s.handleAuthStatus)
+	s.mux.HandleFunc("POST /api/v1/auth/setup", s.handleSetup)
+	s.mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
+	s.mux.HandleFunc("POST /api/v1/auth/logout", s.authPending(s.handleLogout))
+	s.mux.HandleFunc("GET /api/v1/auth/me", s.authPending(s.handleMe))
+	s.mux.HandleFunc("POST /api/v1/auth/totp/begin", s.authPending(s.handleTOTPBegin))
+	s.mux.HandleFunc("POST /api/v1/auth/totp/verify", s.authPending(s.handleTOTPVerify))
+	s.mux.HandleFunc("POST /api/v1/auth/passkey/register/begin", s.authPending(s.handlePasskeyRegisterBegin))
+	s.mux.HandleFunc("POST /api/v1/auth/passkey/register/finish", s.authPending(s.handlePasskeyRegisterFinish))
+	s.mux.HandleFunc("POST /api/v1/auth/passkey/login/begin", s.authPending(s.handlePasskeyLoginBegin))
+	s.mux.HandleFunc("POST /api/v1/auth/passkey/login/finish", s.authPending(s.handlePasskeyLoginFinish))
 
 	s.mux.HandleFunc("GET /api/v1/status", s.auth(s.handleStatus))
 	s.mux.HandleFunc("GET /api/v1/hosts", s.auth(s.handleListHosts))
@@ -154,18 +179,6 @@ func (s *Server) hostCheck(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
-}
-
-func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		header := r.Header.Get("Authorization")
-		token := strings.TrimPrefix(header, "Bearer ")
-		if token == header || !crypto.EqualToken(token, s.token) {
-			writeError(w, http.StatusUnauthorized, "missing or invalid UI token")
-			return
-		}
-		next(w, r)
-	}
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {

@@ -151,4 +151,4 @@ esac
 echo
 echo "Next:"
 echo "  ${PREFIX}/hibp server --db \"\$HOME/.local/share/hibp/hibp.db\" --create"
-echo "Then open the printed http://127.0.0.1:8443/?token=... URL."
+echo "Then open http://localhost:8443/ and create the admin account + MFA."

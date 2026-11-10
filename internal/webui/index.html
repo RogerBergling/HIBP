@@ -8,8 +8,8 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <div id="token-screen" class="token-screen">
-    <form id="token-form" class="token-card">
+  <div id="auth-screen" class="auth-screen">
+    <div class="auth-card">
       <div class="brand-mark large">
         <svg width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <path d="M12 3l7 3v5.2c0 4.4-2.9 7.6-7 9.8-4.1-2.2-7-5.4-7-9.8V6l7-3z" stroke="#5eead4" stroke-width="1.6" fill="rgba(45,212,191,.08)"/>
@@ -17,12 +17,65 @@
         </svg>
       </div>
       <h1>Have I Been Patched</h1>
-      <p>Paste the UI token printed by <code>hibp server</code>.</p>
-      <label for="token-input">UI token</label>
-      <input id="token-input" type="password" autocomplete="off" spellcheck="false" placeholder="64-character token">
-      <button class="btn primary" type="submit">Unlock UI</button>
-      <p class="hint">The token is stored in this browser tab only.</p>
-    </form>
+      <p id="auth-subtitle">Checking your session…</p>
+
+      <form id="setup-form" class="auth-step hidden">
+        <label for="setup-username">Username</label>
+        <input id="setup-username" type="text" autocomplete="username" spellcheck="false" maxlength="64">
+        <label for="setup-password">Password</label>
+        <input id="setup-password" type="password" autocomplete="new-password">
+        <label for="setup-confirm">Confirm password</label>
+        <input id="setup-confirm" type="password" autocomplete="new-password">
+        <button class="btn primary" type="submit">Create admin account</button>
+        <p class="hint">At least 12 characters. You will add TOTP or a passkey next.</p>
+      </form>
+
+      <form id="login-form" class="auth-step hidden">
+        <label for="login-username">Username</label>
+        <input id="login-username" type="text" autocomplete="username" spellcheck="false">
+        <label for="login-password">Password</label>
+        <input id="login-password" type="password" autocomplete="current-password">
+        <button class="btn primary" type="submit">Sign in</button>
+        <p class="hint">A second factor is required after the password.</p>
+      </form>
+
+      <div id="mfa-step" class="auth-step hidden">
+        <p id="mfa-message" class="muted">Enter your second factor.</p>
+        <form id="totp-form" class="hidden">
+          <label for="totp-code">Authenticator code</label>
+          <input id="totp-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]*">
+          <button class="btn primary" type="submit">Verify code</button>
+        </form>
+        <button id="passkey-login" class="btn hidden" type="button">Use a passkey</button>
+        <p id="mfa-webauthn-note" class="hint hidden"></p>
+        <button id="mfa-back" class="link-button" type="button">Back to sign in</button>
+      </div>
+
+      <div id="enroll-step" class="auth-step hidden">
+        <p class="muted">Add at least one second factor. You can add both.</p>
+        <div id="enroll-totp">
+          <h2>Authenticator app</h2>
+          <img id="totp-qr" class="auth-qr hidden" alt="QR code for authenticator app">
+          <div id="totp-secret" class="auth-secret hidden"></div>
+          <form id="totp-enroll-form">
+            <label for="totp-enroll-code">6-digit code</label>
+            <input id="totp-enroll-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]*">
+            <button class="btn primary" type="submit">Verify and enable TOTP</button>
+          </form>
+          <p id="totp-status" class="hint hidden">TOTP is enabled.</p>
+        </div>
+        <div class="auth-divider"></div>
+        <div id="enroll-passkey">
+          <h2>Passkey</h2>
+          <button id="passkey-register" class="btn" type="button">Add a passkey</button>
+          <p id="passkey-note" class="hint"></p>
+        </div>
+        <button id="enroll-continue" class="btn primary hidden" type="button">Continue to HIBP</button>
+        <button id="enroll-logout" class="link-button" type="button">Sign out</button>
+      </div>
+
+      <p id="auth-message" class="auth-message hidden"></p>
+    </div>
   </div>
 
   <div id="app" class="app hidden">
@@ -88,8 +141,9 @@
         <div class="user-row">
           <div class="avatar">RB</div>
           <div>
-            <div class="user-name">local</div>
-            <div class="user-role">Single-user · SSH tunnel</div>
+            <div class="user-name" id="current-user">—</div>
+            <div class="user-role" id="current-user-role">Password + MFA</div>
+            <button class="link-button sign-out" id="sign-out" type="button">Sign out</button>
           </div>
         </div>
       </div>
@@ -158,7 +212,8 @@
               <div class="card-head"><div class="card-title">M1 status</div></div>
               <div class="status-list">
                 <div><span>Encrypted database</span><b class="ok">SQLCipher</b></div>
-                <div><span>UI authentication</span><b class="ok">Bearer token</b></div>
+                <div><span>UI authentication</span><b class="ok">password + MFA</b></div>
+                <div><span>Second factor</span><b class="ok">TOTP + passkey</b></div>
                 <div><span>Host key policy</span><b class="ok">TOFU + approval</b></div>
                 <div><span>Target helper</span><b class="ok">fixed actions + remote install</b></div>
                 <div><span>Password SSH</span><b class="ok">manual prompt only</b></div>

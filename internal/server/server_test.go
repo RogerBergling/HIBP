@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,11 +12,39 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/RogerBergling/hibp/internal/auth"
 	"github.com/RogerBergling/hibp/internal/store"
+	"github.com/go-webauthn/webauthn/webauthn"
 )
 
+func seedTestSession(t *testing.T, db *store.Store) {
+	t.Helper()
+	hash, err := auth.HashPassword("test-password-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := db.CreateUser("test", hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateSession(user.ID, auth.HashSessionToken("test-token"), true, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func testServer(t *testing.T) (*httptest.Server, *store.Store) {
+	t.Helper()
+	return testServerWithUser(t, true)
+}
+
+func testServerNoUser(t *testing.T) (*httptest.Server, *store.Store) {
+	t.Helper()
+	return testServerWithUser(t, false)
+}
+
+func testServerWithUser(t *testing.T, seedUser bool) (*httptest.Server, *store.Store) {
 	t.Helper()
 	dir := t.TempDir()
 	db, err := store.Open(filepath.Join(dir, "inventory.hibp"), []byte("correct horse battery staple"), store.Options{
@@ -33,7 +62,10 @@ func testServer(t *testing.T) (*httptest.Server, *store.Store) {
 	if err := os.WriteFile(sshConfigPath, []byte("Host testhost\n  HostName test.example\n  User ubuntu\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	app, err := New(Config{Store: db, Token: "test-token", Version: "test", SSHConfigPath: sshConfigPath})
+	if seedUser {
+		seedTestSession(t, db)
+	}
+	app, err := New(Config{Store: db, Version: "test", SSHConfigPath: sshConfigPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +85,7 @@ func request(t *testing.T, method, url, token string, body string) *http.Respons
 		t.Fatal(err)
 	}
 	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
 	}
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
@@ -63,6 +95,301 @@ func request(t *testing.T, method, url, token string, body string) *http.Respons
 		t.Fatal(err)
 	}
 	return resp
+}
+
+func findSessionCookie(t *testing.T, resp *http.Response) *http.Cookie {
+	t.Helper()
+	for _, cookie := range resp.Cookies() {
+		if cookie.Name == sessionCookieName {
+			return cookie
+		}
+	}
+	t.Fatal("session cookie was not set")
+	return nil
+}
+
+func TestAuthStatusSetupRequired(t *testing.T) {
+	ts, _ := testServerNoUser(t)
+	resp := request(t, http.MethodGet, ts.URL+"/api/v1/auth/status", "", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var status struct {
+		SetupRequired bool `json:"setup_required"`
+		Authenticated bool `json:"authenticated"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	if !status.SetupRequired || status.Authenticated {
+		t.Fatalf("unexpected status: %+v", status)
+	}
+}
+
+func TestSetupTOTPAndLoginFlow(t *testing.T) {
+	ts, _ := testServerNoUser(t)
+	base := ts.URL
+
+	resp := request(t, http.MethodPost, base+"/api/v1/auth/setup", "", `{"username":"admin","password":"correct horse battery staple"}`)
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("setup failed: %d %s", resp.StatusCode, data)
+	}
+	cookie := findSessionCookie(t, resp)
+	if !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode || cookie.Secure {
+		resp.Body.Close()
+		t.Fatalf("unexpected session cookie flags: %+v", cookie)
+	}
+	pending := cookie.Value
+	resp.Body.Close()
+
+	resp = request(t, http.MethodGet, base+"/api/v1/auth/status", pending, "")
+	var status struct {
+		SetupRequired         bool `json:"setup_required"`
+		Authenticated         bool `json:"authenticated"`
+		MFARequired           bool `json:"mfa_required"`
+		MFAEnrollmentRequired bool `json:"mfa_enrollment_required"`
+		WebAuthnAvailable     bool `json:"webauthn_available"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if status.SetupRequired || status.Authenticated || !status.MFARequired || !status.MFAEnrollmentRequired {
+		t.Fatalf("unexpected pending status: %+v", status)
+	}
+	if status.WebAuthnAvailable {
+		t.Fatal("passkeys must not be advertised for 127.0.0.1")
+	}
+
+	resp = request(t, http.MethodPost, base+"/api/v1/auth/totp/begin", pending, `{}`)
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("totp begin failed: %d %s", resp.StatusCode, data)
+	}
+	var totp struct {
+		Secret string `json:"secret"`
+		QR     string `json:"qr_png"`
+		URI    string `json:"uri"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&totp); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if totp.Secret == "" || !strings.HasPrefix(totp.QR, "data:image/png;base64,") || !strings.HasPrefix(totp.URI, "otpauth://totp/") {
+		t.Fatalf("unexpected TOTP setup: %+v", totp)
+	}
+	enrollCode, _, err := auth.TOTPCode(totp.Secret, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp = request(t, http.MethodPost, base+"/api/v1/auth/totp/verify", pending, fmt.Sprintf(`{"code":%q}`, enrollCode))
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("totp verify failed: %d %s", resp.StatusCode, data)
+	}
+	fullCookie := findSessionCookie(t, resp)
+	full := fullCookie.Value
+	resp.Body.Close()
+	if full == pending {
+		t.Fatal("session token was not rotated after MFA")
+	}
+
+	resp = request(t, http.MethodGet, base+"/api/v1/auth/status", full, "")
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if !status.Authenticated || status.MFARequired || status.MFAEnrollmentRequired {
+		t.Fatalf("unexpected authenticated status: %+v", status)
+	}
+	resp = request(t, http.MethodGet, base+"/api/v1/hosts", full, "")
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("authenticated hosts request failed: %d %s", resp.StatusCode, data)
+	}
+	resp.Body.Close()
+
+	// Log out, log in again, and prove that a pending session cannot reach
+	// application data or rotate TOTP with only the password.
+	// the password.
+	resp = request(t, http.MethodPost, base+"/api/v1/auth/logout", full, `{}`)
+	resp.Body.Close()
+	resp = request(t, http.MethodPost, base+"/api/v1/auth/login", "", `{"username":"admin","password":"correct horse battery staple"}`)
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("login failed: %d %s", resp.StatusCode, data)
+	}
+	pending2 := findSessionCookie(t, resp).Value
+	resp.Body.Close()
+	resp = request(t, http.MethodGet, base+"/api/v1/hosts", pending2, "")
+	if resp.StatusCode != http.StatusForbidden {
+		resp.Body.Close()
+		t.Fatalf("expected 403 for pending session, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	resp = request(t, http.MethodPost, base+"/api/v1/auth/totp/begin", pending2, `{}`)
+	if resp.StatusCode != http.StatusForbidden {
+		resp.Body.Close()
+		t.Fatalf("pending session could rotate TOTP: %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Use the next time step so the code is definitely newer than enrollment.
+	loginCode, _, err := auth.TOTPCode(totp.Secret, time.Now().Add(30*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp = request(t, http.MethodPost, base+"/api/v1/auth/totp/verify", pending2, fmt.Sprintf(`{"code":%q}`, loginCode))
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("login TOTP failed: %d %s", resp.StatusCode, data)
+	}
+	full2 := findSessionCookie(t, resp).Value
+	resp.Body.Close()
+
+	// Replay the same TOTP from a fresh pending session.
+	resp = request(t, http.MethodPost, base+"/api/v1/auth/logout", full2, `{}`)
+	resp.Body.Close()
+	resp = request(t, http.MethodPost, base+"/api/v1/auth/login", "", `{"username":"admin","password":"correct horse battery staple"}`)
+	pending3 := findSessionCookie(t, resp).Value
+	resp.Body.Close()
+	resp = request(t, http.MethodPost, base+"/api/v1/auth/totp/verify", pending3, fmt.Sprintf(`{"code":%q}`, loginCode))
+	var replay struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&replay); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized || replay.Code != "replayed_code" {
+		t.Fatalf("expected replayed_code rejection, got %d %+v", resp.StatusCode, replay)
+	}
+}
+
+func TestSetupRejectedWhenUserExists(t *testing.T) {
+	ts, _ := testServer(t)
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/auth/setup", "", `{"username":"other","password":"correct horse battery staple"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", resp.StatusCode)
+	}
+}
+
+func TestLoginRateLimit(t *testing.T) {
+	ts, _ := testServer(t)
+	for attempt := 0; attempt < 5; attempt++ {
+		resp := request(t, http.MethodPost, ts.URL+"/api/v1/auth/login", "", `{"username":"test","password":"wrong password"}`)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: expected 401, got %d", attempt+1, resp.StatusCode)
+		}
+	}
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/auth/login", "", `{"username":"test","password":"wrong password"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", resp.StatusCode)
+	}
+}
+
+func TestWebAuthnConfigRequiresLocalhost(t *testing.T) {
+	s := &Server{}
+	request := httptest.NewRequest(http.MethodPost, "http://localhost:8443/api/v1/auth/passkey/register/begin", nil)
+	request.Host = "localhost:8443"
+	rpID, origin, err := s.webAuthnConfig(request)
+	if err != nil || rpID != "localhost" || origin != "http://localhost:8443" {
+		t.Fatalf("unexpected localhost config: rpID=%q origin=%q err=%v", rpID, origin, err)
+	}
+	request.Host = "127.0.0.1:8443"
+	if _, _, err := s.webAuthnConfig(request); err == nil {
+		t.Fatal("expected IP-address RP ID to be rejected")
+	}
+	request.Host = "evil.example:8443"
+	if _, _, err := s.webAuthnConfig(request); err == nil {
+		t.Fatal("expected non-localhost RP ID to be rejected")
+	}
+}
+
+func TestWebAuthnUserAdaptsStoredPasskey(t *testing.T) {
+	_, db := testServer(t)
+	s := &Server{store: db}
+	user, err := db.GetUserByUsername("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentialJSON, err := json.Marshal(webauthn.Credential{ID: []byte("credential-1"), PublicKey: []byte("public-key")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.AddPasskey(user.ID, []byte("credential-1"), string(credentialJSON), 0, "Test"); err != nil {
+		t.Fatal(err)
+	}
+	waUser, err := s.webAuthnUser(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(waUser.WebAuthnID()) != user.ID || waUser.WebAuthnName() != "test" {
+		t.Fatalf("unexpected WebAuthn user: %+v", waUser)
+	}
+	credentials := waUser.WebAuthnCredentials()
+	if len(credentials) != 1 || string(credentials[0].ID) != "credential-1" {
+		t.Fatalf("unexpected credentials: %+v", credentials)
+	}
+}
+
+func TestCeremonyStoreIsBoundAndSingleUse(t *testing.T) {
+	store := newCeremonyStore()
+	data := webauthn.SessionData{Challenge: "challenge", UserID: []byte("user-1")}
+	id, err := store.put("session-1", "user-1", "login", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.take(id, "session-2", "user-1", "login"); err == nil {
+		t.Fatal("ceremony accepted from the wrong session")
+	}
+	if _, err := store.take(id, "session-1", "user-1", "login"); err == nil {
+		t.Fatal("ceremony was not consumed on the first take")
+	}
+	id, err = store.put("session-1", "user-1", "login", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.take(id, "session-1", "user-1", "login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Challenge != "challenge" {
+		t.Fatalf("unexpected ceremony data: %+v", got)
+	}
+}
+
+func TestPasskeysUnavailableOnIPOrigin(t *testing.T) {
+	ts, _ := testServer(t)
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/auth/passkey/register/begin", "test-token", `{}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+	var payload struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Code != "passkey_unavailable" {
+		t.Fatalf("expected passkey_unavailable, got %q", payload.Code)
+	}
 }
 
 func TestAuthRequired(t *testing.T) {
@@ -120,7 +447,7 @@ func TestUpdateHost(t *testing.T) {
 	}
 	update := `{"name":"web01-updated","address":"10.0.0.11","port":2222,"username":"admin","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519","tags":"web,prod,updated","group_name":"web-prod","cmdb_ci_id":"CI-999"}`
 	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/api/v1/hosts/"+host.ID, strings.NewReader(update))
-	req.Header.Set("Authorization", "Bearer test-token")
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "test-token"})
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -155,7 +482,8 @@ func TestListSSHKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	app, err := New(Config{Store: db, Token: "test-token", Version: "test", KeyDirs: []string{dir}})
+	seedTestSession(t, db)
+	app, err := New(Config{Store: db, Version: "test", KeyDirs: []string{dir}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +528,7 @@ func TestSecurityHeadersAndOrigin(t *testing.T) {
 	}
 
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/hosts", bytes.NewBufferString(`{}`))
-	req.Header.Set("Authorization", "Bearer test-token")
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "test-token"})
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Origin", "http://evil.example")
 	resp, err := http.DefaultClient.Do(req)

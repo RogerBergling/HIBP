@@ -3,6 +3,8 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -15,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/RogerBergling/hibp/internal/auth"
 	"github.com/RogerBergling/hibp/internal/crypto"
 	"github.com/RogerBergling/hibp/internal/helper"
 	"github.com/RogerBergling/hibp/internal/server"
@@ -39,6 +42,8 @@ func main() {
 		err = runServer(args[1:])
 	case "helper":
 		err = runHelper(args[1:])
+	case "user":
+		err = runUser(args[1:])
 	case "version", "--version", "-version":
 		fmt.Println("hibp " + version)
 		fmt.Println("sqlcipher driver:", store.DriverName)
@@ -81,6 +86,7 @@ func usage() {
 Usage:
   hibp server [flags]     Run the local browser UI and API
   hibp helper <action>    Run a fixed target action (facts|check|apply|reboot|reboot-check)
+  hibp user reset         Reset the local account password, TOTP, and passkeys
   hibp version            Print the version
 
 Server flags:
@@ -192,13 +198,8 @@ func runServer(args []string) error {
 		}
 	}
 
-	token, err := crypto.RandomToken()
-	if err != nil {
-		return err
-	}
 	app, err := server.New(server.Config{
 		Store:         db,
-		Token:         token,
 		Version:       version,
 		KeyDirs:       splitList(*keyDir),
 		SSHConfigPath: *sshConfig,
@@ -211,7 +212,11 @@ func runServer(args []string) error {
 	if err != nil {
 		return err
 	}
-	url := fmt.Sprintf("http://%s/?token=%s", listener.Addr().String(), token)
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		return err
+	}
+	url := "http://localhost:" + port + "/"
 	fmt.Fprintf(os.Stderr, "HIBP %s\n", version)
 	fmt.Fprintf(os.Stderr, "SQLCipher: %s\n", store.DriverName)
 	if !store.ProductionDriver {
@@ -219,6 +224,7 @@ func runServer(args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "Database: %s\n", db.Path())
 	fmt.Fprintf(os.Stderr, "Open:     %s\n", url)
+	fmt.Fprintln(os.Stderr, "Auth:     password + TOTP/passkey (create the account on first visit)")
 	fmt.Fprintln(os.Stderr, "Press Ctrl+C to stop.")
 
 	httpServer := &http.Server{
@@ -252,6 +258,81 @@ func runHelper(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()
 	return helper.Run(ctx, args[0], os.Stdout)
+}
+
+func runUser(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: hibp user reset --username <name>")
+	}
+	switch args[0] {
+	case "reset":
+		return runUserReset(args[1:])
+	default:
+		return fmt.Errorf("unknown user command %q", args[0])
+	}
+}
+
+func runUserReset(args []string) error {
+	flags := flag.NewFlagSet("user reset", flag.ContinueOnError)
+	dbPath := flags.String("db", defaultDBPath(), "database path")
+	passphraseFile := flags.String("passphrase-file", "", "read database passphrase from a 0600 file")
+	username := flags.String("username", "", "username to reset")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*username) == "" {
+		return errors.New("--username is required")
+	}
+	passphrase, err := readPassphrase(*passphraseFile)
+	if err != nil {
+		return err
+	}
+	defer crypto.Zero(passphrase)
+	db, err := store.Open(*dbPath, passphrase, store.DefaultOptions())
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	user, err := db.GetUserByUsername(*username)
+	if err != nil {
+		return fmt.Errorf("user %q: %w", *username, err)
+	}
+	password, err := readNewPassword("New password: ")
+	if err != nil {
+		return err
+	}
+	defer crypto.Zero(password)
+	if err := auth.ValidatePassword(string(password)); err != nil {
+		return err
+	}
+	confirm, err := readNewPassword("Confirm password: ")
+	if err != nil {
+		return err
+	}
+	defer crypto.Zero(confirm)
+	if subtle.ConstantTimeCompare(password, confirm) != 1 {
+		return errors.New("passwords do not match")
+	}
+	hash, err := auth.HashPassword(string(password))
+	if err != nil {
+		return err
+	}
+	if err := db.ResetUserAuth(user.ID, hash); err != nil {
+		return err
+	}
+	_ = db.AddAudit("cli", "reset-auth", "user", user.ID, "password, TOTP, passkeys, and sessions reset")
+	fmt.Printf("Reset password and MFA for %s.\n", user.Username)
+	return nil
+}
+
+func readNewPassword(prompt string) ([]byte, error) {
+	fmt.Fprint(os.Stderr, prompt)
+	password, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return nil, fmt.Errorf("read password: %w", err)
+	}
+	return password, nil
 }
 
 func seedDemo(db *store.Store) error {

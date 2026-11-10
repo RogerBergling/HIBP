@@ -2,12 +2,12 @@
 
 > **Status: M1 feature set with a production build path.** The repository
 > contains a working Go server, browser UI, SQLCipher storage, host CRUD/import,
-> SSH host-key approval, remote helper installation, fact collection, reboot
-> control, SSH config import, audit chain, backup/restore, helper actions,
-> tests, and CI. `make production`
+> password + TOTP/passkey authentication, SSH host-key approval, remote helper
+> installation, fact collection, reboot control, SSH config import, audit
+> chain, backup/restore, helper actions, tests, and CI. `make production`
 > builds against current SQLCipher 4.20 in a pinned Alpine/musl image; the
-> development build still uses the 2020 spike driver and prints a warning.
-> Password and sudo fallbacks are manual-run only.
+> development build still uses the 2020 spike driver and prints a warning. SSH
+> password and sudo fallbacks are manual-run only.
 > Scheduler, playbooks, agent mode, and notifications are not implemented yet.
 >
 > **Name:** HIBP stands for **Have I Been Patched**. It is not affiliated with
@@ -35,6 +35,7 @@ and can back up. A CLI and a background service use the same core.
 - [Install a release](#install-a-release-recommended)
 - [Install prerequisites](#install-prerequisites)
 - [Quick start (source build)](#quick-start-source-build)
+- [Authentication and MFA](#authentication-and-mfa)
 - [Target sudo setup](#target-sudo-setup)
 - [What HIBP is](#what-hibp-is)
 - [Why it exists](#why-it-exists)
@@ -100,6 +101,8 @@ End users should not need Go or a compiler.
    hibp version
    hibp server --db "$HOME/.local/share/hibp/hibp.db" --create
    ```
+
+   Open <http://localhost:8443/> and create the admin account plus MFA.
 
    Release artifacts are built with the production SQLCipher driver. The
    release automation currently publishes **linux-amd64**; build from source or
@@ -347,11 +350,15 @@ make build
 # Create the encrypted database and start the local UI
 ./dist/hibp server --db ~/.local/share/hibp/hibp.db --create
 
-# Open the printed http://127.0.0.1:8443/?token=... URL
+# Open http://localhost:8443/ (the server prints the exact URL)
 ```
 
-In the UI, add a host, click **Test** to approve its host key, then click
-**Setup** to install the restricted helper on the target.
+On first visit, create the administrator account, then enroll TOTP and/or a
+passkey. After that, add a host, click **Test** to approve its host key, then
+click **Setup** to install the restricted helper on the target.
+
+Use **localhost**, not **127.0.0.1**, if you want passkeys. WebAuthn relying
+party IDs must be hostnames; IP addresses are rejected. TOTP works with either.
 
 The server browses `~/.ssh` in the host form by default. Add more key
 directories with a comma-separated flag:
@@ -371,6 +378,98 @@ passphrase must be at least 12 characters. Use `make static` for the development
 static ELF, or `make production` for the current-SQLCipher Docker build. The
 target helper installation and sudoers example are in
 [`packaging/README.md`](packaging/README.md).
+
+## Authentication and MFA
+
+HIBP is single-user in v1. There is no default token and no remote account
+provider. On first visit, the browser asks you to create the local administrator
+account, then to enroll at least one second factor.
+
+### First run
+
+1. Open `http://localhost:8443/`.
+2. Choose a username and a password of at least 12 characters.
+3. Scan the TOTP QR code with an authenticator app and verify a code, and/or
+   add a platform passkey.
+4. Click **Continue to HIBP**.
+
+A password alone never unlocks the fleet. A pending password session is
+short-lived and cannot access `/api/v1/hosts` or any other application endpoint.
+
+### Password handling
+
+- Passwords are hashed with Argon2id (64 MiB, 3 iterations, 2 threads) with a
+  per-password random salt. Parameters are stored in the PHC string so they can
+  be raised later.
+- The verifier rejects absurd parameters from a tampered database instead of
+  turning login into a memory-exhaustion attempt.
+- Login failures are rate-limited by client address and username. Five failed
+  attempts per username in 15 minutes return `429 Too Many Requests`.
+- Missing usernames still pay the Argon2 cost, so response timing does not
+  reveal whether the account exists.
+
+### Sessions
+
+- The browser receives an opaque random session token in an `HttpOnly`,
+  `SameSite=Strict` cookie. JavaScript cannot read it.
+- Only a SHA-256 hash of the token is stored in SQLCipher.
+- A pending MFA session expires after 5 minutes. A completed session has a
+  12-hour absolute limit and a 30-minute idle timeout.
+- A successful MFA step rotates the session token and deletes the pending one,
+  preventing session fixation.
+- The UI binds to loopback and only accepts loopback Host headers. There is no
+  TLS; use an SSH tunnel. Do not expose it directly to a network. A reverse
+  proxy on a custom domain would also need Host and WebAuthn-origin changes.
+
+### TOTP
+
+- Standard 30-second, 6-digit, SHA-1 TOTP compatible with Google Authenticator,
+  Aegis, 1Password, and similar apps.
+- The QR code is generated from an `otpauth://` URI. The base32 secret is shown
+  once for manual entry.
+- The server accepts one 30-second step of clock skew.
+- The last accepted time step is stored and replayed codes are rejected.
+- A pending password session cannot replace TOTP. Replacing TOTP requires an
+  already-completed MFA session.
+
+### Passkeys
+
+- Passkeys use WebAuthn. The private key stays on the authenticator; the server
+  stores only the public key, credential ID, transports, and sign counter.
+- Passkeys require a hostname origin. Use `http://localhost:8443/`.
+  `127.0.0.1` is not a valid WebAuthn relying party ID; the UI disables passkeys
+  there and leaves TOTP available.
+- Registration from a password-only pending session is allowed only while the
+  account has no other MFA method. Once TOTP or a passkey exists, adding a new
+  passkey requires a completed MFA session. This prevents a password-only
+  attacker from silently adding a bypass factor.
+- A passkey whose signature counter regresses is rejected as a possible cloned
+  authenticator and the event is audited.
+
+### Recovery
+
+There is no email reset, recovery code, or remote recovery path. If the only MFA
+device is lost, recover locally with the database passphrase:
+
+```bash
+hibp user reset --username admin --db ~/.local/share/hibp/hibp.db
+```
+
+This opens the encrypted database, prompts for a new account password, and
+clears TOTP, passkeys, and all sessions. It requires local access to the
+controller and the database passphrase. That is intentionally a physical-access
+recovery boundary.
+
+### Security boundaries
+
+- **Single-user, no RBAC.** The authenticated account is the administrator.
+- **The session cookie is the admin credential.** Protect the browser profile,
+  the SSH tunnel, and the controller.
+- **The database passphrase is separate from the account password.** Neither one
+  unlocks the other.
+- **The UI is loopback-only.** Do not expose it directly to a network.
+- **MFA is mandatory after setup.** A stolen password alone cannot reach hosts.
+- **Passkeys need `localhost`; TOTP is the fallback on `127.0.0.1`.**
 
 ## Target sudo setup
 
@@ -1096,15 +1195,18 @@ Rules:
 - v1 has one operator and no RBAC. "Single user" does not mean unauthenticated.
 - The server binds to a Unix socket or `127.0.0.1`. The laptop connects through
   an SSH tunnel, so the server's remote surface is SSH, not an exposed web port.
-- Authentication is the server OS account's SSH key plus the database
-  passphrase. There is no separate web password in the default deployment.
+- The UI requires a local password plus TOTP and/or a passkey. The database
+  passphrase is a separate startup secret and is not reused for the web login.
+- The browser receives an HttpOnly, SameSite=Strict session cookie. Only a
+  SHA-256 hash of the session token is stored. Pending MFA sessions are
+  short-lived and cannot reach application endpoints.
 - The database is unlocked manually after a server reboot. The server does not
   persist the database key in v1. While locked, the UI shows a paused state and
   schedules do not run.
-- If a TCP listener is enabled for the UI/API, require TLS, a single strong admin
-  token or client certificate, and an explicit opt-in. Do not expose it to the
-  internet.
-- The audit actor is the OS user or `local` in v1. The schema keeps an actor
+- If a TCP listener is enabled for the UI/API, require TLS and an explicit
+  opt-in. The current implementation only accepts loopback Host headers. Do not
+  expose it to the internet.
+- The audit actor is the authenticated username in v1. The schema keeps an actor
   column so RBAC can be added later.
 - Do not share the database file or passphrase between users. Do not run two
   server instances against the same database.
@@ -1259,7 +1361,7 @@ Agent mode is optional and later; v1 uses SSH from the always-on server.
 
 - SQLCipher database with Argon2id-derived keys and a validated `.meta` sidecar.
 - `0600` database, sidecar, key, and backup files; wrong-passphrase test.
-- Bearer-token UI authentication, Host/Origin checks, CSP, and security headers.
+- Argon2id password login, TOTP, passkeys, HttpOnly sessions, recovery CLI, Host/Origin checks, CSP, and security headers.
 - SSH host-key TOFU with explicit fingerprint approval and changed-key failure.
 - Manual SSH and sudo password fallbacks with per-run prompts; no password storage.
 - SSH key browser limited to configured directories; it never returns key contents.
@@ -1286,25 +1388,30 @@ Agent mode is optional and later; v1 uses SSH from the always-on server.
   Scheduled password authentication requires an external vault and is deferred.
 - No RBAC, external audit anchor, TPM-sealed key, agent mode, or signed
   playbooks yet.
-- The browser UI token is a bearer secret; protect the SSH tunnel and terminal.
+- The browser session cookie is an admin credential; protect the SSH tunnel, browser profile, and controller.
+- Passkeys require a `localhost` origin; `127.0.0.1` is TOTP-only.
+- Recovery is local-only via `hibp user reset`; there is no self-service reset.
 - Systemd hardening has not been validated against every distribution.
 - Real target testing is limited to local unit/integration tests so far.
 
 ## Data model
 
-The M1 schema is implemented in `internal/store/migrations/001_init.sql`. The
+The M1 schema is implemented in `internal/store/migrations/001_init.sql` and `002_auth.sql`. The
 remaining tables below are the planned design for later milestones. Domain
 objects use UUIDs, timestamps are UTC ISO 8601, and durations are stored in
 seconds.
 
 > **M1 implementation:** `schema_migrations`, `app_meta`, `hosts`,
-> `host_facts`, `host_keys`, `runs` (table only), and `audit_log` exist. The
-> remaining tables are planned.
+> `host_facts`, `host_keys`, `runs` (table only), `users`, `user_passkeys`,
+> `sessions`, and `audit_log` exist. The remaining tables are planned.
 
 | Table | Purpose | Key fields |
 |---|---|---|
 | `schema_migrations` | Applied migrations and checksums. | `version`, `name`, `checksum`, `applied_at` |
 | `app_meta` | Application metadata. | `key`, `value` |
+| `users` | Local administrator account and MFA state. | `id`, `username`, `password_hash`, `totp_secret`, `totp_pending_secret`, `totp_enabled`, `totp_last_step`, `created_at`, `updated_at` |
+| `user_passkeys` | WebAuthn credential records. | `id`, `user_id`, `credential_id`, `credential_json`, `sign_count`, `name`, `created_at`, `last_used_at` |
+| `sessions` | Hashed browser sessions. | `id`, `user_id`, `token_hash`, `created_at`, `expires_at`, `last_seen_at`, `mfa_verified` |
 | `hosts` | Managed hosts. | `id`, `name`, `address`, `port`, `os_family`, `os_version`, `enabled`, `group_id`, `cmdb_ci_id`, `created_at`, `updated_at`, `deleted_at` |
 | `host_facts` | Latest collected facts. | `host_id`, `collected_at`, `uptime_seconds`, `boot_time`, `kernel`, `os_pretty_name`, `package_manager`, `reboot_required`, `disk_free_bytes`, `time_sync_ok` |
 | `credentials` | Encrypted credential metadata and secrets. | `id`, `name`, `auth_type`, `username`, `key_path`, `secret_ref`, `wrapped_dek`, `encrypted_secret`, `sudo_mode`, `created_at`, `rotated_at` |
@@ -1527,13 +1634,15 @@ changes:
 
 M1 is implemented in Go:
 
-- `cmd/hibp` server and helper commands
+- `cmd/hibp` server, helper, and local recovery commands
 - `internal/crypto` Argon2id key derivation and `.meta` sidecar
+- `internal/auth` password hashing, session tokens, TOTP, and username validation
 - `internal/store` SQLCipher database, migrations, hosts, facts, host keys,
   backup, and hash-chained audit
 - `internal/remote` SSH transport and host-key policy
 - `internal/helper` fixed target actions
-- `internal/server` browser UI/API, token auth, Host/Origin checks, and security
+- `internal/sshconfig` local OpenSSH client config reader
+- `internal/server` browser UI/API, session/password/MFA auth, Host/Origin checks, and security
   headers
 - `internal/webui` embedded HTML/CSS/JS
 - tests, `Makefile`, and GitHub Actions CI

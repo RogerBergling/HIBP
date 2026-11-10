@@ -178,12 +178,12 @@ func (s *Server) handleTestHost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_ = s.store.SetHostStatus(host.ID, "unreachable")
-		_ = s.store.AddAudit(s.actor, "test-failed", "host", host.ID, err.Error())
+		_ = s.store.AddAudit(s.auditActor(r), "test-failed", "host", host.ID, err.Error())
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	_ = s.store.SetHostStatus(host.ID, "reachable")
-	_ = s.store.AddAudit(s.actor, "test", "host", host.ID, "connection and host key verified")
+	_ = s.store.AddAudit(s.auditActor(r), "test", "host", host.ID, "connection and host key verified")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "host": host.Name})
 }
 
@@ -403,7 +403,7 @@ func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result := helper.Result{Action: action, OK: code == 0, ExitCode: code, Output: output}
-	if err := s.store.AddAudit(s.actor, "patch-"+action, "host", host.ID, fmt.Sprintf("exit=%d", code)); err != nil {
+	if err := s.store.AddAudit(s.auditActor(r), "patch-"+action, "host", host.ID, fmt.Sprintf("exit=%d", code)); err != nil {
 		_ = err
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -455,7 +455,7 @@ func (s *Server) handleReboot(w http.ResponseWriter, r *http.Request) {
 	if code == 0 {
 		_ = s.store.SetHostStatus(host.ID, "unknown")
 	}
-	if err := s.store.AddAudit(s.actor, "reboot", "host", host.ID, fmt.Sprintf("exit=%d", code)); err != nil {
+	if err := s.store.AddAudit(s.auditActor(r), "reboot", "host", host.ID, fmt.Sprintf("exit=%d", code)); err != nil {
 		_ = err
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -540,7 +540,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	if err := s.store.AddAudit(s.actor, "bootstrap-helper", "host", host.ID, "installed restricted helper"); err != nil {
+	if err := s.store.AddAudit(s.auditActor(r), "bootstrap-helper", "host", host.ID, "installed restricted helper"); err != nil {
 		_ = err
 	}
 	// The verification step returns facts output. Store it when it is clean
@@ -637,7 +637,7 @@ func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	_ = s.store.AddAudit(s.actor, "backup", "database", "", request.Path)
+	_ = s.store.AddAudit(s.auditActor(r), "backup", "database", "", request.Path)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": request.Path, "sidecar": request.Path + ".meta"})
 }
 
@@ -660,7 +660,7 @@ func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	_ = s.store.AddAudit(s.actor, "restore", "database", "", request.DestPath)
+	_ = s.store.AddAudit(s.auditActor(r), "restore", "database", "", request.DestPath)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": request.DestPath, "sidecar": request.DestPath + ".meta"})
 }
 

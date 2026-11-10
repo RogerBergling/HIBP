@@ -58,8 +58,14 @@ Out of scope:
   stored. Vault-backed scheduled password authentication, RBAC, external audit
   anchoring, TPM-sealed keys, agent mode, and signed playbooks are not
   implemented yet.
-- The browser UI token is a bearer secret. Protect the terminal, SSH tunnel, and
-  browser profile that hold it.
+- The browser session cookie is an administrator credential. It is HttpOnly,
+  SameSite=Strict, and only a SHA-256 hash is stored in SQLCipher. Protect the
+  browser profile, SSH tunnel, and controller.
+- Login uses Argon2id and is rate-limited. TOTP replay is rejected. Passkeys are
+  bound to a `localhost` origin; `127.0.0.1` is TOTP-only because WebAuthn
+  relying party IDs cannot be IP addresses.
+- Account recovery is local-only: `hibp user reset` requires the database
+  passphrase and access to the controller. There is no email or remote reset.
 
 ## Operational guidance
 
@@ -77,5 +83,5 @@ Out of scope:
   the static release build, keep the host key pinned, and use the Setup flow
   only against hosts you intend to manage.
 - Keep at least one encrypted backup off the controller and test restores.
-- Treat the UI token and the SSH tunnel as credentials.
+- Treat the session cookie, the SSH tunnel, and the controller as credentials.
 - Review playbooks before approval. Arbitrary shell is intentionally disabled.

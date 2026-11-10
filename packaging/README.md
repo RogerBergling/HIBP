@@ -13,8 +13,8 @@ These files are examples, not a complete distribution package.
      --db /var/lib/hibp/hibp.db --create --listen 127.0.0.1:8443
    ```
 
-4. Open the printed `http://127.0.0.1:8443/?token=...` URL through an SSH
-   tunnel:
+4. Open `http://localhost:8443/` through an SSH tunnel, create the admin
+   account, and enroll TOTP and/or a passkey:
 
    ```bash
    ssh -L 8443:127.0.0.1:8443 user@server
