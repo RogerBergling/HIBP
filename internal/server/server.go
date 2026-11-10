@@ -89,6 +89,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/test", s.auth(s.handleTestHost))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/trust-key", s.auth(s.handleTrustKey))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/facts", s.auth(s.handleFacts))
+	s.mux.HandleFunc("POST /api/v1/hosts/{id}/bootstrap", s.auth(s.handleBootstrap))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/patch", s.auth(s.handlePatch))
 	s.mux.HandleFunc("POST /api/v1/import", s.auth(s.handleImport))
 	s.mux.HandleFunc("GET /api/v1/audit", s.auth(s.handleAudit))

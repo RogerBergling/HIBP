@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -240,12 +241,12 @@ func remoteHostKey(key *store.HostKey) *remote.HostKey {
 	return &remote.HostKey{KeyType: key.KeyType, Fingerprint: key.Fingerprint}
 }
 
-var errSudoPasswordRequired = errors.New("sudo requires a password on the target; install the restricted NOPASSWD helper rule described in packaging/README.md")
+var errSudoPasswordRequired = errors.New("sudo requires a password on the target; use Setup in HIBP or enter the sudo password when prompted")
 var errSudoPasswordInvalid = errors.New("sudo password was rejected by the target")
 
 func looksLikeSudoPasswordInvalid(output string) bool {
 	lower := strings.ToLower(output)
-	for _, needle := range []string{"sorry, try again", "incorrect password", "authentication failure"} {
+	for _, needle := range []string{"sorry, try again", "incorrect password", "incorrect password attempt", "authentication failure"} {
 		if strings.Contains(lower, needle) {
 			return true
 		}
@@ -261,6 +262,7 @@ func looksLikeSudoAuthFailure(output string) bool {
 		"no tty present",
 		"no askpass program specified",
 		"a terminal is required",
+		"must have a tty",
 	} {
 		if strings.Contains(lower, needle) {
 			return true
@@ -344,19 +346,7 @@ func (s *Server) handleFacts(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "helper returned invalid JSON", "output": output})
 		return
 	}
-	stored := store.Facts{
-		CollectedAt:    crypto.Now(),
-		UptimeSeconds:  facts.UptimeSeconds,
-		BootTime:       facts.BootTime,
-		Kernel:         facts.Kernel,
-		OSPrettyName:   facts.OSPrettyName,
-		PackageManager: facts.PackageManager,
-		RebootRequired: facts.RebootRequired,
-		DiskFreeBytes:  facts.DiskFreeBytes,
-		TimeSyncOK:     facts.TimeSyncOK,
-		PendingUpdates: facts.PendingUpdates,
-	}
-	if err := s.store.SaveFacts(host.ID, stored); err != nil {
+	if err := s.store.SaveFacts(host.ID, storeFactsFromHelper(facts)); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -417,6 +407,98 @@ func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
 		_ = err
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func storeFactsFromHelper(facts helper.Facts) store.Facts {
+	return store.Facts{
+		CollectedAt:    crypto.Now(),
+		UptimeSeconds:  facts.UptimeSeconds,
+		BootTime:       facts.BootTime,
+		Kernel:         facts.Kernel,
+		OSPrettyName:   facts.OSPrettyName,
+		PackageManager: facts.PackageManager,
+		RebootRequired: facts.RebootRequired,
+		DiskFreeBytes:  facts.DiskFreeBytes,
+		TimeSyncOK:     facts.TimeSyncOK,
+		PendingUpdates: facts.PendingUpdates,
+	}
+}
+
+const maxHelperBinarySize = 100 << 20
+
+func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
+	host, err := s.store.GetHost(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "host not found")
+		return
+	}
+	var request passwordRequest
+	if r.ContentLength != 0 {
+		if err := decodeJSON(w, r, &request); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+	}
+	password := ""
+	if host.AuthType == "password" {
+		if request.Password == "" {
+			writeError(w, http.StatusBadRequest, "password is required for password authentication")
+			return
+		}
+		password = request.Password
+	}
+	key, err := s.store.GetHostKey(host.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if key == nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "host key is not trusted; test and trust the host first", "code": "host_key_untrusted"})
+		return
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "locate controller binary: "+err.Error())
+		return
+	}
+	info, err := os.Stat(executable)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "stat controller binary: "+err.Error())
+		return
+	}
+	if info.Size() > maxHelperBinarySize {
+		writeError(w, http.StatusInternalServerError, "controller binary is too large to install as a helper (maximum 100 MiB)")
+		return
+	}
+	binary, err := os.ReadFile(executable)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "read controller binary: "+err.Error())
+		return
+	}
+	output, err := remote.InstallHelper(r.Context(), s.hostTarget(host, password), remoteHostKey(key), binary, request.SudoPassword)
+	if errors.Is(err, remote.ErrSudoPasswordInvalid) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "sudo_password_invalid"})
+		return
+	}
+	if errors.Is(err, remote.ErrSudoPasswordRequired) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "sudo_password_required"})
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if err := s.store.AddAudit(s.actor, "bootstrap-helper", "host", host.ID, "installed restricted helper"); err != nil {
+		_ = err
+	}
+	// The verification step returns facts output. Store it when it is clean
+	// JSON so the dashboard updates immediately; setup success does not depend
+	// on this best-effort parse.
+	var facts helper.Facts
+	if json.Unmarshal([]byte(output), &facts) == nil {
+		_ = s.store.SaveFacts(host.ID, storeFactsFromHelper(facts))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "output": output})
 }
 
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {

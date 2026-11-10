@@ -212,8 +212,8 @@ th:last-child, td:last-child { padding-right: 15px; }
 .pill.review { color: #fcd34d; background: var(--amber-bg); border-color: rgba(244, 183, 64, .18); }
 .reboot-yes { color: var(--amber); font-weight: 650; }
 .reboot-no { color: var(--muted-2); }
-.actions { display: flex; gap: 4px; flex-wrap: nowrap; }
-.actions .btn.small { height: 24px; padding: 0 5px; font-size: 9.5px; white-space: nowrap; }
+.actions { display: grid; grid-template-columns: repeat(3, max-content); gap: 3px; align-items: center; }
+.actions .btn.small { height: 24px; padding: 0 4px; font-size: 9.5px; white-space: nowrap; }
 .empty-state { padding: 44px 24px; text-align: center; color: var(--muted); }
 .empty-state h3 { color: var(--text); margin: 0 0 6px; font-size: 15px; }
 .empty-state p { margin: 0 0 16px; }

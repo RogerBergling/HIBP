@@ -67,6 +67,9 @@ Out of scope:
 - Keep the database, backups, and SSH keys at mode `0600`.
 - Verify host-key fingerprints through an independent channel.
 - Do not use `NOPASSWD: ALL`; use the narrow helper rule.
+- Remote helper installation uploads the controller binary to the target. Use
+  the static release build, keep the host key pinned, and use the Setup flow
+  only against hosts you intend to manage.
 - Keep at least one encrypted backup off the controller and test restores.
 - Treat the UI token and the SSH tunnel as credentials.
 - Review playbooks before approval. Arbitrary shell is intentionally disabled.

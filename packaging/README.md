@@ -31,6 +31,13 @@ distribution or SQLCipher build needs additional access.
 
 ## Target helper
 
+The app can install the helper from the host row's **Setup** button. It uploads
+the controller binary, writes the restricted rule for the configured SSH
+account, validates it with `visudo`, and verifies passwordless execution. The
+controller must be the static release build and the CPU architectures must
+match. Use the manual steps below for a different architecture or a custom
+path.
+
 Install the same binary on each managed target as:
 
 ```text

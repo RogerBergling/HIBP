@@ -126,14 +126,14 @@
               <table>
                 <thead>
                   <tr>
-                    <th style="width:20%">Host</th>
+                    <th style="width:16%">Host</th>
                     <th style="width:15%">OS</th>
                     <th style="width:9%">Pending</th>
-                    <th style="width:12%">Last check</th>
+                    <th style="width:11%">Last check</th>
                     <th style="width:7%">Uptime</th>
                     <th style="width:7%">Reboot</th>
                     <th style="width:11%">Status</th>
-                    <th style="width:20%">Actions</th>
+                    <th style="width:24%">Actions</th>
                   </tr>
                 </thead>
                 <tbody id="hosts-body"></tbody>
@@ -160,7 +160,7 @@
                 <div><span>Encrypted database</span><b class="ok">SQLCipher</b></div>
                 <div><span>UI authentication</span><b class="ok">Bearer token</b></div>
                 <div><span>Host key policy</span><b class="ok">TOFU + approval</b></div>
-                <div><span>Target helper</span><b class="ok">fixed actions</b></div>
+                <div><span>Target helper</span><b class="ok">fixed actions + remote install</b></div>
                 <div><span>Password SSH</span><b class="ok">manual prompt only</b></div>
                 <div><span>Sudo</span><b class="ok">NOPASSWD or manual prompt</b></div>
               </div>
@@ -168,7 +168,7 @@
             <section class="card">
               <div class="card-head"><div class="card-title">Next step</div></div>
               <div class="next-step">
-                <p>Trust a host key, collect facts, then run a dry-run patch check.</p>
+                <p>Trust a host key, click Setup to install the helper, collect facts, then run a dry-run patch check.</p>
                 <p class="muted">Real patching requires the root-owned helper on the target.</p>
               </div>
             </section>
@@ -192,14 +192,14 @@
             <table>
               <thead>
                 <tr>
-                  <th style="width:20%">Host</th>
+                  <th style="width:16%">Host</th>
                   <th style="width:15%">OS</th>
                   <th style="width:9%">Pending</th>
-                  <th style="width:12%">Last check</th>
+                  <th style="width:11%">Last check</th>
                   <th style="width:7%">Uptime</th>
                   <th style="width:7%">Reboot</th>
                   <th style="width:11%">Status</th>
-                  <th style="width:20%">Actions</th>
+                  <th style="width:24%">Actions</th>
                 </tr>
               </thead>
               <tbody id="hosts-body-full"></tbody>

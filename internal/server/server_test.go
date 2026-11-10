@@ -287,6 +287,37 @@ func TestPasswordAuthRequiresManualPassword(t *testing.T) {
 	}
 }
 
+func TestBootstrapRequiresTrustedHostKey(t *testing.T) {
+	ts, _ := testServer(t)
+	body := `{"name":"web01","address":"10.0.0.10","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519"}`
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/hosts", "test-token", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, data)
+	}
+	var host store.Host
+	if err := json.NewDecoder(resp.Body).Decode(&host); err != nil {
+		t.Fatal(err)
+	}
+
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/hosts/"+host.ID+"/bootstrap", "test-token", `{}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 409, got %d: %s", resp.StatusCode, data)
+	}
+	var payload struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Code != "host_key_untrusted" {
+		t.Fatalf("expected host_key_untrusted, got %q", payload.Code)
+	}
+}
+
 func TestSudoPasswordInvalidDetection(t *testing.T) {
 	for _, output := range []string{
 		"Sorry, try again.",

@@ -195,6 +195,7 @@ function hostRow(host) {
   const actions = el('div', 'actions');
   actions.append(actionButton('Edit', () => showAddHostModal(host)));
   actions.append(actionButton('Test', () => testHost(host)));
+  actions.append(actionButton('Setup', () => bootstrapHost(host)));
   actions.append(actionButton('Facts', () => collectFacts(host)));
   actions.append(actionButton('Patch', () => showPatchModal(host)));
   actionsTd.append(actions);
@@ -339,6 +340,34 @@ function showTrustModal(host, key, password) {
       toast(error.message, 'error');
     }
   });
+}
+
+async function bootstrapHost(host) {
+  if (!confirm('Install the HIBP helper and restricted sudo rule on ' + host.name + '?')) return;
+  toast('Installing helper on ' + host.name + '…');
+  try {
+    const password = passwordFor(host);
+    const result = await requestWithSudo(
+      host,
+      '/api/v1/hosts/' + encodeURIComponent(host.id) + '/bootstrap',
+      (sudoPassword) => ({ password, sudo_password: sudoPassword }),
+      { method: 'POST' },
+    );
+    showOutputModal('Helper installed — ' + host.name, {
+      action: 'bootstrap',
+      ok: true,
+      exit_code: 0,
+      output: result.output,
+    });
+    await loadAll();
+  } catch (error) {
+    if (error.status === 409 && error.data && error.data.code === 'host_key_untrusted') {
+      toast('Trust the host key first; starting the connection test.', 'error');
+      await testHost(host);
+      return;
+    }
+    if (error.message !== 'cancelled') toast(error.message, 'error');
+  }
 }
 
 async function collectFacts(host) {

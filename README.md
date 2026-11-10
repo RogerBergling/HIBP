@@ -2,10 +2,11 @@
 
 > **Status: M1 feature set with a production build path.** The repository
 > contains a working Go server, browser UI, SQLCipher storage, host CRUD/import,
-> SSH host-key approval, fact collection, audit chain, backup/restore, helper
-> actions, tests, and CI. `make production` builds against current SQLCipher
-> 4.20 in a pinned Alpine/musl image; the development build still uses the 2020
-> spike driver and prints a warning. Password fallback is manual-run only.
+> SSH host-key approval, remote helper installation, fact collection, audit
+> chain, backup/restore, helper actions, tests, and CI. `make production`
+> builds against current SQLCipher 4.20 in a pinned Alpine/musl image; the
+> development build still uses the 2020 spike driver and prints a warning.
+> Password and sudo fallbacks are manual-run only.
 > Scheduler, playbooks, agent mode, and notifications are not implemented yet.
 >
 > **Name:** HIBP stands for **Have I Been Patched**. It is not affiliated with
@@ -348,6 +349,9 @@ make build
 # Open the printed http://127.0.0.1:8443/?token=... URL
 ```
 
+In the UI, add a host, click **Test** to approve its host key, then click
+**Setup** to install the restricted helper on the target.
+
 The server browses `~/.ssh` in the host form by default. Add more key
 directories with a comma-separated flag:
 
@@ -364,9 +368,10 @@ target helper installation and sudoers example are in
 
 ## Target sudo setup
 
-HIBP uses `sudo -n` on targets. It never stores a sudo password, and it does not
-send one in a command line or environment variable. The supported automation
-model is a **root-owned helper with a restricted NOPASSWD rule**.
+HIBP uses `sudo -n` for unattended actions. It never stores a sudo password, and
+it does not send one in a command line or environment variable. The supported
+unattended automation model is a **root-owned helper with a restricted NOPASSWD
+rule**.
 
 The helper accepts only four fixed actions:
 
@@ -380,7 +385,45 @@ reboot-check
 It does not accept package names, host names, or arbitrary shell fragments. This
 is not equivalent to `NOPASSWD: ALL`.
 
-### Install the helper on each target
+### Install from the app (recommended)
+
+After the host key is trusted, click **Setup** on the host row. HIBP:
+
+1. uploads its own executable to `/usr/local/libexec/hibp/hibp-helper`;
+2. writes `/etc/sudoers.d/hibp-helper` for the host's configured SSH username;
+3. validates the rule with `visudo` before renaming it into place;
+4. verifies it with `sudo -n ... facts` and reports the result.
+
+If the host uses password SSH, enter the SSH password when prompted. If sudo
+requires a password, enter the sudo password when prompted. The Setup action is
+idempotent and is recorded in the audit log as `bootstrap-helper`.
+
+The controller uploads **its own binary**, so remote installation requires the
+static release build and matching CPU architectures. For a different
+architecture or a custom helper path, use the manual instructions below.
+
+The first install needs sudo rights to create `/usr/local/libexec/hibp` and
+write `/etc/sudoers.d`. If the account only has the four fixed helper rules,
+installing a new helper requires a manual root step.
+
+Security notes:
+
+- HIBP validates sudo before uploading the helper binary, so a wrong sudo
+  password is rejected before any files are transferred.
+- The uploaded binary is run as the unprivileged SSH account before it replaces
+  an existing helper. A dynamically linked or incompatible binary is rejected
+  without touching the working helper.
+- The sudo password is used only for this setup request, sent over SSH stdin,
+  and never stored.
+- The final verification always uses `sudo -n`. If the restricted rule does not
+  work, Setup fails instead of reporting success.
+- The temporary sudoers file is dot-named, so sudo ignores it while `visudo`
+  validates it. It is renamed into place only after validation.
+- The SSH username is validated, and the reserved name `ALL` is rejected.
+- The helper is installed root-owned and mode `0755`; the sudoers file is
+  root-owned and mode `0440`.
+
+### Install the helper manually
 
 Copy the same `hibp` binary to the fixed helper path:
 
@@ -426,8 +469,10 @@ the sudo rule narrow and makes the audit trail clear.
 
 ### Manual sudo password fallback
 
-If the target cannot use a `NOPASSWD` rule, the UI can prompt for the sudo
-password for **manual** Facts, Check, and Apply actions.
+If the target cannot use a `NOPASSWD` rule yet, the UI can prompt for the sudo
+password for **manual** Setup, Facts, Check, and Apply actions. **Setup** uses
+the password to install the restricted helper rule; after it succeeds, the
+manual actions use `sudo -n` and no longer need the sudo password.
 
 - The server first tries `sudo -n`.
 - If the target answers `sudo_password_required`, the UI prompts.
@@ -468,8 +513,10 @@ ls -l /usr/local/libexec/hibp/hibp-helper
 The helper must be owned by `root:root`, must not be writable by the SSH
 account, and the sudoers path must match exactly.
 
-With the manual sudo fallback, repeat the action and enter the sudo password
-when prompted. That works for manual Facts/Check/Apply, not for schedules.
+Click **Setup** and enter the sudo password when prompted. If Setup reports
+that the NOPASSWD rule does not work, check the username, helper path, and
+`visudo` output. Manual Facts/Check/Apply work with the password fallback, but
+schedules do not.
 
 ## Why it exists
 
@@ -1188,6 +1235,8 @@ Agent mode is optional and later; v1 uses SSH from the always-on server.
 - SSH key browser limited to configured directories; it never returns key contents.
 - Fixed helper actions (`facts`, `check`, `apply`, `reboot-check`) with absolute
   binary paths, a sanitized environment, no shell, and output limits.
+- Remote helper installation from the UI with `visudo` validation, a restricted
+  per-host sudoers rule, and passwordless verification.
 - Hash-chained audit log with verification.
 - CSV import limits, preview/commit, duplicate policy, and CSV-injection
   neutralization on export.
