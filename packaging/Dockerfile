@@ -37,7 +37,6 @@ RUN curl -fsSL \
          --disable-shared \
          --enable-static \
          --disable-tcl \
-         --with-crypto-lib=openssl \
     && make -j"$(nproc)" \
     && make install DESTDIR=/opt/sqlcipher
 
