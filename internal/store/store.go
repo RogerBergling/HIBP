@@ -2,7 +2,6 @@
 package store
 
 import (
-	"context"
 	"crypto/sha256"
 	"database/sql"
 	"embed"
@@ -10,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,7 +18,6 @@ import (
 
 	"github.com/RogerBergling/hibp/internal/crypto"
 	"github.com/google/uuid"
-	sqlite3 "github.com/mutecomm/go-sqlcipher/v4"
 	"golang.org/x/crypto/blake2b"
 )
 
@@ -158,7 +155,7 @@ func Open(path string, passphrase []byte, opts Options) (*Store, error) {
 		}
 	}
 
-	db, err := sql.Open("sqlite3", dsn(abs, key))
+	db, err := openSQLCipher(abs, key)
 	if err != nil {
 		crypto.Zero(key)
 		return nil, fmt.Errorf("open database: %w", err)
@@ -197,11 +194,6 @@ func Open(path string, passphrase []byte, opts Options) (*Store, error) {
 	_ = os.Chmod(abs+"-wal", 0o600)
 	_ = os.Chmod(abs+"-shm", 0o600)
 	return s, nil
-}
-
-func dsn(path string, key []byte) string {
-	u := url.URL{Scheme: "file", Path: path}
-	return u.String() + "?_pragma_key=x'" + hex.EncodeToString(key) + "'&_pragma_cipher_page_size=4096&_busy_timeout=5000"
 }
 
 func (s *Store) applyPragmas() error {
@@ -736,71 +728,8 @@ func (s *Store) Backup(dest string) error {
 		return err
 	}
 
-	destDB, err := sql.Open("sqlite3", dsn(abs, s.key))
-	if err != nil {
-		return err
-	}
-	defer destDB.Close()
-	destDB.SetMaxOpenConns(1)
-	if err := destDB.Ping(); err != nil {
-		return fmt.Errorf("open backup: %w", err)
-	}
-
-	ctx := context.Background()
-	srcConn, err := s.db.Conn(ctx)
-	if err != nil {
-		return err
-	}
-	defer srcConn.Close()
-	dstConn, err := destDB.Conn(ctx)
-	if err != nil {
-		return err
-	}
-	defer dstConn.Close()
-
-	var srcSQLite, dstSQLite *sqlite3.SQLiteConn
-	if err := srcConn.Raw(func(driverConn any) error {
-		var ok bool
-		srcSQLite, ok = driverConn.(*sqlite3.SQLiteConn)
-		if !ok {
-			return errors.New("source is not a SQLCipher connection")
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	if err := dstConn.Raw(func(driverConn any) error {
-		var ok bool
-		dstSQLite, ok = driverConn.(*sqlite3.SQLiteConn)
-		if !ok {
-			return errors.New("destination is not a SQLCipher connection")
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-
-	backup, err := dstSQLite.Backup("main", srcSQLite, "main")
-	if err != nil {
-		return fmt.Errorf("start backup: %w", err)
-	}
-	for {
-		done, err := backup.Step(256)
-		if err != nil {
-			_ = backup.Finish()
-			return fmt.Errorf("backup step: %w", err)
-		}
-		if done {
-			break
-		}
-	}
-	if err := backup.Finish(); err != nil {
-		return err
-	}
-	if err := dstConn.Close(); err != nil {
-		return err
-	}
-	if err := destDB.Close(); err != nil {
+	if err := backupDatabase(abs, s.db); err != nil {
+		_ = os.Remove(abs)
 		return err
 	}
 	if err := copyFile(crypto.SidecarPath(s.path), crypto.SidecarPath(abs)); err != nil {
@@ -872,8 +801,21 @@ func (s *Store) Restore(backupPath, destPath string) error {
 	return nil
 }
 
+func backupDatabase(dest string, src *sql.DB) error {
+	escaped := strings.ReplaceAll(dest, "'", "''")
+	attach := fmt.Sprintf(`ATTACH DATABASE '%s' AS hibp_backup`, escaped)
+	if _, err := src.Exec(attach); err != nil {
+		return fmt.Errorf("attach backup: %w", err)
+	}
+	defer func() { _, _ = src.Exec("DETACH DATABASE hibp_backup") }()
+	if _, err := src.Exec("SELECT sqlcipher_export('hibp_backup')"); err != nil {
+		return fmt.Errorf("export backup: %w", err)
+	}
+	return nil
+}
+
 func verifyBackup(path string, key []byte) error {
-	db, err := sql.Open("sqlite3", dsn(path, key))
+	db, err := openSQLCipher(path, key)
 	if err != nil {
 		return err
 	}

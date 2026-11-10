@@ -6,6 +6,7 @@ const state = {
   audit: [],
   status: {},
   view: 'dashboard',
+  passwords: new Map(),
 };
 
 const $ = (id) => document.getElementById(id);
@@ -259,21 +260,31 @@ function formatUptime(seconds) {
   return hours + 'h';
 }
 
+function passwordFor(host) {
+  if (host.auth_type !== 'password') return '';
+  if (state.passwords.has(host.id)) return state.passwords.get(host.id);
+  const value = prompt('SSH password for ' + host.name + ' (not stored):');
+  if (value === null) throw new Error('cancelled');
+  state.passwords.set(host.id, value);
+  return value;
+}
+
 async function testHost(host) {
   try {
-    await api('/api/v1/hosts/' + encodeURIComponent(host.id) + '/test', { method: 'POST', body: '{}' });
+    const password = passwordFor(host);
+    await api('/api/v1/hosts/' + encodeURIComponent(host.id) + '/test', { method: 'POST', body: JSON.stringify({ password }) });
     toast('Connection and host key verified for ' + host.name, 'ok');
     await loadAll();
   } catch (error) {
     if (error.status === 409 && error.data && error.data.key) {
-      showTrustModal(host, error.data.key);
+      showTrustModal(host, error.data.key, state.passwords.get(host.id) || '');
       return;
     }
     toast(error.message, 'error');
   }
 }
 
-function showTrustModal(host, key) {
+function showTrustModal(host, key, password) {
   const body = el('div', 'modal-body');
   body.append(el('p', 'muted', 'Verify this fingerprint through an independent channel before trusting it.'));
   const box = el('div', 'key-box', key.key_type + ' ' + key.fingerprint);
@@ -291,7 +302,7 @@ function showTrustModal(host, key) {
     try {
       await api('/api/v1/hosts/' + encodeURIComponent(host.id) + '/trust-key', {
         method: 'POST',
-        body: JSON.stringify({ key_type: key.key_type, fingerprint: key.fingerprint }),
+        body: JSON.stringify({ key_type: key.key_type, fingerprint: key.fingerprint, password }),
       });
       close();
       toast('Host key trusted. Testing connection…', 'ok');
@@ -305,7 +316,8 @@ function showTrustModal(host, key) {
 async function collectFacts(host) {
   toast('Collecting facts from ' + host.name + '…');
   try {
-    await api('/api/v1/hosts/' + encodeURIComponent(host.id) + '/facts', { method: 'POST', body: '{}' });
+    const password = passwordFor(host);
+    await api('/api/v1/hosts/' + encodeURIComponent(host.id) + '/facts', { method: 'POST', body: JSON.stringify({ password }) });
     toast('Facts collected from ' + host.name, 'ok');
     await loadAll();
   } catch (error) {
@@ -348,9 +360,10 @@ async function patchHost(host, dryRun) {
   if (!dryRun && !confirm('Apply updates on ' + host.name + '? This runs the root-owned helper on the target.')) return;
   toast((dryRun ? 'Checking' : 'Applying updates on') + ' ' + host.name + '…');
   try {
+    const password = passwordFor(host);
     const result = await api('/api/v1/hosts/' + encodeURIComponent(host.id) + '/patch', {
       method: 'POST',
-      body: JSON.stringify({ dry_run: dryRun, confirm: dryRun ? '' : 'apply' }),
+      body: JSON.stringify({ dry_run: dryRun, confirm: dryRun ? '' : 'apply', password }),
     });
     showOutputModal((dryRun ? 'Patch check' : 'Patch run') + ' — ' + host.name, result);
     await loadAll();

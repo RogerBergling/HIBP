@@ -23,7 +23,6 @@ import (
 )
 
 const version = "0.1.0-dev"
-const driverNote = "mutecomm/go-sqlcipher v4.4.2 (SQLCipher 4.4.2, 2020; M1 spike driver)"
 
 func main() {
 	// SQLite creates -wal and -shm files; keep every file created by HIBP
@@ -41,7 +40,7 @@ func main() {
 		err = runHelper(os.Args[2:])
 	case "version", "--version", "-version":
 		fmt.Println("hibp " + version)
-		fmt.Println("sqlcipher driver:", driverNote)
+		fmt.Println("sqlcipher driver:", store.DriverName)
 	case "help", "--help", "-h":
 		usage()
 	default:
@@ -164,8 +163,10 @@ func runServer(args []string) error {
 	}
 	url := fmt.Sprintf("http://%s/?token=%s", listener.Addr().String(), token)
 	fmt.Fprintf(os.Stderr, "HIBP %s\n", version)
-	fmt.Fprintf(os.Stderr, "WARNING: %s\n", driverNote)
-	fmt.Fprintf(os.Stderr, "This M1 build is not production-ready until the SQLCipher driver is replaced.\n")
+	fmt.Fprintf(os.Stderr, "SQLCipher: %s\n", store.DriverName)
+	if !store.ProductionDriver {
+		fmt.Fprintln(os.Stderr, "WARNING: this is the M1 spike driver. Build with `make production` before deployment.")
+	}
 	fmt.Fprintf(os.Stderr, "Database: %s\n", db.Path())
 	fmt.Fprintf(os.Stderr, "Open:     %s\n", url)
 	fmt.Fprintln(os.Stderr, "Press Ctrl+C to stop.")

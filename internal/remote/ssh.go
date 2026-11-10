@@ -21,6 +21,9 @@ type Target struct {
 	Port     int
 	Username string
 	KeyPath  string
+	// Password is used only for manual, keyless fallback runs. It is never
+	// stored in the database or written to logs.
+	Password string
 }
 
 // HostKey identifies an SSH host key.
@@ -102,9 +105,24 @@ func hostKeyCallback(expected *HostKey, captured *HostKey) ssh.HostKeyCallback {
 }
 
 func dial(ctx context.Context, target Target, callback ssh.HostKeyCallback) (*ssh.Client, error) {
-	signer, err := loadSigner(target.KeyPath)
-	if err != nil {
-		return nil, err
+	var auth []ssh.AuthMethod
+	if target.Password != "" {
+		auth = []ssh.AuthMethod{
+			ssh.Password(target.Password),
+			ssh.KeyboardInteractive(func(_, _ string, questions []string, _ []bool) ([]string, error) {
+				answers := make([]string, len(questions))
+				for index := range answers {
+					answers[index] = target.Password
+				}
+				return answers, nil
+			}),
+		}
+	} else {
+		signer, err := loadSigner(target.KeyPath)
+		if err != nil {
+			return nil, err
+		}
+		auth = []ssh.AuthMethod{ssh.PublicKeys(signer)}
 	}
 	port := target.Port
 	if port == 0 {
@@ -113,7 +131,7 @@ func dial(ctx context.Context, target Target, callback ssh.HostKeyCallback) (*ss
 	address := net.JoinHostPort(target.Address, strconv.Itoa(port))
 	config := &ssh.ClientConfig{
 		User:            target.Username,
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		Auth:            auth,
 		HostKeyCallback: callback,
 		Timeout:         10 * time.Second,
 	}

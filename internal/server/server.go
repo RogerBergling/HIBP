@@ -177,6 +177,6 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, value any) error {
 	return nil
 }
 
-func (s *Server) hostTarget(host store.Host) remote.Target {
-	return remote.Target{Address: host.Address, Port: host.Port, Username: host.Username, KeyPath: host.KeyPath}
+func (s *Server) hostTarget(host store.Host, password string) remote.Target {
+	return remote.Target{Address: host.Address, Port: host.Port, Username: host.Username, KeyPath: host.KeyPath, Password: password}
 }

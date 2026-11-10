@@ -1,11 +1,12 @@
 # HIBP - Have I Been Patched
 
-> **Status: M1 prototype.** The repository now contains a working Go server,
-> browser UI, SQLCipher storage, host CRUD/import, SSH host-key approval, fact
-> collection, audit chain, backup, helper actions, tests, and CI. It is **not
-> production-ready**: the SQLCipher driver is still the 2020 spike driver,
-> password fallback is not implemented, and real patching requires the
-> root-owned helper on targets.
+> **Status: M1 feature set with a production build path.** The repository
+> contains a working Go server, browser UI, SQLCipher storage, host CRUD/import,
+> SSH host-key approval, fact collection, audit chain, backup/restore, helper
+> actions, tests, and CI. `make production` builds against current SQLCipher
+> 4.20 in a pinned Alpine/musl image; the development build still uses the 2020
+> spike driver and prints a warning. Password fallback is manual-run only.
+> Scheduler, playbooks, agent mode, and notifications are not implemented yet.
 >
 > **Name:** HIBP stands for **Have I Been Patched**. It is not affiliated with
 > Have I Been Pwned (haveibeenpwned.com).
@@ -78,9 +79,10 @@ make build
 # Open the printed http://127.0.0.1:8443/?token=... URL
 ```
 
-Requires Go 1.27+, a C toolchain, and CGO. The passphrase must be at least 12
-characters. Use `make static` to produce a statically linked ELF. The target
-helper installation and sudoers example are in
+Requires Go 1.27+, a C toolchain, and CGO for the development build. The
+passphrase must be at least 12 characters. Use `make static` for the development
+static ELF, or `make production` for the current-SQLCipher Docker build. The
+target helper installation and sudoers example are in
 [`packaging/README.md`](packaging/README.md).
 
 ## Why it exists
@@ -793,19 +795,23 @@ Agent mode is optional and later; v1 uses SSH from the always-on server.
 - `0600` database, sidecar, key, and backup files; wrong-passphrase test.
 - Bearer-token UI authentication, Host/Origin checks, CSP, and security headers.
 - SSH host-key TOFU with explicit fingerprint approval and changed-key failure.
+- Manual SSH password fallback with per-run prompt; no password storage.
 - Fixed helper actions (`facts`, `check`, `apply`, `reboot-check`) with absolute
   binary paths, a sanitized environment, no shell, and output limits.
 - Hash-chained audit log with verification.
 - CSV import limits, preview/commit, duplicate policy, and CSV-injection
   neutralization on export.
 - Online encrypted backup with sidecar copy and verification.
+- Production build path: patched `mattn/go-sqlite3` + current SQLCipher 4.20,
+  statically linked in a pinned Alpine/musl image.
 - Unit, integration, race, README, and Python validator tests.
 
 ### Known security gaps in M1
 
-- The SQLCipher driver is the 2020 `mutecomm/go-sqlcipher` v4.4.2 spike driver
-  (SQLCipher 4.4.2 + old libtomcrypt). Replace it before production.
-- Password SSH fallback is not implemented yet; keys/agent/certificates only.
+- The **development** build uses the 2020 `mutecomm` spike driver. Do not deploy
+  it; use the `make production` artifact.
+- Password SSH fallback is manual-run only; it is never stored in the database.
+  Scheduled password authentication requires an external vault and is deferred.
 - No RBAC, external audit anchor, TPM-sealed key, agent mode, or signed
   playbooks yet.
 - The browser UI token is a bearer secret; protect the SSH tunnel and terminal.
@@ -814,9 +820,10 @@ Agent mode is optional and later; v1 uses SSH from the always-on server.
 
 ## Data model
 
-The schema is proposed, not implemented. It is designed for SQLite/SQLCipher
-first and a future server database second. Domain objects use UUIDs, timestamps
-are UTC ISO 8601, and durations are stored in seconds.
+The M1 schema is implemented in `internal/store/migrations/001_init.sql`. The
+remaining tables below are the planned design for later milestones. Domain
+objects use UUIDs, timestamps are UTC ISO 8601, and durations are stored in
+seconds.
 
 > **M1 implementation:** `schema_migrations`, `app_meta`, `hosts`,
 > `host_facts`, `host_keys`, `runs` (table only), and `audit_log` exist. The
@@ -1059,8 +1066,10 @@ M1 is implemented in Go:
 - `internal/webui` embedded HTML/CSS/JS
 - tests, `Makefile`, and GitHub Actions CI
 
-The current M1 build uses the 2020 `mutecomm/go-sqlcipher` spike driver. That is
-documented security debt, not the production driver.
+The development build uses the 2020 `mutecomm/go-sqlcipher` spike driver. The
+production build uses the local `third_party/go-sqlite3` patch, which calls
+`sqlite3_key` immediately after `sqlite3_open_v2`, linked against current
+SQLCipher 4.20.0 built statically in `build/Dockerfile`.
 
 ### The "single executable, no dependencies" constraint
 
@@ -1083,24 +1092,22 @@ library and requires CGO. The build plan is:
 - Build with `CGO_ENABLED=1` in an Alpine/musl container or with a musl
   cross-compiler.
 - Link with `-linkmode external -extldflags "-static"`.
-- Verify with `ldd` that the release binary is "not a dynamic executable".
 - Add `netgo` and `osusergo` to the build tags so a static binary uses Go's
   resolver instead of glibc NSS.
 - Verify with `ldd` that the release binary is "not a dynamic executable".
-- If static SQLCipher cannot be made reliable, the fallback options are: accept
-  a dynamic `libsqlcipher` (violates the no-dependency goal), use pure-Go SQLite
-  with application-level encryption (not recommended), or revisit Rust.
 
-**Build result (2026-11-10):** Go 1.27.3 with
-`github.com/mutecomm/go-sqlcipher/v4` v4.4.2 produced a statically linked ELF on
-Ubuntu/glibc using `-tags "sqlite_omit_load_extension netgo osusergo"` and
-`-ldflags '-linkmode external -extldflags "-static"'`. `ldd` reported
-"not a dynamic executable", and an encrypted write/read round-trip succeeded.
+**Development build:** Go 1.27.3 with `mutecomm/go-sqlcipher` v4.4.2 produced a
+statically linked ELF on Ubuntu/glibc using
+`-tags "sqlite_omit_load_extension netgo osusergo"` and
+`-ldflags '-linkmode external -extldflags "-static"'`. This is for development
+only and prints a warning.
 
-**Security debt:** the 2020 driver is M1-only. Production uses a locally patched,
-maintained `mattn/go-sqlite3` linked against a current SQLCipher built in a
-pinned Alpine/musl image. This avoids shipping the old SQLCipher/libtomcrypt
-stack. M0 must prove this build before production.
+**Production build:** `build/Dockerfile` builds SQLCipher 4.20.0 from source
+with the OpenSSL backend, links it statically with musl, and uses the local
+`third_party/go-sqlite3` patch that calls `sqlite3_key` before any schema read.
+The driver path was tested against current system `libsqlcipher` with the full
+store/server test suite, including backup/restore. CI runs the Docker production
+build and verifies the ELF.
 
 ### Why Go
 
@@ -1114,10 +1121,11 @@ Go is the chosen stack:
 - Cross-compilation is straightforward; CGO is the only complication, and it is
   confined to SQLCipher.
 
-### Dependencies (M1)
+### Dependencies
 
-- `github.com/mutecomm/go-sqlcipher/v4` v4.4.2 — SQLCipher driver. **M1 only;
-  replace before production.**
+- Development: `github.com/mutecomm/go-sqlcipher/v4` v4.4.2 — spike driver only.
+- Production: local `third_party/go-sqlite3` (patched `mattn/go-sqlite3` with a
+  `sqlite3_key` call) linked against SQLCipher 4.20.0.
 - `golang.org/x/crypto` — SSH, Argon2id, and BLAKE2b.
 - `golang.org/x/term` — terminal passphrase prompt.
 - `github.com/google/uuid` — host and run IDs.
@@ -1133,12 +1141,12 @@ the server is the Linux kernel and the target hosts' SSH/package managers.
   A future `client`/`agent` command can reuse the same core.
 - Embedded browser UI; no `web/` directory, Node/Python runtime, or external web
   server.
-- `make static` builds with `sqlite_omit_load_extension netgo osusergo` and
-  verifies the ELF with `ldd`.
+- `make static` builds the development ELF; `make production` builds the
+  current-SQLCipher production image via `build/Dockerfile`.
 - systemd unit example in `packaging/hibp.service`; target helper and sudoers
   example in `packaging/`.
-- Primary artifact: `dist/hibp` plus the packaging files. `.deb`/`.rpm` are
-  future convenience wrappers around the same binary.
+- Primary artifact: the production image or the binary extracted from it.
+  `.deb`/`.rpm` are future convenience wrappers around the same binary.
 - No Flatpak in v1. The sandbox complicates SSH agent/key access, and the
   browser UI already avoids GUI toolkit dependencies.
 - Publish SHA-256 checksums and an SBOM. Sign releases if possible.
@@ -1162,19 +1170,19 @@ first five.
 ### Build and validation commands
 
 ```bash
-make build          # CGO build, dynamic libc
-make test           # Go tests
+make build          # development build, CGO + dynamic libc
+make test           # Go tests (development driver)
 make vet            # go vet
-make static         # statically linked ELF + ldd check
+make static         # development static ELF + ldd check
+make production     # production Docker build: current SQLCipher 4.20
 make validate       # tests, vet, README validator, Python tests, git diff check
-make package        # static binary + packaging tarball
 
 # Run
 ./dist/hibp server --db ~/.local/share/hibp/hibp.db --create
 ```
 
-CI runs `go test ./...`, `go vet ./...`, the README validator, the Python
-validator tests, the static build, and `govulncheck`.
+CI runs development tests, race tests, vet, README/Python validation, the
+development static build, `govulncheck`, and the production Docker build.
 
 ## Repository layout
 
@@ -1191,6 +1199,8 @@ internal/remote/          SSH transport and host-key policy
 internal/helper/          fixed target actions
 internal/server/          browser UI/API, auth, security headers, import/export
 internal/webui/           embedded HTML/CSS/JS
+third_party/go-sqlite3/   patched mattn driver with sqlite3_key before open
+build/Dockerfile          production SQLCipher 4.20 + musl static build
 packaging/                systemd unit, sudoers example, install notes
 scripts/                  README validator
 tests/                    Python validator tests
@@ -1200,15 +1210,15 @@ docs/screenshots/         real M1 screenshot
 
 ## Roadmap
 
-### M0 - Design, decisions, and production build
+### M0 - Production build (implemented)
 
-- Write the threat model and data model as versioned documents.
-- Define the distribution profile interface and the first five profiles.
-- **Implement and prove the production SQLCipher build:** a locally patched,
-  maintained `mattn/go-sqlite3` linked against a current SQLCipher built in a
-  pinned Alpine/musl image. Verify the resulting ELF with `ldd`.
-- Do not ship the 2020 `mutecomm` spike driver. It proved the approach but needs
-  a security review and updates before production.
+- Production SQLCipher build implemented in `build/Dockerfile`: SQLCipher 4.20,
+  patched `third_party/go-sqlite3`, static musl ELF.
+- The production driver passes the store/server suite, including backup and
+  restore, against current system `libsqlcipher`.
+- Remaining M0 documentation: threat model, data model, and distribution
+  profile interface as versioned documents.
+- Do not deploy the development `mutecomm` spike build.
 
 ### M1 - Implemented prototype
 
@@ -1219,24 +1229,31 @@ Implemented:
 - Encrypted SQLCipher database with Argon2id sidecar.
 - Host CRUD and CSV/TXT import with preview and duplicate policy.
 - SSH key authentication, host-key approval, and connection test.
+- Manual SSH password fallback with per-run prompts; no password storage.
 - Fact collection through the fixed helper.
 - Dashboard, host list, audit viewer, backup, and restore to a new path.
 - Audit chain verification and CSV-injection-neutralized export.
+- Production SQLCipher build path in `build/Dockerfile`.
 
 Not yet:
 
 - Real target matrix and sudo helper install test.
-- Password fallback, scheduler, playbooks, and agent.
-- Production SQLCipher driver.
+- Scheduler, playbooks, notifications, and agent.
 
-### M2 - Patch now
+### M2 - Patch execution (partial)
 
-- Dry-run and package diff.
-- Apply updates with a fixed profile, timeout, cancellation, and per-host status.
+Implemented:
+
+- Fixed helper `check` and `apply` actions.
+- UI patch modal with dry-run and apply confirmation.
+- Audit entries for patch attempts.
+
+Still missing:
+
+- Per-host job queue and concurrency control.
 - Run history and per-package drill-down.
-- Audit events for every privileged action.
-- Acceptance: select three hosts, preview, patch, see old-to-new versions,
-  isolate a failure, cancel a run, and export evidence.
+- Cancellation, retries, and post-reboot verification.
+- Package diff/security classification and evidence export.
 
 ### M3 - Scheduling and unattended execution
 
@@ -1253,8 +1270,8 @@ Not yet:
 ### M4 - Security hardening
 
 - Key-based authentication baseline.
-- Optional password fallback, disabled by default, with keyring/vault storage or
-  per-run prompts; no password persisted in the database.
+- Manual password fallback implemented with per-run prompts; no password is
+  persisted. Vault-backed scheduled password authentication remains deferred.
 - Service SSH key protection with a dedicated account, `0600` permissions,
   full-disk encryption, and optional TPM2/`systemd-creds`.
 - Host key rotation workflow.
@@ -1344,10 +1361,10 @@ These are settled unless you explicitly change them:
 - **UI:** browser-based. The server embeds the HTML/CSS/JS and serves it on
   `127.0.0.1` or a Unix socket; the laptop uses a browser through an SSH tunnel.
   No GTK/WebKit dependency.
-- **Stack:** Go. M1 currently uses the 2020 `mutecomm/go-sqlcipher` driver. The
-  production SQLCipher driver is a locally patched, maintained
-  `mattn/go-sqlite3` linked against a current SQLCipher built in a pinned
-  Alpine/musl image.
+- **Stack:** Go. The development build uses the 2020 `mutecomm/go-sqlcipher`
+  driver and prints a warning. The production SQLCipher driver is a locally
+  patched, maintained `mattn/go-sqlite3` linked against current SQLCipher built
+  in a pinned Alpine/musl image.
 - **Database:** SQLite with SQLCipher, stored as a user-chosen file with a
   `.meta` sidecar. No PostgreSQL in v1.
 - **Unattended unlock:** manual. The server starts locked after a reboot and
@@ -1448,8 +1465,11 @@ No architecture-blocking decisions remain. These are intentionally deferred:
 # Go tests, vet, README validator, Python validator tests, whitespace checks
 make validate
 
-# Static ELF build and ldd check
+# Development static ELF build and ldd check
 make static
+
+# Production build: current SQLCipher 4.20 + musl static binary
+make production
 
 # Race detector
 CGO_ENABLED=1 go test -race ./...
@@ -1466,14 +1486,18 @@ M1 validation status:
 - `go test ./...` passes.
 - `go vet ./...` passes.
 - `go test -race ./...` passes.
-- `make static` produces an ELF with no dynamic dependencies.
+- `make static` produces a development ELF with no dynamic dependencies.
+- The current-SQLCipher production Docker build is defined in CI and must pass
+  before release.
+- The store/server suite passes against the production driver with current
+  system `libsqlcipher`, including backup and restore.
 - README validator and Python validator tests pass.
-- A release must still pass the cross-distro matrix, real target tests, and a
-  restore-from-backup test.
+- A release must still pass the cross-distro matrix and real target tests.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). Third-party components are listed in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 HIBP performs privileged operations and can break systems. It is provided "as
 is", without warranty of any kind. Test patch policies in a canary ring, keep

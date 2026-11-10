@@ -186,6 +186,26 @@ func TestTXTImport(t *testing.T) {
 	}
 }
 
+func TestPasswordAuthRequiresManualPassword(t *testing.T) {
+	ts, _ := testServer(t)
+	body := `{"name":"legacy01","address":"10.0.0.30","port":22,"username":"root","auth_type":"password"}`
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/hosts", "test-token", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create failed: %d %s", resp.StatusCode, data)
+	}
+	var host store.Host
+	if err := json.NewDecoder(resp.Body).Decode(&host); err != nil {
+		t.Fatal(err)
+	}
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/hosts/"+host.ID+"/test", "test-token", `{}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 without password, got %d", resp.StatusCode)
+	}
+}
+
 func TestExportNeutralizesCSVInjection(t *testing.T) {
 	ts, _ := testServer(t)
 	body := `{"name":"=cmd","address":"10.0.0.10","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519"}`

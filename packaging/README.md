@@ -59,7 +59,7 @@ controller.
 
 ## Security debt
 
-The current build uses the `mutecomm/go-sqlcipher` driver, which bundles
-SQLCipher 4.4.2 from 2020. It is functional for M1 but is not the production
-crypto stack. The next build task is to replace it with a maintained driver and
-a current SQLCipher built in a pinned Alpine/musl image.
+The development build uses the `mutecomm/go-sqlcipher` spike driver. Production
+deployments must use the `make production` artifact, which builds current
+SQLCipher 4.20 with the patched `third_party/go-sqlite3` driver in a pinned
+Alpine/musl image.

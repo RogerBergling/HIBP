@@ -38,3 +38,12 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           "$(go env GOPATH)/bin/govulncheck" ./...
+
+  production-build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production image
+        run: docker build -f build/Dockerfile -t hibp-production .
+      - name: Verify production binary
+        run: docker run --rm hibp-production version

@@ -1,0 +1,12 @@
+.git
+.gitignore
+dist
+docs
+packaging
+scripts
+tests
+README.md
+SECURITY.md
+LICENSE
+Makefile
+build

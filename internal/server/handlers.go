@@ -18,6 +18,10 @@ import (
 	"github.com/RogerBergling/hibp/internal/store"
 )
 
+type passwordRequest struct {
+	Password string `json:"password"`
+}
+
 type hostRequest struct {
 	Name      string `json:"name"`
 	Address   string `json:"address"`
@@ -117,9 +121,24 @@ func (s *Server) handleTestHost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	var request passwordRequest
+	if r.ContentLength != 0 {
+		if err := decodeJSON(w, r, &request); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+	}
+	password := ""
+	if host.AuthType == "password" {
+		if request.Password == "" {
+			writeError(w, http.StatusBadRequest, "password is required for password authentication")
+			return
+		}
+		password = request.Password
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	err = remote.Test(ctx, s.hostTarget(host), remoteHostKey(key))
+	err = remote.Test(ctx, s.hostTarget(host, password), remoteHostKey(key))
 	if err != nil {
 		var keyErr *remote.KeyError
 		if errors.As(err, &keyErr) {
@@ -139,6 +158,7 @@ func (s *Server) handleTestHost(w http.ResponseWriter, r *http.Request) {
 type trustKeyRequest struct {
 	KeyType     string `json:"key_type"`
 	Fingerprint string `json:"fingerprint"`
+	Password    string `json:"password"`
 }
 
 func (s *Server) handleTrustKey(w http.ResponseWriter, r *http.Request) {
@@ -156,9 +176,17 @@ func (s *Server) handleTrustKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "key_type and fingerprint are required")
 		return
 	}
+	password := ""
+	if host.AuthType == "password" {
+		if request.Password == "" {
+			writeError(w, http.StatusBadRequest, "password is required for password authentication")
+			return
+		}
+		password = request.Password
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	actual, err := remote.Probe(ctx, s.hostTarget(host))
+	actual, err := remote.Probe(ctx, s.hostTarget(host, password))
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -181,7 +209,7 @@ func remoteHostKey(key *store.HostKey) *remote.HostKey {
 	return &remote.HostKey{KeyType: key.KeyType, Fingerprint: key.Fingerprint}
 }
 
-func (s *Server) runHelper(ctx context.Context, host store.Host, action string, timeout time.Duration) (string, int, error) {
+func (s *Server) runHelper(ctx context.Context, host store.Host, action, password string, timeout time.Duration) (string, int, error) {
 	switch action {
 	case "facts", "check", "apply":
 	default:
@@ -195,7 +223,7 @@ func (s *Server) runHelper(ctx context.Context, host store.Host, action string, 
 		return "", 0, errors.New("host key is not trusted; test and trust the host first")
 	}
 	command := "sudo -n /usr/local/libexec/hibp/hibp-helper " + action
-	return remote.Run(ctx, s.hostTarget(host), &remote.HostKey{KeyType: key.KeyType, Fingerprint: key.Fingerprint}, command, timeout)
+	return remote.Run(ctx, s.hostTarget(host, password), &remote.HostKey{KeyType: key.KeyType, Fingerprint: key.Fingerprint}, command, timeout)
 }
 
 func (s *Server) handleFacts(w http.ResponseWriter, r *http.Request) {
@@ -204,7 +232,22 @@ func (s *Server) handleFacts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "host not found")
 		return
 	}
-	output, code, err := s.runHelper(r.Context(), host, "facts", 2*time.Minute)
+	var request passwordRequest
+	if r.ContentLength != 0 {
+		if err := decodeJSON(w, r, &request); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+	}
+	password := ""
+	if host.AuthType == "password" {
+		if request.Password == "" {
+			writeError(w, http.StatusBadRequest, "password is required for password authentication")
+			return
+		}
+		password = request.Password
+	}
+	output, code, err := s.runHelper(r.Context(), host, "facts", password, 2*time.Minute)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -238,8 +281,9 @@ func (s *Server) handleFacts(w http.ResponseWriter, r *http.Request) {
 }
 
 type patchRequest struct {
-	DryRun  bool   `json:"dry_run"`
-	Confirm string `json:"confirm"`
+	DryRun   bool   `json:"dry_run"`
+	Confirm  string `json:"confirm"`
+	Password string `json:"password"`
 }
 
 func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
@@ -253,6 +297,14 @@ func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
+	password := ""
+	if host.AuthType == "password" {
+		if request.Password == "" {
+			writeError(w, http.StatusBadRequest, "password is required for password authentication")
+			return
+		}
+		password = request.Password
+	}
 	action := "check"
 	timeout := 10 * time.Minute
 	if !request.DryRun {
@@ -263,7 +315,7 @@ func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
 		action = "apply"
 		timeout = 45 * time.Minute
 	}
-	output, code, err := s.runHelper(r.Context(), host, action, timeout)
+	output, code, err := s.runHelper(r.Context(), host, action, password, timeout)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
