@@ -38,7 +38,8 @@ RUN curl -fsSL \
          --enable-static \
          --disable-tcl \
     && make -j"$(nproc)" \
-    && make install DESTDIR=/opt/sqlcipher
+    && make install DESTDIR=/opt/sqlcipher \
+    && ln -sf libsqlite3.a /opt/sqlcipher/usr/local/lib/libsqlcipher.a
 
 RUN CGO_ENABLED=1 \
        CGO_CFLAGS="-I/opt/sqlcipher/usr/local/include" \
