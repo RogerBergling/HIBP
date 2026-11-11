@@ -97,8 +97,9 @@ These files are examples, not a complete distribution package.
 
 6. For upgrades, stop the service, take and verify a backup of the database and
    `.meta` sidecar, install the new binary, start the service, and check the
-   audit chain and host data. The current migration path does not create an
-   automatic pre-migration backup.
+   audit chain and host data. On open, HIBP also creates and verifies an
+   automatic `<database>-pre-migration-YYYY-MM-DD-HHMMSS.bac` backup before
+   applying pending migrations, and aborts the upgrade if that backup fails.
 
 The included `hibp.service` is a hardening baseline, not a universal unit.
 Adjust `SystemCallFilter`, `ProtectSystem`, key paths, and backup paths if your

@@ -61,6 +61,8 @@ type Server struct {
 	schedulerCtx       context.Context
 	schedulerWake      chan struct{}
 	schedulerSlots     chan struct{}
+	hostLocksMu        sync.Mutex
+	hostLocks          map[string]bool
 	mux                *http.ServeMux
 }
 
@@ -114,6 +116,7 @@ func New(cfg Config) (*Server, error) {
 		schedulerRunning:   make(map[string]bool),
 		schedulerWake:      make(chan struct{}, 1),
 		schedulerSlots:     make(chan struct{}, 20),
+		hostLocks:          make(map[string]bool),
 		mux:                http.NewServeMux(),
 	}
 	s.routes()
@@ -141,6 +144,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/auth/passkey/register/finish", s.authPending(s.handlePasskeyRegisterFinish))
 	s.mux.HandleFunc("POST /api/v1/auth/passkey/login/begin", s.authPending(s.handlePasskeyLoginBegin))
 	s.mux.HandleFunc("POST /api/v1/auth/passkey/login/finish", s.authPending(s.handlePasskeyLoginFinish))
+	s.mux.HandleFunc("GET /api/v1/auth/mfa", s.auth(s.handleMFAStatus))
+	s.mux.HandleFunc("DELETE /api/v1/auth/passkeys/{id}", s.auth(s.handleDeletePasskey))
+	s.mux.HandleFunc("DELETE /api/v1/auth/totp", s.auth(s.handleDeleteTOTP))
 
 	s.mux.HandleFunc("GET /api/v1/status", s.auth(s.handleStatus))
 	s.mux.HandleFunc("GET /api/v1/hosts", s.auth(s.handleListHosts))

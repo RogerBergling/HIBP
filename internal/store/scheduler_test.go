@@ -18,7 +18,7 @@ func TestScheduleAndRunLifecycle(t *testing.T) {
 	schedule, err := s.CreateSchedule(Schedule{
 		Name: "Nightly patches", Mode: "apply", Enabled: true, Cron: "0 3 * * *",
 		Timezone: "UTC", WindowMinutes: 120, JitterSeconds: 60, MaxConcurrency: 3,
-		Notify: "failures", Assignments: []ScheduleAssignment{{Scope: "host", Target: host.ID}},
+		Retries: 2, Notify: "failures", Assignments: []ScheduleAssignment{{Scope: "host", Target: host.ID}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -38,6 +38,9 @@ func TestScheduleAndRunLifecycle(t *testing.T) {
 	loaded, err := s.GetSchedule(schedule.ID)
 	if err != nil || loaded.Name != schedule.Name || !loaded.Enabled {
 		t.Fatalf("loaded schedule: %+v %v", loaded, err)
+	}
+	if loaded.Retries != 2 {
+		t.Fatalf("loaded retries = %d, want 2", loaded.Retries)
 	}
 	assignments, _ = s.ListScheduleAssignments(schedule.ID)
 	if len(assignments) != 1 || assignments[0].Scope != "fleet" {

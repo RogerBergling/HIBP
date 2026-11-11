@@ -46,6 +46,12 @@ func testServerNoUser(t *testing.T) (*httptest.Server, *store.Store) {
 
 func testServerWithUser(t *testing.T, seedUser bool) (*httptest.Server, *store.Store) {
 	t.Helper()
+	ts, db, _ := testServerWithApp(t, seedUser)
+	return ts, db
+}
+
+func testServerWithApp(t *testing.T, seedUser bool) (*httptest.Server, *store.Store, *Server) {
+	t.Helper()
 	dir := t.TempDir()
 	db, err := store.Open(filepath.Join(dir, "inventory.hibp"), []byte("correct horse battery staple"), store.Options{
 		Create: true, KDFTime: 1, KDFMemory: 64 * 1024, KDFThreads: 1,
@@ -71,7 +77,7 @@ func testServerWithUser(t *testing.T, seedUser bool) (*httptest.Server, *store.S
 	}
 	ts := httptest.NewServer(app.Handler())
 	t.Cleanup(ts.Close)
-	return ts, db
+	return ts, db, app
 }
 
 func request(t *testing.T, method, url, token string, body string) *http.Response {

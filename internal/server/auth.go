@@ -259,6 +259,104 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+type mfaPasskeyView struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	CreatedAt  string `json:"created_at"`
+	LastUsedAt string `json:"last_used_at"`
+}
+
+func (s *Server) handleMFAStatus(w http.ResponseWriter, r *http.Request) {
+	value := authFrom(r)
+	passkeys, err := s.store.ListPasskeys(value.user.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	views := make([]mfaPasskeyView, 0, len(passkeys))
+	for _, passkey := range passkeys {
+		views = append(views, mfaPasskeyView{
+			ID: passkey.ID, Name: passkey.Name, CreatedAt: passkey.CreatedAt, LastUsedAt: passkey.LastUsedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"username":     value.user.Username,
+		"totp_enabled": value.user.TOTPEnabled,
+		"totp_pending": value.user.TOTPPendingSecret != "",
+		"passkeys":     views,
+		"mfa_enabled":  value.user.TOTPEnabled || len(views) > 0,
+	})
+}
+
+func (s *Server) handleDeletePasskey(w http.ResponseWriter, r *http.Request) {
+	value := authFrom(r)
+	passkeyID := strings.TrimSpace(r.PathValue("id"))
+	if passkeyID == "" {
+		writeError(w, http.StatusBadRequest, "passkey id is required")
+		return
+	}
+	passkeys, err := s.store.ListPasskeys(value.user.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	found := false
+	for _, passkey := range passkeys {
+		if passkey.ID == passkeyID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "passkey not found")
+		return
+	}
+	if len(passkeys) <= 1 && !value.user.TOTPEnabled {
+		writeError(w, http.StatusConflict, "cannot remove the last MFA factor; configure TOTP or add another passkey first")
+		return
+	}
+	if err := s.store.DeletePasskey(value.user.ID, passkeyID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = s.store.AddAudit(value.user.Username, "passkey-deleted", "user", value.user.ID, passkeyID)
+	remaining, _ := s.store.CountPasskeys(value.user.ID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":            true,
+		"passkey_count": remaining,
+		"totp_enabled":  value.user.TOTPEnabled,
+		"mfa_enabled":   value.user.TOTPEnabled || remaining > 0,
+	})
+}
+
+func (s *Server) handleDeleteTOTP(w http.ResponseWriter, r *http.Request) {
+	value := authFrom(r)
+	if !value.user.TOTPEnabled {
+		writeError(w, http.StatusBadRequest, "authenticator is not configured")
+		return
+	}
+	count, err := s.store.CountPasskeys(value.user.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if count == 0 {
+		writeError(w, http.StatusConflict, "cannot remove the last MFA factor; add a passkey first")
+		return
+	}
+	if err := s.store.ClearTOTP(value.user.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = s.store.AddAudit(value.user.Username, "mfa-totp-removed", "user", value.user.ID, "authenticator removed")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":            true,
+		"totp_enabled":  false,
+		"passkey_count": count,
+		"mfa_enabled":   count > 0,
+	})
+}
+
 type totpCodeRequest struct {
 	Code string `json:"code"`
 }

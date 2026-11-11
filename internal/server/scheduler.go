@@ -28,10 +28,30 @@ type scheduleRequest struct {
 	WindowMinutes  int                        `json:"window_minutes"`
 	JitterSeconds  int                        `json:"jitter_seconds"`
 	MaxConcurrency int                        `json:"max_concurrency"`
+	Retries        int                        `json:"retries"`
 	RunIfMissed    bool                       `json:"run_if_missed"`
 	Notify         string                     `json:"notify"`
 	Recipients     string                     `json:"recipients"`
 	Assignments    []store.ScheduleAssignment `json:"assignments"`
+}
+
+func (s *Server) tryLockHost(hostID string) bool {
+	s.hostLocksMu.Lock()
+	defer s.hostLocksMu.Unlock()
+	if s.hostLocks == nil {
+		s.hostLocks = make(map[string]bool)
+	}
+	if s.hostLocks[hostID] {
+		return false
+	}
+	s.hostLocks[hostID] = true
+	return true
+}
+
+func (s *Server) unlockHost(hostID string) {
+	s.hostLocksMu.Lock()
+	delete(s.hostLocks, hostID)
+	s.hostLocksMu.Unlock()
 }
 
 func (s *Server) validateScheduleRequest(scheduleID string, request scheduleRequest) (store.Schedule, error) {
@@ -73,6 +93,10 @@ func (s *Server) validateScheduleRequest(scheduleID string, request scheduleRequ
 	}
 	if concurrency < 1 || concurrency > 20 {
 		return store.Schedule{}, errors.New("max_concurrency must be between 1 and 20")
+	}
+	retries := request.Retries
+	if retries < 0 || retries > 5 {
+		return store.Schedule{}, errors.New("retries must be between 0 and 5")
 	}
 	notify := strings.ToLower(strings.TrimSpace(request.Notify))
 	if notify == "" {
@@ -124,7 +148,7 @@ func (s *Server) validateScheduleRequest(scheduleID string, request scheduleRequ
 	return store.Schedule{
 		ID: scheduleID, Name: name, Mode: mode, Enabled: request.Enabled, Cron: cronSpec,
 		Timezone: timezone, WindowMinutes: window, JitterSeconds: request.JitterSeconds,
-		MaxConcurrency: concurrency, RunIfMissed: request.RunIfMissed, Notify: notify,
+		MaxConcurrency: concurrency, Retries: retries, RunIfMissed: request.RunIfMissed, Notify: notify,
 		Recipients: strings.Join(recipients, ", "), Assignments: assignments,
 	}, nil
 }
@@ -365,6 +389,16 @@ func (s *Server) runSchedule(ctx context.Context, schedule store.Schedule, occur
 				mu.Unlock()
 				return
 			}
+			if !s.tryLockHost(host.ID) {
+				mu.Lock()
+				skipped++
+				if len(failures) < 20 {
+					failures = append(failures, host.Name+": host operation already in progress")
+				}
+				mu.Unlock()
+				return
+			}
+			defer s.unlockHost(host.ID)
 			runStarted := time.Now().UTC()
 			run, startErr := s.store.StartRun(store.Run{
 				ScheduleID: schedule.ID, HostID: host.ID, Action: "patch-" + action,
@@ -378,29 +412,32 @@ func (s *Server) runSchedule(ctx context.Context, schedule store.Schedule, occur
 				mu.Unlock()
 				return
 			}
-			output, code, runErr := s.runHelper(ctx, host, action, "", "", timeout)
-			success := false
-			exitCode := code
-			detail := output
-			errorText := ""
-			var result helper.Result
-			if json.Unmarshal([]byte(output), &result) == nil {
-				success = runErr == nil && result.OK
-				exitCode = result.ExitCode
-				detail = result.Output
-				errorText = result.Error
-			} else if runErr == nil {
-				success = code == 0
+			maxAttempts := 1
+			if schedule.Retries > 0 {
+				maxAttempts += schedule.Retries
 			}
-			if runErr != nil {
-				success = false
-				errorText = runErr.Error()
-				if detail == "" {
-					detail = runErr.Error()
+			if maxAttempts > 6 {
+				maxAttempts = 6
+			}
+			var success bool
+			var exitCode int
+			var detail, errorText string
+			attempts := 0
+			for attempts < maxAttempts {
+				attempts++
+				output, code, runErr := s.runHelper(ctx, host, action, "", "", timeout)
+				success, exitCode, detail, errorText = classifyHelperRun(output, code, runErr)
+				if success || ctx.Err() != nil {
+					break
 				}
-			}
-			if detail == "" && errorText != "" {
-				detail = errorText
+				if attempts < maxAttempts {
+					timer := time.NewTimer(time.Duration(attempts) * 2 * time.Second)
+					select {
+					case <-ctx.Done():
+						timer.Stop()
+					case <-timer.C:
+					}
+				}
 			}
 			status := "success"
 			if !success {
@@ -408,14 +445,14 @@ func (s *Server) runSchedule(ctx context.Context, schedule store.Schedule, occur
 			}
 			_ = s.store.FinishRun(run.ID, status, exitCode, truncateRunOutput(detail), truncateRunOutput(errorText), time.Now().UTC().Format(time.RFC3339Nano))
 			_ = s.store.AddAudit("scheduler", "scheduled-patch", "host", host.ID,
-				fmt.Sprintf("schedule=%s action=%s status=%s exit=%d", schedule.Name, action, status, exitCode))
+				fmt.Sprintf("schedule=%s action=%s status=%s exit=%d attempts=%d", schedule.Name, action, status, exitCode, attempts))
 			mu.Lock()
 			if success {
 				succeeded++
 			} else {
 				failed++
 				if len(failures) < 20 {
-					failures = append(failures, host.Name+": "+shortRunSummary(detail))
+					failures = append(failures, fmt.Sprintf("%s: %s (attempts=%d)", host.Name, shortRunSummary(detail), attempts))
 				}
 			}
 			mu.Unlock()
@@ -447,6 +484,33 @@ func (s *Server) runSchedule(ctx context.Context, schedule store.Schedule, occur
 func (s *Server) auditScheduledRun(schedule store.Schedule, status, summary string, started time.Time) {
 	_ = s.store.AddAudit("scheduler", "schedule-run", "schedule", schedule.ID,
 		fmt.Sprintf("name=%s status=%s %s started=%s", schedule.Name, status, summary, started.Format(time.RFC3339)))
+}
+
+func classifyHelperRun(output string, code int, runErr error) (bool, int, string, string) {
+	success := false
+	exitCode := code
+	detail := output
+	errorText := ""
+	var result helper.Result
+	if json.Unmarshal([]byte(output), &result) == nil {
+		success = runErr == nil && result.OK
+		exitCode = result.ExitCode
+		detail = result.Output
+		errorText = result.Error
+	} else if runErr == nil {
+		success = code == 0
+	}
+	if runErr != nil {
+		success = false
+		errorText = runErr.Error()
+		if detail == "" {
+			detail = runErr.Error()
+		}
+	}
+	if detail == "" && errorText != "" {
+		detail = errorText
+	}
+	return success, exitCode, detail, errorText
 }
 
 func truncateRunOutput(value string) string {

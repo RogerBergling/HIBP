@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -182,6 +183,12 @@ func Open(path string, passphrase []byte, opts Options) (*Store, error) {
 		}
 		return nil, err
 	}
+	if !opts.Create {
+		if _, err := s.preMigrationBackup(); err != nil {
+			_ = s.Close()
+			return nil, fmt.Errorf("automatic pre-migration backup: %w", err)
+		}
+	}
 	if err := s.migrate(); err != nil {
 		_ = s.Close()
 		if opts.Create {
@@ -214,6 +221,40 @@ func (s *Store) applyPragmas() error {
 	return nil
 }
 
+type migrationFile struct {
+	version  int
+	name     string
+	payload  []byte
+	checksum string
+}
+
+func readMigrations() ([]migrationFile, error) {
+	entries, err := fs.ReadDir(migrationFS, "migrations")
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	files := make([]migrationFile, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			continue
+		}
+		version, err := migrationVersion(entry.Name())
+		if err != nil {
+			return nil, err
+		}
+		payload, err := fs.ReadFile(migrationFS, "migrations/"+entry.Name())
+		if err != nil {
+			return nil, err
+		}
+		sum := sha256.Sum256(payload)
+		files = append(files, migrationFile{
+			version: version, name: entry.Name(), payload: payload, checksum: hex.EncodeToString(sum[:]),
+		})
+	}
+	return files, nil
+}
+
 func (s *Store) migrate() error {
 	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version INTEGER PRIMARY KEY,
@@ -224,53 +265,52 @@ func (s *Store) migrate() error {
 		return fmt.Errorf("create schema_migrations: %w", err)
 	}
 
-	entries, err := fs.ReadDir(migrationFS, "migrations")
+	files, err := readMigrations()
 	if err != nil {
 		return err
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-	var maxVersion int
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
-			continue
+	embeddedMax := 0
+	for _, file := range files {
+		if file.version > embeddedMax {
+			embeddedMax = file.version
 		}
-		version, err := migrationVersion(entry.Name())
-		if err != nil {
-			return err
-		}
-		payload, err := fs.ReadFile(migrationFS, "migrations/"+entry.Name())
-		if err != nil {
-			return err
-		}
-		sum := sha256.Sum256(payload)
-		checksum := hex.EncodeToString(sum[:])
+	}
+	var appliedMax int
+	if err := s.db.QueryRow("SELECT COALESCE(MAX(version),0) FROM schema_migrations").Scan(&appliedMax); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+	if appliedMax > embeddedMax {
+		return fmt.Errorf("database schema version %d is newer than this binary supports (%d); upgrade HIBP before opening this database", appliedMax, embeddedMax)
+	}
 
+	maxVersion := 0
+	for _, file := range files {
 		var existing string
-		err = s.db.QueryRow("SELECT checksum FROM schema_migrations WHERE version=?", version).Scan(&existing)
+		err = s.db.QueryRow("SELECT checksum FROM schema_migrations WHERE version=?", file.version).Scan(&existing)
 		if err == nil {
-			if existing != checksum {
-				return fmt.Errorf("migration %d checksum mismatch", version)
+			if existing != file.checksum {
+				return fmt.Errorf("migration %d checksum mismatch", file.version)
 			}
-			if version > maxVersion {
-				maxVersion = version
+			if file.version > maxVersion {
+				maxVersion = file.version
 			}
 			continue
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("read migration %d: %w", version, err)
+			return fmt.Errorf("read migration %d: %w", file.version, err)
 		}
 
 		tx, err := s.db.Begin()
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(string(payload)); err != nil {
+		if _, err := tx.Exec(string(file.payload)); err != nil {
 			_ = tx.Rollback()
-			return fmt.Errorf("apply migration %d: %w", version, err)
+			return fmt.Errorf("apply migration %d: %w", file.version, err)
 		}
 		if _, err := tx.Exec(
 			"INSERT INTO schema_migrations(version,name,checksum,applied_at) VALUES(?,?,?,?)",
-			version, entry.Name(), checksum, crypto.Now(),
+			file.version, file.name, file.checksum, crypto.Now(),
 		); err != nil {
 			_ = tx.Rollback()
 			return err
@@ -278,8 +318,8 @@ func (s *Store) migrate() error {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
-		if version > maxVersion {
-			maxVersion = version
+		if file.version > maxVersion {
+			maxVersion = file.version
 		}
 	}
 
@@ -292,6 +332,80 @@ func (s *Store) migrate() error {
 		}
 	}
 	return nil
+}
+
+func (s *Store) pendingMigrations() ([]migrationFile, error) {
+	var count int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&count); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "no such table") {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	files, err := readMigrations()
+	if err != nil {
+		return nil, err
+	}
+	var pending []migrationFile
+	for _, file := range files {
+		var existing int
+		if err := s.db.QueryRow("SELECT COUNT(*) FROM schema_migrations WHERE version=?", file.version).Scan(&existing); err != nil {
+			return nil, err
+		}
+		if existing == 0 {
+			pending = append(pending, file)
+		}
+	}
+	return pending, nil
+}
+
+// preMigrationBackup writes and verifies a timestamped encrypted backup before
+// any pending schema migration is applied. A failed backup aborts the upgrade.
+func (s *Store) preMigrationBackup() (string, error) {
+	pending, err := s.pendingMigrations()
+	if err != nil || len(pending) == 0 {
+		return "", err
+	}
+	base := strings.TrimSuffix(filepath.Base(s.path), filepath.Ext(s.path))
+	if base == "" {
+		base = "hibp"
+	}
+	stamp := time.Now().UTC().Format("2006-01-02-150405")
+	path := filepath.Join(filepath.Dir(s.path), base+"-pre-migration-"+stamp+".bac")
+	for suffix := 1; ; suffix++ {
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			break
+		} else if err != nil {
+			return "", err
+		}
+		path = filepath.Join(filepath.Dir(s.path), fmt.Sprintf("%s-pre-migration-%s-%d.bac", base, stamp, suffix))
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", err
+	}
+	if err := backupDatabase(path, s.db); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	if err := copyFile(crypto.SidecarPath(s.path), crypto.SidecarPath(path)); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = os.Remove(path)
+		_ = os.Remove(crypto.SidecarPath(path))
+		return "", err
+	}
+	if err := verifyBackup(path, s.key); err != nil {
+		_ = os.Remove(path)
+		_ = os.Remove(crypto.SidecarPath(path))
+		return "", err
+	}
+	slog.Info("created automatic pre-migration backup", "path", path, "pending_migrations", len(pending))
+	return path, nil
 }
 
 func migrationVersion(name string) (int, error) {
@@ -339,12 +453,16 @@ func validateHost(host Host) error {
 	if strings.TrimSpace(host.Username) == "" {
 		return errors.New("username is required")
 	}
-	switch host.AuthType {
-	case "", "key", "agent", "certificate", "password":
-	default:
-		return errors.New("auth_type must be key, agent, certificate, or password")
+	authType := strings.TrimSpace(host.AuthType)
+	if authType == "" {
+		authType = "key"
 	}
-	if host.AuthType == "key" && strings.TrimSpace(host.KeyPath) == "" {
+	switch authType {
+	case "key", "password":
+	default:
+		return errors.New("auth_type must be key or password; ssh-agent and SSH certificate authentication are not supported")
+	}
+	if authType == "key" && strings.TrimSpace(host.KeyPath) == "" {
 		return errors.New("key_path is required for key authentication")
 	}
 	return nil
@@ -352,6 +470,15 @@ func validateHost(host Host) error {
 
 // CreateHost inserts a host and an audit entry atomically.
 func (s *Store) CreateHost(host Host) (Host, error) {
+	return s.CreateHostAs("local", host)
+}
+
+// CreateHostAs inserts a host and records the supplied audit actor.
+func (s *Store) CreateHostAs(actor string, host Host) (Host, error) {
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		actor = "local"
+	}
 	if err := validateHost(host); err != nil {
 		return Host{}, err
 	}
@@ -383,7 +510,7 @@ func (s *Store) CreateHost(host Host) (Host, error) {
 		_ = tx.Rollback()
 		return Host{}, err
 	}
-	if err := s.addAuditTx(tx, "local", "create", "host", host.ID, host.Name+" ("+host.Address+")"); err != nil {
+	if err := s.addAuditTx(tx, actor, "create", "host", host.ID, host.Name+" ("+host.Address+")"); err != nil {
 		_ = tx.Rollback()
 		return Host{}, err
 	}
@@ -395,6 +522,15 @@ func (s *Store) CreateHost(host Host) (Host, error) {
 
 // UpdateHost updates editable host fields.
 func (s *Store) UpdateHost(host Host) (Host, error) {
+	return s.UpdateHostAs("local", host)
+}
+
+// UpdateHostAs updates editable host fields and records the supplied actor.
+func (s *Store) UpdateHostAs(actor string, host Host) (Host, error) {
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		actor = "local"
+	}
 	if err := validateHost(host); err != nil {
 		return Host{}, err
 	}
@@ -423,7 +559,7 @@ func (s *Store) UpdateHost(host Host) (Host, error) {
 		_ = tx.Rollback()
 		return Host{}, sql.ErrNoRows
 	}
-	if err := s.addAuditTx(tx, "local", "update", "host", host.ID, host.Name); err != nil {
+	if err := s.addAuditTx(tx, actor, "update", "host", host.ID, host.Name); err != nil {
 		_ = tx.Rollback()
 		return Host{}, err
 	}
@@ -435,6 +571,15 @@ func (s *Store) UpdateHost(host Host) (Host, error) {
 
 // DeleteHost removes a host and its related facts/keys/runs.
 func (s *Store) DeleteHost(id string) error {
+	return s.DeleteHostAs("local", id)
+}
+
+// DeleteHostAs removes a host and records the supplied audit actor.
+func (s *Store) DeleteHostAs(actor, id string) error {
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		actor = "local"
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -449,7 +594,7 @@ func (s *Store) DeleteHost(id string) error {
 		_ = tx.Rollback()
 		return sql.ErrNoRows
 	}
-	if err := s.addAuditTx(tx, "local", "delete", "host", id, ""); err != nil {
+	if err := s.addAuditTx(tx, actor, "delete", "host", id, ""); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
@@ -532,6 +677,15 @@ func scanHost(row scanner) (Host, error) {
 
 // SaveHostKey trusts a host key.
 func (s *Store) SaveHostKey(key HostKey) error {
+	return s.SaveHostKeyAs("local", key)
+}
+
+// SaveHostKeyAs trusts a host key and records the supplied actor.
+func (s *Store) SaveHostKeyAs(actor string, key HostKey) error {
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		actor = "local"
+	}
 	now := crypto.Now()
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -545,7 +699,7 @@ func (s *Store) SaveHostKey(key HostKey) error {
 		_ = tx.Rollback()
 		return err
 	}
-	if err := s.addAuditTx(tx, "local", "trust-key", "host", key.HostID, key.KeyType+" "+key.Fingerprint); err != nil {
+	if err := s.addAuditTx(tx, actor, "trust-key", "host", key.HostID, key.KeyType+" "+key.Fingerprint); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
@@ -569,6 +723,15 @@ func (s *Store) GetHostKey(hostID string) (*HostKey, error) {
 
 // SaveFacts stores the latest facts and audits the collection.
 func (s *Store) SaveFacts(hostID string, facts Facts) error {
+	return s.SaveFactsAs("local", hostID, facts)
+}
+
+// SaveFactsAs stores the latest facts and records the supplied audit actor.
+func (s *Store) SaveFactsAs(actor, hostID string, facts Facts) error {
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		actor = "local"
+	}
 	if facts.CollectedAt == "" {
 		facts.CollectedAt = crypto.Now()
 	}
@@ -595,7 +758,7 @@ func (s *Store) SaveFacts(hostID string, facts Facts) error {
 		_ = tx.Rollback()
 		return err
 	}
-	if err := s.addAuditTx(tx, "local", "facts", "host", hostID, fmt.Sprintf("%d pending updates", facts.PendingUpdates)); err != nil {
+	if err := s.addAuditTx(tx, actor, "facts", "host", hostID, fmt.Sprintf("%d pending updates", facts.PendingUpdates)); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
@@ -665,7 +828,11 @@ func (s *Store) ListAudit(limit int) ([]AuditEntry, error) {
 
 // VerifyAudit recomputes the entire audit chain.
 func (s *Store) VerifyAudit() error {
-	rows, err := s.db.Query("SELECT id,ts,actor,action,entity_type,entity_id,detail,prev_hash,hash FROM audit_log ORDER BY id")
+	return verifyAuditDB(s.db)
+}
+
+func verifyAuditDB(db *sql.DB) error {
+	rows, err := db.Query("SELECT id,ts,actor,action,entity_type,entity_id,detail,prev_hash,hash FROM audit_log ORDER BY id")
 	if err != nil {
 		return err
 	}
@@ -826,6 +993,9 @@ func verifyBackup(path string, key []byte) error {
 	}
 	if count == 0 {
 		return errors.New("backup verification failed: no migrations")
+	}
+	if err := verifyAuditDB(db); err != nil {
+		return fmt.Errorf("backup verification failed: audit chain: %w", err)
 	}
 	return nil
 }

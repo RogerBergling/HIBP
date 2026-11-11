@@ -79,7 +79,8 @@ code { background: rgba(139, 160, 189, .10); padding: 1px 4px; border-radius: 4p
 .auth-qr { width: 210px; height: 210px; align-self: center; border-radius: 8px; background: #fff; padding: 8px; }
 .auth-secret { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: #bae6fd; background: #08101d; border: 1px solid var(--border); border-radius: 7px; padding: 8px; word-break: break-all; margin-bottom: 8px; }
 .auth-divider { height: 1px; background: var(--border-soft); margin: 16px 0 14px; }
-.sign-out { margin-left: auto; font-size: 10px; }
+.sign-out { font-size: 10px; }
+.user-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; margin-top: 3px; }
 .brand-mark {
   width: 38px; height: 38px;
   border-radius: 11px;
@@ -262,6 +263,12 @@ th:last-child, td:last-child { padding-right: 15px; }
 .detail-card h3 { margin: 0 0 7px; font-size: 11px; color: #cfe0f5; }
 .detail-card p, .detail-card li { margin: 3px 0; font-size: 10.5px; color: var(--muted); }
 .detail-card b { color: #e7eef9; font-weight: 600; }
+.mfa-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.mfa-factor { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: 7px; background: #0a1424; }
+.mfa-setup-card { margin-top: 12px; }
+.mfa-qr { display: block; width: 180px; height: 180px; margin: 10px 0; border-radius: 6px; background: #fff; padding: 6px; }
+.mfa-secret { margin-bottom: 10px; letter-spacing: .14em; }
+.mfa-form { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
 .metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
 .metric-card { background: #08101d; border: 1px solid var(--border-soft); border-radius: 8px; padding: 9px; }
 .metric-card .metric-value { font-size: 18px; font-weight: 750; color: #e7eef9; }

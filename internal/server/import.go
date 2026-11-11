@@ -42,7 +42,7 @@ type importResult struct {
 	Errors   []string    `json:"errors"`
 }
 
-func (s *Server) importCSV(ctx context.Context, request importRequest) (importResult, error) {
+func (s *Server) importCSV(ctx context.Context, actor string, request importRequest) (importResult, error) {
 	if len(request.CSV) > 10<<20 {
 		return importResult{}, errors.New("CSV is larger than 10 MiB")
 	}
@@ -169,7 +169,7 @@ func (s *Server) importCSV(ctx context.Context, request importRequest) (importRe
 				case "update":
 					host.ID = existing.ID
 					host.CreatedAt = existing.CreatedAt
-					if _, err := s.store.UpdateHost(host); err != nil {
+					if _, err := s.store.UpdateHostAs(actor, host); err != nil {
 						row.Error = err.Error()
 						result.Rows = append(result.Rows, row)
 						result.Errors = append(result.Errors, fmt.Sprintf("row %d: %s", rowNumber, row.Error))
@@ -180,7 +180,7 @@ func (s *Server) importCSV(ctx context.Context, request importRequest) (importRe
 					continue
 				}
 			}
-			if _, err := s.store.CreateHost(host); err != nil {
+			if _, err := s.store.CreateHostAs(actor, host); err != nil {
 				row.Error = err.Error()
 				result.Rows = append(result.Rows, row)
 				result.Errors = append(result.Errors, fmt.Sprintf("row %d: %s", rowNumber, row.Error))

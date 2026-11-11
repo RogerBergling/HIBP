@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -149,5 +150,88 @@ func TestUpdateAndDeleteHost(t *testing.T) {
 	}
 	if _, err := s.GetHost(host.ID); err == nil {
 		t.Fatal("expected deleted host to be gone")
+	}
+}
+
+func TestBackupVerificationRejectsBrokenAuditChain(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "inventory.hibp")
+	pass := []byte("correct horse battery staple")
+	s, err := Open(dbPath, pass, testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.CreateHost(Host{Name: "web01", Address: "10.0.0.10", Port: 22, Username: "ubuntu", AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519"}); err != nil {
+		t.Fatal(err)
+	}
+	backupPath := filepath.Join(dir, "backup.hibp")
+	if err := s.Backup(backupPath); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openSQLCipher(backupPath, s.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("UPDATE audit_log SET detail='tampered' WHERE id=(SELECT id FROM audit_log ORDER BY id LIMIT 1)"); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err = verifyBackup(backupPath, s.key)
+	if err == nil || !strings.Contains(err.Error(), "audit chain") {
+		t.Fatalf("expected audit-chain verification failure, got %v", err)
+	}
+}
+
+func TestNewerSchemaVersionIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "inventory.hibp")
+	pass := []byte("correct horse battery staple")
+	s, err := Open(dbPath, pass, testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec("INSERT INTO schema_migrations(version,name,checksum,applied_at) VALUES(999,'future.sql','future','2026-11-11T00:00:00Z')"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(dbPath, pass, Options{}); err == nil || !strings.Contains(err.Error(), "newer than this binary supports") {
+		t.Fatalf("expected newer-schema refusal, got %v", err)
+	}
+}
+
+func TestPendingMigrationCreatesAutomaticBackup(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "inventory.hibp")
+	pass := []byte("correct horse battery staple")
+	s, err := Open(dbPath, pass, testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec("DELETE FROM schema_migrations WHERE version=7"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Reopening tries to apply migration 007 again, which fails because the
+	// column already exists. The automatic backup must exist regardless.
+	if _, err := Open(dbPath, pass, Options{}); err == nil {
+		t.Fatal("expected reapplying migration 007 to fail")
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "*-pre-migration-*.bac"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected one automatic pre-migration backup, got %v", matches)
+	}
+	if _, err := os.Stat(matches[0] + ".meta"); err != nil {
+		t.Fatalf("pre-migration backup sidecar missing: %v", err)
 	}
 }

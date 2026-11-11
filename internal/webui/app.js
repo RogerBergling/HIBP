@@ -1407,7 +1407,7 @@ function renderSchedules() {
     const row = el('tr');
     const nameTd = el('td');
     nameTd.append(el('div', 'host-name', schedule.name));
-    nameTd.append(el('div', 'host-ip', (schedule.enabled ? 'enabled' : 'disabled') + (schedule.run_if_missed ? ' · catch up' : '')));
+    nameTd.append(el('div', 'host-ip', (schedule.enabled ? 'enabled' : 'disabled') + (schedule.run_if_missed ? ' · catch up' : '') + (schedule.retries ? ' · ' + schedule.retries + ' retries' : '')));
     const modeTd = el('td');
     modeTd.append(el('span', 'badge ' + (schedule.mode === 'apply' ? 'red' : 'amber'), scheduleModeLabel(schedule.mode)));
     const cronTd = el('td');
@@ -1525,6 +1525,7 @@ function showScheduleModal(schedule = null) {
   form.append(timingRow);
   const limitsRow = el('div', 'form-row three');
   const concurrency = inputField(limitsRow, 'Max concurrency', 'max_concurrency', '3', 'number');
+  const retries = inputField(limitsRow, 'Retries per host', 'retries', '0', 'number');
   const notify = selectField(limitsRow, 'Email', 'notify', [['failures', 'On failures'], ['always', 'Every run'], ['never', 'Never']]);
   const runIfMissed = el('label', 'field checkbox-field');
   const missed = el('input');
@@ -1649,6 +1650,7 @@ function showScheduleModal(schedule = null) {
   windowMinutes.value = String(source.window_minutes || 120);
   jitter.value = String(source.jitter_seconds ?? 60);
   concurrency.value = String(source.max_concurrency || 3);
+  retries.value = String(source.retries ?? 0);
   notify.value = source.notify || 'failures';
   recipients.value = source.recipients || '';
   missed.checked = Boolean(source.run_if_missed);
@@ -1679,6 +1681,7 @@ function showScheduleModal(schedule = null) {
       window_minutes: Number(windowMinutes.value || 120),
       jitter_seconds: Number(jitter.value || 0),
       max_concurrency: Number(concurrency.value || 3),
+      retries: Number(retries.value || 0),
       run_if_missed: missed.checked, notify: notify.value,
       recipients: recipients.value.trim(), assignments,
     };
@@ -2743,7 +2746,7 @@ function showAddHostModal(host = null, prefill = null) {
   const username = inputField(row, 'Username', 'username', 'ubuntu');
   form.append(row);
   const authRow = el('div', 'form-row');
-  const authType = selectField(authRow, 'Auth type', 'auth_type', [['key', 'SSH key'], ['agent', 'ssh-agent'], ['certificate', 'SSH certificate'], ['password', 'Password (manual fallback)']]);
+  const authType = selectField(authRow, 'Auth type', 'auth_type', [['key', 'SSH key file'], ['password', 'Password (manual fallback)']]);
   const keyPath = keyPathField(authRow, source.key_path || '');
   form.append(authRow);
   const groupRow = el('div', 'form-row');
@@ -2967,7 +2970,7 @@ function showCMDBImportModal() {
   file.accept = '.csv,.json,.txt,text/csv,application/json,text/plain';
   body.append(file);
   const textarea = el('textarea');
-  textarea.placeholder = 'name,address,port,username,auth_type,key_path,group,tags,cmdb_ci_id\nweb01,10.0.0.10,22,ubuntu,agent,,prod,"web,prod",CI-123';
+  textarea.placeholder = 'name,address,port,username,auth_type,key_path,group,tags,cmdb_ci_id\nweb01,10.0.0.10,22,ubuntu,key,/home/ops/.ssh/id_ed25519,prod,"web,prod",CI-123';
   body.append(textarea);
   const options = el('div', 'form-row');
   const format = selectField(options, 'Format', 'format', [['auto', 'Auto detect'], ['csv', 'CSV'], ['json', 'JSON']]);
@@ -3149,6 +3152,180 @@ function renderImportPreview(container, result) {
   container.append(table);
 }
 
+function updateMFAState(data) {
+  state.auth.user = state.auth.user || {};
+  state.auth.user.totp_enabled = Boolean(data.totp_enabled);
+  state.auth.user.passkey_count = Array.isArray(data.passkeys)
+    ? data.passkeys.length
+    : Number(data.passkey_count || 0);
+  state.auth.user.mfa_enabled = Boolean(data.totp_enabled) || state.auth.user.passkey_count > 0;
+  updateUserDisplay();
+}
+
+async function showAccountSecurityModal() {
+  const body = el('div', 'modal-body');
+  body.append(el('p', 'muted', 'HIBP requires at least one second factor. Removing the last configured factor is blocked so the account cannot be locked out of MFA.'));
+  const summary = el('div', 'detail-card');
+  const totpCard = el('div', 'detail-card');
+  const passkeyCard = el('div', 'detail-card');
+  const setupArea = el('div', 'mfa-setup');
+  body.append(summary, totpCard, passkeyCard, setupArea);
+  const actions = el('div', 'modal-actions');
+  const closeButton = el('button', 'btn', 'Close');
+  closeButton.type = 'button';
+  actions.append(closeButton);
+  body.append(actions);
+  const close = openModal('Account security', body);
+  closeButton.addEventListener('click', close);
+
+  const beginTOTPSetup = async () => {
+    setupArea.replaceChildren();
+    setupArea.append(el('p', 'muted', 'Starting authenticator setup…'));
+    try {
+      const setup = await api('/api/v1/auth/totp/begin', { method: 'POST' });
+      const card = el('div', 'detail-card mfa-setup-card');
+      card.append(el('h3', '', 'Scan this QR code'));
+      const qr = el('img', 'mfa-qr');
+      qr.src = setup.qr_png;
+      qr.alt = 'Authenticator enrollment QR code';
+      const secret = el('div', 'mono mfa-secret', String(setup.secret || '').replace(/(.{4})/g, '$1 ').trim());
+      const form = el('form', 'mfa-form');
+      const code = inputField(form, 'Authenticator code', 'account_totp_code', '123456');
+      code.maxLength = 8;
+      const submit = el('button', 'btn primary', 'Verify and enable');
+      submit.type = 'submit';
+      form.append(submit);
+      card.append(qr, secret, form);
+      setupArea.replaceChildren(card);
+      code.focus();
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        try {
+          await api('/api/v1/auth/totp/verify', { method: 'POST', body: JSON.stringify({ code: code.value.trim() }) });
+          toast('Authenticator enabled', 'ok');
+          setupArea.replaceChildren();
+          await reload();
+        } catch (error) {
+          toast(error.message, 'error');
+        }
+      });
+    } catch (error) {
+      setupArea.replaceChildren();
+      toast(error.message, 'error');
+    }
+  };
+
+  const addPasskey = async () => {
+    if (!passkeySupported()) {
+      toast('This browser cannot create passkeys. Use a current browser over http://localhost or HTTPS.', 'error');
+      return;
+    }
+    try {
+      const options = await api('/api/v1/auth/passkey/register/begin', { method: 'POST' });
+      const publicKey = PublicKeyCredential.parseCreationOptionsFromJSON(options.publicKey);
+      const credential = await navigator.credentials.create({ publicKey });
+      if (!credential || typeof credential.toJSON !== 'function') throw new Error('Passkey creation failed.');
+      const entered = window.prompt('Name this passkey', 'Passkey') || 'Passkey';
+      await api('/api/v1/auth/passkey/register/finish', {
+        method: 'POST',
+        body: JSON.stringify({
+          ceremony_id: options.ceremony_id,
+          credential: credential.toJSON(),
+          name: entered.trim().slice(0, 64),
+        }),
+      });
+      toast('Passkey added', 'ok');
+      await reload();
+    } catch (error) {
+      toast(error.name === 'NotAllowedError' ? 'Passkey prompt was cancelled.' : error.message, 'error');
+    }
+  };
+
+  const removeTOTP = async () => {
+    if (!confirm('Remove the authenticator app from this account? Make sure you can sign in with a passkey first.')) return;
+    try {
+      await api('/api/v1/auth/totp', { method: 'DELETE' });
+      toast('Authenticator removed', 'ok');
+      await reload();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  };
+
+  const removePasskey = async (passkey) => {
+    if (!confirm('Remove passkey "' + passkey.name + '"?')) return;
+    try {
+      await api('/api/v1/auth/passkeys/' + encodeURIComponent(passkey.id), { method: 'DELETE' });
+      toast('Passkey removed', 'ok');
+      await reload();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  };
+
+  const render = (data) => {
+    const passkeys = data.passkeys || [];
+    summary.replaceChildren();
+    summary.append(el('h3', '', 'Signed in as ' + data.username));
+    summary.append(el('p', 'muted', (data.mfa_enabled ? 'MFA is enabled.' : 'MFA is not configured.') +
+      (data.totp_enabled ? ' Authenticator: enabled.' : ' Authenticator: not configured.') +
+      ' Passkeys: ' + passkeys.length + '.'));
+
+    totpCard.replaceChildren();
+    totpCard.append(el('h3', '', 'Authenticator app (TOTP)'));
+    totpCard.append(el('p', 'muted', data.totp_enabled
+      ? 'A time-based authenticator is configured. Replacing it requires the new code before the old secret is discarded.'
+      : 'Add a TOTP authenticator as a second factor.'));
+    const totpActions = el('div', 'actions');
+    totpActions.append(actionButton(data.totp_enabled ? 'Replace authenticator' : 'Set up authenticator', beginTOTPSetup));
+    if (data.totp_enabled) {
+      const remove = actionButton('Remove authenticator', removeTOTP, 'danger');
+      remove.disabled = passkeys.length === 0;
+      if (remove.disabled) remove.title = 'Add a passkey before removing the last MFA factor';
+      totpActions.append(remove);
+    }
+    totpCard.append(totpActions);
+
+    passkeyCard.replaceChildren();
+    passkeyCard.append(el('h3', '', 'Passkeys'));
+    const add = actionButton('Add passkey', addPasskey, 'primary');
+    const webauthnAvailable = Boolean(state.auth.webauthn_available ?? state.auth.webauthnAvailable);
+    add.disabled = !webauthnAvailable;
+    if (add.disabled) add.title = 'Open HIBP via http://localhost:<port> in a passkey-capable browser';
+    passkeyCard.append(add);
+    if (!passkeys.length) {
+      passkeyCard.append(el('p', 'muted', 'No passkeys are registered.'));
+    } else {
+      const list = el('div', 'mfa-list');
+      for (const passkey of passkeys) {
+        const item = el('div', 'mfa-factor');
+        const info = el('div');
+        info.append(el('div', 'host-name', passkey.name || 'Passkey'));
+        info.append(el('div', 'muted', 'Added ' + (passkey.created_at ? new Date(passkey.created_at).toLocaleString() : 'unknown') +
+          (passkey.last_used_at ? ' · last used ' + new Date(passkey.last_used_at).toLocaleString() : '')));
+        const remove = actionButton('Remove', () => removePasskey(passkey), 'danger');
+        remove.disabled = passkeys.length <= 1 && !data.totp_enabled;
+        if (remove.disabled) remove.title = 'Configure an authenticator before removing the last MFA factor';
+        item.append(info, remove);
+        list.append(item);
+      }
+      passkeyCard.append(list);
+    }
+  };
+
+  async function reload() {
+    try {
+      const data = await api('/api/v1/auth/mfa');
+      updateMFAState(data);
+      render(data);
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  }
+
+  await reload();
+}
+
 function showBackupModal() {
   const body = el('div', 'modal-body');
   body.append(el('p', 'muted', 'Creates a consistent encrypted copy plus the .meta sidecar. Leave the field blank to use the database directory, enter an existing directory for a timestamped hibp-YYYY-MM-DD-HHMMSS.bac file, or enter a new absolute file path.'));
@@ -3308,6 +3485,7 @@ function bind() {
   $('enroll-continue').addEventListener('click', enterApp);
   $('enroll-logout').addEventListener('click', signOut);
   $('sign-out').addEventListener('click', signOut);
+  $('account-security').addEventListener('click', showAccountSecurityModal);
 
   for (const button of document.querySelectorAll('.nav-item[data-view]')) {
     button.addEventListener('click', () => setView(button.dataset.view));

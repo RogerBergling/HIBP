@@ -60,9 +60,9 @@ Out of scope:
   current SQLCipher 4.20 and the patched `third_party/go-sqlite3` driver.
 - Password SSH and sudo password fallbacks are manual-run only and never
   stored. `ssh-agent`, hardware-backed keys, SSH certificates, and
-  passphrase-protected key files are not implemented. The UI/import paths accept
-  `agent` and `certificate`, but the transport will fail; scheduled collection
-  only processes `auth_type=key`.
+  passphrase-protected key files are not implemented. Host create, update, CSV
+  import, and CMDB import reject `agent` and `certificate`; scheduled
+  collection only processes `auth_type=key`.
 - The browser session cookie is an administrator credential. It is HttpOnly,
   SameSite=Strict, and only a SHA-256 hash is stored in SQLCipher. Protect the
   browser profile, SSH tunnel, and controller.
@@ -71,22 +71,23 @@ Out of scope:
   relying party IDs cannot be IP addresses.
 - Account recovery is local-only: `hibp user reset` requires the database
   passphrase and access to the controller. There is no email or remote reset.
-  There is also no post-enrollment UI for adding/rotating passkeys or replacing
-  TOTP; the reset command clears all MFA.
-- Some host mutation paths (create/update/delete, trust-key, facts) record the
-  audit actor as `local`, not the authenticated username. The audit chain is
-  hash-chained but not keyed or externally anchored; a database writer can
-  rewrite it consistently.
+  An MFA-verified session can add/remove passkeys and replace/remove TOTP from
+  **Account security**; removing the last factor is rejected. The reset command
+  clears all MFA.
+- Authenticated host mutations and imports record the username as the audit
+  actor; internal collection records `collector`, and scheduled work records
+  `scheduler`. The audit chain is hash-chained but not keyed or externally
+  anchored; a database writer can rewrite it consistently.
 - The API and import paths accept an absolute `key_path` outside the configured
   key-browser roots. Filesystem permissions on the service account are the real
   boundary; give it only the intended key directory.
-- Schema upgrades do not create an automatic pre-migration backup and do not
-  hard-refuse every future schema version. Take a manual backup before each
-  upgrade and keep the matching binary. There is no passphrase-rekey or
+- Schema upgrades create and verify an automatic timestamped pre-migration
+  backup next to the database and hard-refuse a database whose schema version
+  is newer than the running binary. There is no passphrase-rekey or
   envelope/DEK-wrapping workflow.
-- Backup verification opens the copy and checks that migrations exist; it does
-  not verify the full audit chain. There is no backup-without-secrets mode and
-  no built-in backup retention.
+- Backup verification opens the copy, checks migrations, and recomputes the
+  full audit chain. There is no backup-without-secrets mode and no built-in
+  backup retention.
 - A fresh database is claimed through the loopback UI. Until the first account
   and MFA exist, any local user who can reach the port could claim it.
 - The packaged systemd unit needs path and unlock customization:
@@ -94,8 +95,8 @@ Out of scope:
   headless start, and backups outside `ReadWritePaths` are denied.
 - No RBAC, durable job queue, package diff, approval workflow, approved
   playbooks, or host disabled/maintenance state. The cron scheduler is
-  single-process, has no retry/resume or security-only filter, and runs only
-  while the controller is unlocked and running.
+  single-process, has bounded per-host retries but no resume/security-only
+  filter, and runs only while the controller is unlocked and running.
 - Patch schedules accept only key-auth hosts with a trusted host key and the
   restricted `NOPASSWD` helper. Non-eligible hosts are skipped. Apply jobs never
   reboot automatically. Per-host output in run history is capped at 16 KiB.
@@ -112,7 +113,8 @@ Out of scope:
   runs `govulncheck` but not `gosec`, Trivy/Grype, or a full dependency review.
 - CMDB import is not a single transaction; a mid-commit failure can leave
   earlier rows applied. Regular CSV import matches duplicates by address/port,
-  not CMDB ID. Imported `agent` hosts are not schedulable until changed.
+  not CMDB ID. Missing auth metadata defaults to `key` and requires a key path;
+  unsupported `agent`/`certificate` values are rejected.
 - Real target, cross-distro, helper-rollout, reboot, and package-update testing
   is still required on disposable VMs before broad production use.
 
@@ -158,12 +160,14 @@ cron-based patch schedules are implemented.
 - Patch schedules are administrator-only definitions. They run the same fixed
   `check`/`apply` helper actions as manual patching, use the configured cron
   timezone and maintenance window, and only target hosts with key auth and a
-  trusted host key. Concurrency is bounded per schedule, and every host attempt
-  is written to run history and the audit log. Apply jobs do not reboot
-  automatically. The scheduler is not a durable job queue: an interrupted run
-  is not resumed, and the process must be unlocked and running. Scheduler and
-  manual patch/reboot actions do not share a per-host operation lock; avoid
-  overlapping operator actions on the same host.
+  trusted host key. Concurrency is bounded per schedule, failed hosts can be
+  retried a configured number of times, and every host attempt is written to
+  run history and the audit log. Apply jobs do not reboot automatically. The
+  scheduler is not a durable job queue: an interrupted run is not resumed, and
+  the process must be unlocked and running. Manual patch, reboot, helper
+  bootstrap, and scheduled patch operations share a process-local per-host
+  lock; a second operation on the same host is rejected or skipped. Multiple
+  controller processes must not share one database.
 - SMTP is also used for schedule summaries. A local Postfix relay with no
   authentication is supported over a reachable TCP socket, but must be
   restricted to trusted sources; plain SMTP has no transport encryption.

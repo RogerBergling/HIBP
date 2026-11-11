@@ -55,7 +55,7 @@ func TestScheduleCRUDAndValidation(t *testing.T) {
 	payload := scheduleRequest{
 		Name: "Nightly patches", Mode: "apply", Enabled: true, Cron: "0 3 * * *",
 		Timezone: "Europe/Stockholm", WindowMinutes: 120, JitterSeconds: 60,
-		MaxConcurrency: 3, Notify: "failures",
+		MaxConcurrency: 3, Retries: 2, Notify: "failures",
 		Assignments: []store.ScheduleAssignment{
 			{Scope: "host", Target: host.ID},
 			{Scope: "group", Target: "web"},
@@ -74,6 +74,9 @@ func TestScheduleCRUDAndValidation(t *testing.T) {
 	}
 	if created.ID == "" || created.NextRunAt == "" || len(created.Assignments) != 2 {
 		t.Fatalf("unexpected schedule: %+v", created)
+	}
+	if created.Retries != 2 {
+		t.Fatalf("created retries = %d, want 2", created.Retries)
 	}
 
 	resp = request(t, http.MethodGet, base+"/api/v1/schedules", "test-token", "")
@@ -194,5 +197,60 @@ func TestBackupToDirectoryUsesTimestampedName(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("backup file missing: %s: %v", path, err)
 		}
+	}
+}
+
+func TestScheduleRunSkipsHostWithOperationLock(t *testing.T) {
+	app, db, host := newMonitorTestApp(t)
+	if err := db.SaveHostKey(store.HostKey{HostID: host.ID, KeyType: "ssh-ed25519", Fingerprint: "SHA256:test"}); err != nil {
+		t.Fatal(err)
+	}
+	schedule, err := db.CreateSchedule(store.Schedule{
+		Name: "Locked canary", Mode: "check", Enabled: true, Cron: "0 3 * * *",
+		Timezone: "UTC", WindowMinutes: 120, MaxConcurrency: 1, Notify: "never",
+		Assignments: []store.ScheduleAssignment{{Scope: "host", Target: host.ID}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !app.tryLockHost(host.ID) {
+		t.Fatal("test could not lock host")
+	}
+	defer app.unlockHost(host.ID)
+	app.runSchedule(context.Background(), schedule, time.Now().UTC(), true)
+	loaded, err := db.GetSchedule(schedule.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(loaded.LastSummary, "1 skipped") {
+		t.Fatalf("expected busy host to be skipped, got %+v", loaded)
+	}
+	runs, err := db.ListRuns(10, schedule.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("busy host should not start a run, got %+v", runs)
+	}
+}
+
+func TestManualPatchRejectsBusyHost(t *testing.T) {
+	ts, db, server := testServerWithApp(t, true)
+	host, err := db.CreateHost(store.Host{
+		Name: "web01", Address: "10.0.0.10", Port: 22, Username: "ubuntu",
+		AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !server.tryLockHost(host.ID) {
+		t.Fatal("host was already locked")
+	}
+	defer server.unlockHost(host.ID)
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/hosts/"+host.ID+"/patch", "test-token", `{"dry_run":true}`)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict || !strings.Contains(string(body), "host_busy") {
+		t.Fatalf("expected host_busy conflict, got %d %s", resp.StatusCode, body)
 	}
 }

@@ -40,7 +40,7 @@ func TestCMDBImportCSVMergeAndCreate(t *testing.T) {
 	}
 	data := `name,address,port,username,auth_type,key_path,group,tags,cmdb_ci_id,external_id
 web01,10.0.0.10,22,ubuntu,key,/home/ops/.ssh/id_ed25519,web-prod,"web,prod",CI-1,EXT-1
-db01,10.0.0.20,22,root,agent,,db-prod,"db,prod",CI-2,EXT-2`
+db01,10.0.0.20,22,root,key,/home/ops/.ssh/id_ed25519,db-prod,"db,prod",CI-2,EXT-2`
 	preview := postCMDBImport(t, ts.URL+"/api/v1/cmdb/import", cmdbImportRequest{
 		Data: data, Format: "auto", Mode: "merge", Commit: false,
 	})
@@ -71,7 +71,7 @@ db01,10.0.0.20,22,root,agent,,db-prod,"db,prod",CI-2,EXT-2`
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.Name != "db01" || created.Username != "root" || created.AuthType != "agent" || created.CMDBCIID != "CI-2" {
+	if created.Name != "db01" || created.Username != "root" || created.AuthType != "key" || created.CMDBCIID != "CI-2" {
 		t.Fatalf("unexpected imported host: %+v", created)
 	}
 }

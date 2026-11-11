@@ -169,7 +169,7 @@ func (s *Server) scheduledFacts(ctx context.Context, host store.Host) {
 	} else {
 		var facts helper.Facts
 		if err := json.Unmarshal([]byte(output), &facts); err == nil {
-			_ = s.store.SaveFacts(host.ID, storeFactsFromHelper(facts))
+			_ = s.store.SaveFactsAs("collector", host.ID, storeFactsFromHelper(facts))
 		}
 	}
 	if _, err := s.collectSystemInfo(ctx, host, "", ""); err != nil {

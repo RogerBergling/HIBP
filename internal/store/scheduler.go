@@ -19,6 +19,7 @@ type Schedule struct {
 	WindowMinutes  int                  `json:"window_minutes"`
 	JitterSeconds  int                  `json:"jitter_seconds"`
 	MaxConcurrency int                  `json:"max_concurrency"`
+	Retries        int                  `json:"retries"`
 	RunIfMissed    bool                 `json:"run_if_missed"`
 	Notify         string               `json:"notify"`
 	Recipients     string               `json:"recipients"`
@@ -76,10 +77,10 @@ func (s *Store) CreateSchedule(schedule Schedule) (Schedule, error) {
 		missed = 1
 	}
 	_, err = tx.Exec(`INSERT INTO schedules(id,name,mode,enabled,cron,timezone,window_minutes,jitter_seconds,
-		max_concurrency,run_if_missed,notify,recipients,last_run_at,last_status,last_summary,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		max_concurrency,retries,run_if_missed,notify,recipients,last_run_at,last_status,last_summary,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		schedule.ID, schedule.Name, schedule.Mode, enabled, schedule.Cron, schedule.Timezone,
-		schedule.WindowMinutes, schedule.JitterSeconds, schedule.MaxConcurrency, missed,
+		schedule.WindowMinutes, schedule.JitterSeconds, schedule.MaxConcurrency, schedule.Retries, missed,
 		schedule.Notify, schedule.Recipients, now, "", "", now, now)
 	if err != nil {
 		_ = tx.Rollback()
@@ -114,9 +115,9 @@ func (s *Store) UpdateSchedule(schedule Schedule) error {
 	}
 	now := crypto.Now()
 	res, err := tx.Exec(`UPDATE schedules SET name=?,mode=?,enabled=?,cron=?,timezone=?,window_minutes=?,
-		jitter_seconds=?,max_concurrency=?,run_if_missed=?,notify=?,recipients=?,updated_at=? WHERE id=?`,
+		jitter_seconds=?,max_concurrency=?,retries=?,run_if_missed=?,notify=?,recipients=?,updated_at=? WHERE id=?`,
 		schedule.Name, schedule.Mode, enabled, schedule.Cron, schedule.Timezone, schedule.WindowMinutes,
-		schedule.JitterSeconds, schedule.MaxConcurrency, missed, schedule.Notify, schedule.Recipients, now, schedule.ID)
+		schedule.JitterSeconds, schedule.MaxConcurrency, schedule.Retries, missed, schedule.Notify, schedule.Recipients, now, schedule.ID)
 	if err != nil {
 		_ = tx.Rollback()
 		return err
@@ -171,14 +172,14 @@ func (s *Store) DeleteSchedule(id string) error {
 
 func (s *Store) GetSchedule(id string) (Schedule, error) {
 	row := s.db.QueryRow(`SELECT id,name,mode,enabled,cron,timezone,window_minutes,jitter_seconds,
-		max_concurrency,run_if_missed,notify,recipients,last_run_at,last_status,last_summary,created_at,updated_at
+		max_concurrency,retries,run_if_missed,notify,recipients,last_run_at,last_status,last_summary,created_at,updated_at
 		FROM schedules WHERE id=?`, id)
 	return scanSchedule(row)
 }
 
 func (s *Store) ListSchedules() ([]Schedule, error) {
 	rows, err := s.db.Query(`SELECT id,name,mode,enabled,cron,timezone,window_minutes,jitter_seconds,
-		max_concurrency,run_if_missed,notify,recipients,last_run_at,last_status,last_summary,created_at,updated_at
+		max_concurrency,retries,run_if_missed,notify,recipients,last_run_at,last_status,last_summary,created_at,updated_at
 		FROM schedules ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -204,7 +205,7 @@ func scanSchedule(row scheduleScanner) (Schedule, error) {
 	var enabled, missed int
 	err := row.Scan(&schedule.ID, &schedule.Name, &schedule.Mode, &enabled, &schedule.Cron,
 		&schedule.Timezone, &schedule.WindowMinutes, &schedule.JitterSeconds, &schedule.MaxConcurrency,
-		&missed, &schedule.Notify, &schedule.Recipients, &schedule.LastRunAt, &schedule.LastStatus,
+		&schedule.Retries, &missed, &schedule.Notify, &schedule.Recipients, &schedule.LastRunAt, &schedule.LastStatus,
 		&schedule.LastSummary, &schedule.CreatedAt, &schedule.UpdatedAt)
 	schedule.Enabled = enabled == 1
 	schedule.RunIfMissed = missed == 1

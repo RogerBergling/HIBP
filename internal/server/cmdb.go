@@ -409,11 +409,7 @@ func prepareCMDBRow(record cmdbRecord, defaults store.Host, mode string, byCMDB,
 		host.KeyPath = defaults.KeyPath
 	}
 	if host.AuthType == "" {
-		if host.KeyPath != "" {
-			host.AuthType = "key"
-		} else {
-			host.AuthType = "agent"
-		}
+		host.AuthType = "key"
 	}
 	applyOptional := func(value string, present bool, target *string) {
 		if present && (mode == "overwrite" || value != "") {
@@ -490,7 +486,7 @@ func (s *Server) handleCMDBImport(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if row.Action == "create" {
-				host, err := s.store.CreateHost(row.prepared)
+				host, err := s.store.CreateHostAs(s.auditActor(r), row.prepared)
 				if err != nil {
 					row.Action = "error"
 					row.Error = err.Error()
@@ -502,7 +498,7 @@ func (s *Server) handleCMDBImport(w http.ResponseWriter, r *http.Request) {
 				created++
 				continue
 			}
-			host, err := s.store.UpdateHost(row.prepared)
+			host, err := s.store.UpdateHostAs(s.auditActor(r), row.prepared)
 			if err != nil {
 				row.Action = "error"
 				row.Error = err.Error()

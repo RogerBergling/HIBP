@@ -1,21 +1,22 @@
 # HIBP - Have I Been Patched
 
-> **Status: v0.5.1 feature set with a production build path.** The repository
-> contains a working Go server, browser UI, SQLCipher storage, host CRUD/import,
-> password + TOTP/passkey authentication, SSH host-key approval, remote helper
-> installation, fact collection, read-only system information, Docker
-> inventory, metric history, monitoring, SMTP email alerts, vCenter/HAProxy/
-> OPNsense integrations, CMDB import, cron-based patch schedules and run
-> history, reboot control, SSH config import, audit chain, backup/restore,
-> helper actions, tests, and CI. `make production` builds against current
-> SQLCipher 4.20 in a pinned Alpine/musl image; the development build still uses
-> the 2020 spike driver and prints a warning. SSH password and sudo fallbacks
-> are manual-run only.
+> **Status: v0.6.0 production-hardening feature set with a production build path.**
+> The repository contains a working Go server, browser UI, SQLCipher storage,
+> host CRUD/import, password + TOTP/passkey authentication with post-enrollment
+> MFA management, SSH host-key approval, remote helper installation, fact
+> collection, read-only system information, Docker inventory, metric history,
+> monitoring, SMTP email alerts, vCenter/HAProxy/OPNsense integrations, CMDB
+> import, cron-based patch schedules with per-host retries and run history,
+> reboot control, SSH config import, audit chain, backup/restore with audit-chain
+> verification and automatic pre-migration backups, helper actions, tests, and
+> CI. `make production` builds against current SQLCipher 4.20 in a pinned
+> Alpine/musl image; the development build still uses the 2020 spike driver and
+> prints a warning. SSH password and sudo fallbacks are manual-run only.
 >
 > **Not yet production-complete:** package-level run diffs, approval workflows,
-> a general durable job queue with retry/resume, approved playbooks, agent mode,
-> RBAC, and MFA device management UI are not implemented. The scheduler is a
-> single-process cron engine. Read
+> a durable job queue with resume across restarts, approved playbooks, agent
+> mode, and RBAC are not implemented. The scheduler is a single-process cron
+> engine with bounded per-host retries. Read
 > [Production deployment checklist](#production-deployment-checklist) and
 > [Known limitations before production](#known-limitations-before-production)
 > before exposing this to real hosts.
@@ -115,7 +116,7 @@ End users should not need Go or a compiler.
 
    ```bash
    # Install a specific version
-   sh install.sh --version v0.5.1
+   sh install.sh --version v0.6.0
 
    # Install system-wide (run as a user with write access to /usr/local/bin)
    sudo HIBP_PREFIX=/usr/local/bin sh install.sh
@@ -415,7 +416,7 @@ target helper installation and sudoers example are in
 ## Production deployment checklist
 
 This is the minimum operational and security review before using HIBP against
-real hosts. It reflects the current v0.5.1 implementation; treat it as a
+real hosts. It reflects the current v0.6.0 implementation; treat it as a
 gate, not as a suggestion.
 
 ### 1. Confirm the deployment model
@@ -427,11 +428,12 @@ gate, not as a suggestion.
   Do not publish port 8443 or the Unix-equivalent API to a network.
 - HIBP is single-operator in this release. There is no RBAC, approval workflow,
   or separation between an operator and an auditor.
-- The current release implements cron-based check/apply schedules, per-host run
-  history, and manual run-now. It does not implement a durable job queue,
-  package-level diffs, approvals, automatic retries/resume, host
-  disable/maintenance state, or approved playbooks. Review the scheduler
-  limitations before making it authoritative.
+- The current release implements cron-based check/apply schedules, bounded
+  per-host retries, per-host operation locks, per-host run history, and manual
+  run-now. It does not implement a durable job queue, package-level diffs,
+  approvals, resume across a controller restart, host disable/maintenance
+  state, or approved playbooks. Review the scheduler limitations before making
+  it authoritative.
 
 ### 2. Create the service account and protected paths
 
@@ -502,18 +504,21 @@ create the administrator plus MFA. Until the first account is created, any
 local user who can reach the loopback port could claim the administrator
 account. Do not leave a freshly created database unattended.
 
-The UI supports TOTP and passkeys at enrollment. It does not yet provide a
-post-enrollment device-management screen. Register a backup authenticator
-during setup and test recovery with `hibp user reset` before relying on it.
-That command clears TOTP, all passkeys, and all sessions.
+The UI supports TOTP and passkeys at enrollment. After sign-in, **Account
+security** in the sidebar lets you add another passkey, replace the TOTP
+authenticator, and remove a factor. HIBP refuses to remove the last remaining
+factor. Register a backup authenticator during setup and test recovery with
+`hibp user reset` before relying on it. That command clears TOTP, all passkeys,
+and all sessions.
 
 ### 5. Validate SSH and helper rollout on a canary
 
 - Scheduled collection runs only for hosts with `auth_type=key` and a trusted
   host key. Manual password SSH is supported, but no password is stored.
-- `agent` and `certificate` are accepted by the schema/UI/import paths but the
-  SSH transport currently implements only an unencrypted key file or a manual
-  password. Do not select those modes until the transport is extended.
+- Only `key` and `password` are accepted for `auth_type`. `ssh-agent` and SSH
+  certificate authentication are rejected by host create, update, CSV import,
+  and CMDB import; the current transport implements only an unencrypted key file
+  or a manual password.
 - Verify the host fingerprint through an independent channel before clicking
   **Trust**. Do not trust a first-use prompt blindly.
 - Install the helper on one canary host first, verify the generated
@@ -576,24 +581,26 @@ That command clears TOTP, all passkeys, and all sessions.
 ### 8. Back up before use and before every upgrade
 
 - Create a backup immediately after setup and before every application or
-  schema upgrade. The current migration path does not create an automatic
-  pre-migration backup.
+  schema upgrade. HIBP also creates an automatic, verified
+  `<database>-pre-migration-YYYY-MM-DD-HHMMSS.bac` plus `.meta` backup next to
+  the database before applying pending migrations. A failed backup aborts the
+  upgrade.
 - In the backup dialog, leave the path blank to use the database directory, or
   enter an existing directory. HIBP creates a timestamped
   `hibp-YYYY-MM-DD-HHMMSS.bac` plus `.meta` file. A new absolute file path is
   also accepted.
 - Back up the database and its `.meta` sidecar together. A backup without the
   sidecar cannot be opened.
-- The backup verifier checks that the copy opens and contains migrations; it
-  does not currently verify the full audit chain or offer a
+- The backup verifier opens the copy, checks that migrations exist, and
+  recomputes the full audit chain. It does not offer a
   backup-without-secrets mode.
 - Test a restore to a new path while the service is stopped, then open the
   restored file with the original passphrase and verify hosts and audit.
 - Keep at least one encrypted backup off the controller and define retention.
   A same-directory backup does not protect against disk loss or ransomware.
-- Do not rely on an older binary to open a database written by a newer release.
-  The current code does not yet hard-refuse every future schema version, so
-  keep the matching release binary with the backup.
+- Keep the matching release binary with every backup. HIBP hard-refuses a
+  database whose recorded schema version is newer than the running binary, but
+  the matching binary is still required for a reliable restore.
 
 ### 9. Decide what monitoring the controller itself needs
 
@@ -715,12 +722,17 @@ recovery boundary.
 
 ### MFA device management
 
-Enrollment is available during first-run setup. The current UI does not expose a
-post-enrollment screen for adding another passkey, replacing TOTP, or deleting a
-credential. The server API has begin/finish endpoints for passkey registration
-and TOTP replacement by an already MFA-verified session, but there is no
-administrator UI for them yet. In practice, register a backup authenticator
-during setup, or use `hibp user reset` (which clears all MFA) for recovery.
+Enrollment is available during first-run setup. After sign-in, **Account
+security** in the sidebar lists the registered passkeys and the TOTP state. An
+MFA-verified session can add another passkey, replace TOTP after verifying the
+new code, remove a passkey, and remove TOTP. Removing the last remaining factor
+is rejected; configure another factor first. Every change is written to the
+audit log. `hibp user reset` remains the local recovery path and clears all MFA
+and sessions.
+
+| Account security and MFA management |
+| --- |
+| ![Account security and MFA management](docs/screenshots/account-security.png) |
 
 ### Security boundaries
 
@@ -734,19 +746,21 @@ during setup, or use `hibp user reset` (which clears all MFA) for recovery.
 - **Passkeys need `localhost`; TOTP is the fallback on `127.0.0.1`.**
 - **SSH transport is limited.** The current transport supports an unencrypted
   private-key file or a manual password. `ssh-agent`, hardware-backed keys, and
-  SSH certificate authentication are selectable/importable in some paths but
-  are not implemented by the transport. Passphrase-protected key files are not
-  supported. Scheduled collection requires `auth_type=key`.
+  SSH certificate authentication are not implemented; `agent` and `certificate`
+  values are rejected instead of being accepted and failing later.
+  Passphrase-protected key files are not supported. Scheduled collection
+  requires `auth_type=key`.
 
 ## Docker, system information, and monitoring
 
-> **Status: v0.5.1 adds cron-based patch schedules and run history.**
+> **Status: v0.6.0 adds production hardening on top of cron schedules.**
 > Read-only system information, Docker inventory, host details, metric history,
 > configurable collection, explicit Docker check/apply, monitoring definitions,
 > SMTP email alerts, vCenter alarms, HAProxy stats, OPNsense gateways,
-> cmdb-lite CSV/JSON import, patch schedules, and per-host run history are
-> available. Package-level diffs, approvals, and a durable job queue remain the
-> next major phases.
+> cmdb-lite CSV/JSON import, patch schedules with per-host retries, run history,
+> MFA management, per-host operation locks, and verified pre-migration backups
+> are available. Package-level diffs, approvals, and a durable job queue remain
+> the next major phases.
 
 ### Implemented now
 
@@ -929,15 +943,22 @@ survive a stopped controller.
   with key-file authentication, a trusted host key, and the restricted
   `NOPASSWD` helper are eligible; others are counted as skipped.
 - Each schedule has a late-start window, jitter, maximum host concurrency
-  (1–20), and an optional “run the latest missed occurrence” mode. Cron presets
-  are available in the UI for daily, weekly, six-hourly, and monthly runs. The
-  controller-wide scheduler cap is 20 concurrent host operations.
+  (1–20), a per-host retry count (0–5), and an optional “run the latest missed
+  occurrence” mode. Cron presets are available in the UI for daily, weekly,
+  six-hourly, and monthly runs. The controller-wide scheduler cap is 20
+  concurrent host operations.
 - The scheduler runs in the controller process. A missed window is skipped
-  unless catch-up is enabled. Apply jobs are not retried automatically, and
-  there is no durable job queue, approval gate, or automatic reboot.
+  unless catch-up is enabled. Failed host attempts are retried up to the
+  configured count with a short backoff. There is no durable job queue or
+  resume across a controller restart, no approval gate, and no automatic
+  reboot.
+- Manual patch, reboot, bootstrap, and scheduled patch operations share a
+  process-local per-host lock. A second operation on the same host is rejected
+  or skipped instead of overlapping. The lock does not coordinate multiple
+  controller processes against one database.
 - Every host attempt is written to **Recent runs** with action, status, exit
-  code, duration, a bounded output excerpt, and an audit entry. Package-level
-  old/new version diffs are not yet extracted.
+  code, duration, a bounded output excerpt, retry count in the audit detail, and
+  an audit entry. Package-level old/new version diffs are not yet extracted.
 - Email summaries can be disabled, sent on failures, or sent for every run.
   Recipients fall back to the SMTP defaults; a local Postfix relay in
   no-authentication mode works over a reachable TCP socket.
@@ -1349,7 +1370,7 @@ as core features rather than afterthoughts.
 ## Product requirements
 
 > These are product requirements and design targets, not a claim that every item
-> is implemented. See [Implemented in v0.5.1](#implemented-in-v051) and
+> is implemented. See [Implemented in v0.6.0](#implemented-in-v060) and
 > [Known limitations before production](#known-limitations-before-production)
 > for the current status.
 
@@ -1543,9 +1564,10 @@ Additional distribution rules:
 
 ## Recommended architecture
 
-> The current release is a loopback-only server with helper actions. Scheduler,
-> job queue, client mode, Unix-socket listener, and TLS/reverse-proxy support are
-> design targets, not implemented features.
+> The current release is a loopback-only server with helper actions and a
+> single-process cron scheduler. A durable job queue, client mode, Unix-socket
+> listener, and TLS/reverse-proxy support are design targets, not implemented
+> features.
 
 ### Deployment model
 
@@ -1769,7 +1791,7 @@ The current release derives the SQLCipher key directly from the database
 passphrase with Argon2id and keeps SMTP/integration secrets inside the encrypted
 database. It does **not** implement a separate credential vault, envelope/DEK
 wrapping, or passphrase rotation. The following is a future design goal, not a
-claim about v0.5.1:
+claim about v0.6.0:
 
 - Generate a random data encryption key (DEK) for a credential vault.
 - Derive a key-encryption key (KEK) from the database passphrase with Argon2id,
@@ -2012,12 +2034,14 @@ Current status:
   remote-code-execution feature.
 - Consider reproducible builds for the server and agent binaries.
 
-### Implemented in v0.5.1
+### Implemented in v0.6.0
 
 - SQLCipher database with Argon2id-derived keys and a validated `.meta` sidecar.
 - `0600` database, sidecar, key, and backup files; wrong-passphrase test.
 - Argon2id password login, TOTP, WebAuthn passkeys, HttpOnly sessions, local
   account recovery, Host/Origin checks, CSP, and security headers.
+- Post-enrollment **Account security**: add/remove passkeys, replace or remove
+  TOTP, last-factor protection, and audited MFA changes.
 - SSH host-key TOFU with explicit fingerprint approval and changed-key failure.
 - Manual SSH and sudo password fallbacks with per-run prompts; no password
   storage.
@@ -2036,8 +2060,15 @@ Current status:
   integrations with event history and email.
 - Read-only CMDB CSV/JSON import with preview and merge/overwrite modes.
 - Cron-based check/apply schedules with fleet/group/tag/host assignments,
-  maintenance windows, jitter, concurrency limits, catch-up, email summaries,
-  manual run-now, and per-host run history.
+  maintenance windows, jitter, concurrency limits, bounded per-host retries,
+  catch-up, email summaries, manual run-now, and per-host run history.
+- Process-local per-host operation locking shared by manual patch, reboot,
+  helper bootstrap, and scheduled patch operations.
+- Authenticated usernames recorded as audit actors for host and import
+  mutations; internal collection and scheduler work use explicit service
+  actors.
+- Automatic verified pre-migration backups, full audit-chain verification of
+  backups, and hard refusal of databases written by a newer schema version.
 - Local SSH config reader for prefilling hosts, with simple `Include` support,
   wildcard/`Match` filtering, and no private-key reads.
 - Remote helper installation from the UI with `visudo` validation, a restricted
@@ -2057,27 +2088,31 @@ Current status:
   it; use the `make production` artifact.
 - SSH support is limited to an unencrypted key file or a manual password.
   `ssh-agent`, hardware-backed keys, SSH certificates, and passphrase-protected
-  key files are not implemented. The schema/UI/import paths accept `agent` and
-  `certificate`, but the transport will fail. Scheduled collection skips every
-  host whose `auth_type` is not exactly `key`.
-- MFA device management is enrollment-only in the UI. Adding/rotating a passkey
-  or replacing TOTP after setup is not exposed; `hibp user reset` clears all MFA.
+  key files are not implemented. Host create, update, CSV import, and CMDB
+  import reject `agent` and `certificate` instead of accepting a mode that
+  would fail later. Scheduled collection skips every host whose `auth_type` is
+  not exactly `key`.
+- MFA management is limited to the single local account. Passkeys can be added
+  and removed and TOTP can be replaced or removed, but passkeys cannot be
+  renamed, and removing the last remaining factor is blocked. There is no
+  separate recovery-code workflow; `hibp user reset` remains the local break-glass
+  path and clears all MFA.
 - Patch scheduling is a single-process cron engine, not a durable job queue.
-  There is no approval gate, automatic retry/resume, package-level old/new diff,
-  security-only filtering, automatic reboot, host disabled/maintenance state,
-  or global queue across schedules. A controller stop interrupts work; runs
-  only happen while the database is unlocked and the process is alive. Per-host
-  output is bounded to 16 KiB in run history. Only key-auth hosts with a trusted
-  key are eligible.
-- Some host mutations (create/update/delete, trust-key, facts) are audited with
-  the actor `"local"` rather than the authenticated username. The audit chain is
-  tamper-evident, not tamper-proof, and has no external anchor.
-- Schema migrations do not currently create an automatic pre-migration backup
-  and do not hard-refuse every future schema version. Take and verify a manual
-  backup before every upgrade, and keep the matching binary with it.
-- Backup verification checks that the copy opens and contains migrations; it
-  does not verify the full audit chain, and there is no
-  backup-without-secrets mode.
+  Per-host retries are bounded (0–5) and exist only within one schedule run.
+  There is no approval gate, resume across a controller restart, package-level
+  old/new diff, security-only filtering, automatic reboot, host
+  disabled/maintenance state, or global queue across schedules. A controller
+  stop interrupts work; runs only happen while the database is unlocked and the
+  process is alive. Per-host output is bounded to 16 KiB in run history. Only
+  key-auth hosts with a trusted key are eligible.
+- The audit chain is tamper-evident, not tamper-proof, and has no external
+  anchor. Authenticated host/import actions now record the username; internal
+  collection records `collector`, and scheduler records `scheduler`.
+- Automatic pre-migration backups are written next to the database and verified
+  before the migration proceeds. They contain the same encrypted secrets as any
+  other backup, so protect and rotate them accordingly.
+- Backup verification opens the copy, checks migrations, and recomputes the
+  audit chain. There is no backup-without-secrets mode.
 - There is no passphrase-rotation/rekey workflow and no envelope/DEK credential
   wrapping. Changing the key means restoring/rebuilding with the new key.
 - The API and CSV/CMDB import accept an absolute `key_path` outside the
@@ -2119,13 +2154,13 @@ Current status:
   the current Docker helper; project discovery comes from `docker compose ls`.
 - CMDB import commits host writes one by one; a mid-commit database error can
   leave earlier rows applied. Regular CSV import matches duplicates by address
-  and port, not by `cmdb_ci_id`. Imported `agent` hosts are not schedulable until
-  their authentication is changed.
-- Patch schedules and manual patch/reboot actions do not share a per-host
-  operation lock. Do not trigger a manual patch or reboot on a host while a
-  schedule is applying updates there. The scheduler limits concurrency per
-  schedule (and to 20 controller-wide) but cannot coordinate with another
-  operator action.
+  and port, not by `cmdb_ci_id`. Missing auth metadata defaults to `key`, so a
+  key path must be supplied by the row or the import defaults; rows without one
+  fail validation instead of silently becoming agent-only hosts.
+- The per-host operation lock is process-local. Do not run multiple controller
+  processes against one database. The scheduler limits concurrency per schedule
+  (and to 20 controller-wide), but the lock only coordinates operations inside
+  one process.
 - A schedule assigned to a fleet or large group runs per eligible host. Keep
   concurrency low and use a canary schedule; there is no global alert
   aggregation for scheduled patch failures.
@@ -2136,7 +2171,7 @@ Current status:
 ## Data model
 
 The current schema is implemented in `internal/store/migrations/001_init.sql`
-through `006_scheduler.sql`. Domain objects use UUIDs, timestamps are UTC
+through `007_schedule_retries.sql`. Domain objects use UUIDs, timestamps are UTC
 ISO 8601, and durations are stored in seconds.
 
 > **Implemented:** `schema_migrations`, `app_meta`, `hosts`, `host_facts`,
@@ -2175,7 +2210,7 @@ ISO 8601, and durations are stored in seconds.
 | `jobs` | A requested patch operation. | `id`, `trigger`, `requested_by`, `policy_snapshot`, `created_at`, `started_at`, `finished_at`, `status`, `cancel_requested` |
 | `job_targets` | Per-host state within a job. | `job_id`, `host_id`, `status`, `started_at`, `finished_at`, `exit_code`, `error`, `run_id` |
 | `runs` | Scheduled per-host execution history; populated by the scheduler, not yet by manual patch actions. | `id`, `schedule_id`, `host_id`, `action`, `started_at`, `finished_at`, `status`, `exit_code`, `output`, `error` |
-| `schedules`, `schedule_assignments` | Cron patch definitions and fleet/group/tag/host assignments. | `id`, `name`, `mode`, `cron`, `timezone`, `window_minutes`, `jitter_seconds`, `max_concurrency`, `notify`, `recipients`, `scope`, `target` |
+| `schedules`, `schedule_assignments` | Cron patch definitions and fleet/group/tag/host assignments. | `id`, `name`, `mode`, `cron`, `timezone`, `window_minutes`, `jitter_seconds`, `max_concurrency`, `retries`, `notify`, `recipients`, `scope`, `target` |
 | `run_packages` | Package-level diff for a run. | `run_id`, `package`, `old_version`, `new_version`, `action`, `status`, `security`, `repository` |
 | `pending_updates` | Latest known pending updates. | `host_id`, `package`, `current_version`, `candidate_version`, `security`, `repository`, `first_seen`, `last_seen` |
 | `playbooks` | Approved custom actions. | `id`, `name`, `version`, `sha256`, `signature`, `content`, `approved_by`, `approved_at`, `enabled` |
@@ -2250,7 +2285,7 @@ Example:
 ```csv
 name,address,port,username,auth_type,key_path,group,tags,cmdb_ci_id
 web01.example.com,10.0.0.10,22,ubuntu,key,/home/ops/.ssh/id_ed25519,prod,"web,eu-west",CI-123
-db01.example.com,10.0.0.20,22,root,agent,,prod,db,CI-456
+db01.example.com,10.0.0.20,22,root,key,/root/.ssh/id_ed25519,prod,db,CI-456
 ```
 
 Rules:
@@ -2258,9 +2293,10 @@ Rules:
 - UTF-8, RFC 4180 quoting, header row required, maximum file size and row count.
 - `name` and `address` are required. Validate IPv4, IPv6, and DNS names.
 - `port` defaults to 22 and must be in the valid range.
-- `auth_type` is one of `key`, `agent`, `certificate`, `password`. The current
-  SSH transport implements only `key` (unencrypted key file) and manual
-  `password`; imported `agent`/`certificate` hosts are not schedulable.
+- `auth_type` is one of `key` or `password`. `ssh-agent` and SSH certificate
+  authentication are not implemented and are rejected by host create, update,
+  CSV import, and CMDB import. Password is a manual-run fallback and is not
+  usable by the scheduler.
 - `key_path` is a reference, not key material. It must be absolute; the import
   does not verify that the file exists or is `0600`. Never import a private key
   through CSV.
@@ -2301,10 +2337,11 @@ not accept passwords, private keys, or scripts.
   is supplied.
 - Import name, IP/hostname attributes, OS version, environment, group, and tags
   where present. Preview is mandatory; merge and overwrite modes are explicit.
-- Imported hosts with missing auth metadata default to `agent` in some paths;
-  change them to a supported key-file auth type before expecting scheduled
-  collection. Host writes are not a single transaction, so review the preview
-  and keep a backup before a large import.
+- Imported hosts with missing auth metadata default to `key` and need a key path
+  from the row or the import default; otherwise the row is rejected. Change
+  unsupported authentication values before expecting scheduled collection. Host
+  writes are not a single transaction, so review the preview and keep a backup
+  before a large import.
 - Do not import secrets from the CMDB. `cmdb-lite` explicitly does not store
   them, and HIBP does not add them to the CMDB.
 - Never open the `cmdb-lite` database directly. It has its own passphrase,
@@ -2334,8 +2371,12 @@ not accept passwords, private keys, or scripts.
 - Write the matching `.meta` sidecar next to the backup.
 - Refuse to overwrite an existing backup unless the operator explicitly chooses
   a new path.
-- Verify the backup by opening it and checking that migrations exist. The
-  current verifier does **not** run a full audit-chain check.
+- Verify the backup by opening it, checking that migrations exist, and
+  recomputing the full audit chain.
+- HIBP automatically creates and verifies a timestamped
+  `<database>-pre-migration-YYYY-MM-DD-HHMMSS.bac` plus `.meta` backup next to
+  the database before applying pending migrations. A failed backup aborts the
+  upgrade.
 - Keep at least one backup off the server and test restore procedures.
 - There is no "backup without secrets" mode in this release. Every backup
   contains the encrypted database and therefore the SMTP/integration secrets and
@@ -2347,19 +2388,18 @@ not accept passwords, private keys, or scripts.
 
 - Restore to a **new** path. Never overwrite a live database in place.
 - Require the passphrase that was active when the backup was created.
-- Open the restored database and verify the host count and audit chain manually;
-  the built-in restore verifier currently checks that migrations exist.
+- Open the restored database and verify the host count and audit chain; the
+  built-in restore verifier checks migrations and recomputes the audit chain.
 - Keep the old database until the restored one is validated.
 - Test the restore procedure, not just the backup procedure.
 
 ### Schema migrations
 
-- On open, the current implementation applies known forward-only migrations and
-  stores a checksum for each applied migration. A checksum mismatch is a hard
-  failure.
-- It does **not** yet create an automatic pre-migration backup and does not
-  robustly refuse every database written by a newer release. Take a manual,
-  verified backup before every upgrade and keep the matching binary with it.
+- On open, the current implementation creates a verified automatic
+  pre-migration backup, applies known forward-only migrations, and stores a
+  checksum for each applied migration. A checksum mismatch is a hard failure.
+- It hard-refuses a database whose recorded schema version is newer than the
+  running binary. Keep the matching binary with every backup.
 - Migrations are applied in transactions where SQLite/SQLCipher permits it.
   Review a failed migration before retrying; do not paste partial SQL manually.
 - Test migrations against fixtures from every supported previous version.
@@ -2619,21 +2659,21 @@ Implemented:
 Still missing:
 
 - A durable per-host job queue and manual-patch run history.
-- Cancellation, automatic retries, and post-reboot verification.
+- Cancellation, manual-patch retries, and post-reboot verification.
 - Package diff/security classification and evidence export.
 
 ### M3 - Scheduling and unattended execution (partial)
 
 - **Implemented:** cron schedules with maintenance windows, jitter, missed-run
-  policy, concurrency, check/apply modes, run-now, run history, audit entries,
-  and email summaries.
+  policy, concurrency, bounded per-host retries, per-host operation locks,
+  check/apply modes, run-now, run history, audit entries, and email summaries.
 - The scheduler runs inside the controller process; no agent is required.
 - The database must be unlocked and the server running. There is no suspended
   UI state or durable queue across process restarts; an interrupted run is not
   resumed automatically.
 - Notifications via email are implemented for monitoring and schedules;
   webhook/ntfy channels and scheduler-driven reboot notifications remain.
-- **Still missing:** durable queue, automatic retry, approval gates,
+- **Still missing:** durable queue, resume across restarts, approval gates,
   package-level diffs, reboot orchestration, and host maintenance state.
 
 ### M4 - Security hardening
@@ -2831,7 +2871,7 @@ No architecture-blocking decisions remain. These are intentionally deferred:
 - **Agent mode** for DMZs, NAT, or scale.
 - **Scheduled password authentication** through an external vault.
 - **CVE correlation** through Trivy, Grype, OSV, or distro security feeds.
-- **RBAC/SSO** and per-user audit actors.
+- **RBAC/SSO** and multi-user audit attribution.
 - **Slack and Teams** notification channels; SMTP email alerting is
   implemented.
 - **Arch and Alpine** profiles in the second wave.
@@ -2866,14 +2906,18 @@ Current validation status:
 - `go vet ./...` passes.
 - `go test -race ./...` passes.
 - `make static` produces a development ELF with no dynamic dependencies.
-- The current-SQLCipher production Docker build and release workflow passed for
-  `v0.5.1`; the published archive checksum, installed binary, and SQLCipher
-  production driver were verified.
+- The current-SQLCipher production Docker build and release pipeline was
+  verified through `v0.5.1`; `v0.6.0` artifacts are built by the same workflow.
+  Published archive checksums, installed binaries, and the SQLCipher production
+  driver were verified for the prior release.
 - The store/server suite passes against the production driver with current
-  system `libsqlcipher`, including backup and restore.
+  system `libsqlcipher`, including backup, restore, and audit-chain
+  verification.
 - README validator and Python validator tests pass.
 - Headless browser tests cover monitoring, SMTP settings, CMDB import,
-  schedules, and external integration screens.
+  schedules, external integration screens, and Account security/MFA management.
+- An upgrade from a `v0.5.1` database verifies the automatic pre-migration
+  backup and migration to the current schema.
 - vCenter polling is covered by a govmomi simulator test; HAProxy and OPNsense
   polling are covered by local HTTP fixtures.
 - A release still needs the cross-distro matrix, real target/helper tests,

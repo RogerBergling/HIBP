@@ -82,7 +82,7 @@ func (s *Server) handleCreateHost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	host, err := s.store.CreateHost(request.host())
+	host, err := s.store.CreateHostAs(s.auditActor(r), request.host())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -111,7 +111,7 @@ func (s *Server) handleUpdateHost(w http.ResponseWriter, r *http.Request) {
 	if host.OSVersion == "" {
 		host.OSVersion = existing.OSVersion
 	}
-	updated, err := s.store.UpdateHost(host)
+	updated, err := s.store.UpdateHostAs(s.auditActor(r), host)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -131,7 +131,7 @@ func (s *Server) handleGetHost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteHost(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.DeleteHost(r.PathValue("id")); err != nil {
+	if err := s.store.DeleteHostAs(s.auditActor(r), r.PathValue("id")); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "host not found")
 			return
@@ -227,7 +227,7 @@ func (s *Server) handleTrustKey(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "presented host key does not match the approval", "key": actual})
 		return
 	}
-	if err := s.store.SaveHostKey(store.HostKey{HostID: host.ID, KeyType: actual.KeyType, Fingerprint: actual.Fingerprint}); err != nil {
+	if err := s.store.SaveHostKeyAs(s.auditActor(r), store.HostKey{HostID: host.ID, KeyType: actual.KeyType, Fingerprint: actual.Fingerprint}); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -357,7 +357,7 @@ func (s *Server) handleFacts(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "helper returned invalid JSON", "output": output})
 		return
 	}
-	if err := s.store.SaveFacts(host.ID, storeFactsFromHelper(facts)); err != nil {
+	if err := s.store.SaveFactsAs(s.auditActor(r), host.ID, storeFactsFromHelper(facts)); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -400,6 +400,11 @@ func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
 		action = "apply"
 		timeout = 45 * time.Minute
 	}
+	if !s.tryLockHost(host.ID) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "another patch, reboot, or bootstrap operation is already running for this host", "code": "host_busy"})
+		return
+	}
+	defer s.unlockHost(host.ID)
 	output, code, err := s.runHelper(r.Context(), host, action, password, request.SudoPassword, timeout)
 	if errors.Is(err, errSudoPasswordInvalid) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "sudo_password_invalid"})
@@ -449,6 +454,11 @@ func (s *Server) handleReboot(w http.ResponseWriter, r *http.Request) {
 		}
 		password = request.Password
 	}
+	if !s.tryLockHost(host.ID) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "another patch, reboot, or bootstrap operation is already running for this host", "code": "host_busy"})
+		return
+	}
+	defer s.unlockHost(host.ID)
 	output, code, err := s.runHelper(r.Context(), host, "reboot", password, request.SudoPassword, 2*time.Minute)
 	if errors.Is(err, errSudoPasswordInvalid) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "sudo_password_invalid"})
@@ -538,6 +548,11 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "read controller binary: "+err.Error())
 		return
 	}
+	if !s.tryLockHost(host.ID) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "another patch, reboot, or bootstrap operation is already running for this host", "code": "host_busy"})
+		return
+	}
+	defer s.unlockHost(host.ID)
 	output, err := remote.InstallHelper(r.Context(), s.hostTarget(host, password), remoteHostKey(key), binary, request.SudoPassword)
 	if errors.Is(err, remote.ErrSudoPasswordInvalid) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "sudo_password_invalid"})
@@ -559,7 +574,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	// on this best-effort parse.
 	var facts helper.Facts
 	if json.Unmarshal([]byte(output), &facts) == nil {
-		_ = s.store.SaveFacts(host.ID, storeFactsFromHelper(facts))
+		_ = s.store.SaveFactsAs(s.auditActor(r), host.ID, storeFactsFromHelper(facts))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "output": output})
 }
@@ -688,7 +703,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	result, err := s.importCSV(r.Context(), request)
+	result, err := s.importCSV(r.Context(), s.auditActor(r), request)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
