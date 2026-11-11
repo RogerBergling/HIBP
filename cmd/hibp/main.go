@@ -85,7 +85,7 @@ func usage() {
 
 Usage:
   hibp server [flags]     Run the local browser UI and API
-  hibp helper <action>    Run a fixed target action (facts|check|apply|reboot|reboot-check|system-info|metrics|docker-list)
+  hibp helper <action>    Run a fixed target action (facts|check|apply|reboot|reboot-check|system-info|metrics|docker-list|docker-check|docker-apply)
   hibp user reset         Reset the local account password, TOTP, and passkeys
   hibp version            Print the version
 
@@ -253,12 +253,12 @@ func runServer(args []string) error {
 }
 
 func runHelper(args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("usage: hibp helper <facts|check|apply|reboot|reboot-check|system-info|metrics|docker-list>")
+	if len(args) < 1 {
+		return fmt.Errorf("usage: hibp helper <action> [args]")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()
-	return helper.Run(ctx, args[0], os.Stdout)
+	return helper.Run(ctx, args[0], os.Stdout, args[1:]...)
 }
 
 func runUser(args []string) error {

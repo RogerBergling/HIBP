@@ -135,6 +135,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/reboot", s.auth(s.handleReboot))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/system-info", s.auth(s.handleSystemInfo))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/docker/list", s.auth(s.handleDockerList))
+	s.mux.HandleFunc("POST /api/v1/hosts/{id}/docker/check", s.auth(s.handleDockerCheck))
+	s.mux.HandleFunc("POST /api/v1/hosts/{id}/docker/apply", s.auth(s.handleDockerApply))
 	s.mux.HandleFunc("GET /api/v1/hosts/{id}/details", s.auth(s.handleHostDetails))
 	s.mux.HandleFunc("GET /api/v1/settings", s.auth(s.handleGetSettings))
 	s.mux.HandleFunc("PUT /api/v1/settings", s.auth(s.handlePutSettings))

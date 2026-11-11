@@ -63,6 +63,8 @@ sudo -n /usr/local/libexec/hibp/hibp-helper reboot-check
 sudo -n /usr/local/libexec/hibp/hibp-helper system-info
 sudo -n /usr/local/libexec/hibp/hibp-helper metrics
 sudo -n /usr/local/libexec/hibp/hibp-helper docker-list
+sudo -n /usr/local/libexec/hibp/hibp-helper docker-check <project>
+sudo -n /usr/local/libexec/hibp/hibp-helper docker-apply <project>
 ```
 
 No package names, host names, or shell fragments are accepted from the

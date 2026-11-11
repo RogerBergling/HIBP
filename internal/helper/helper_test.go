@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -212,5 +213,88 @@ func TestSystemInfoAndMetrics(t *testing.T) {
 	}
 	if metrics.CollectedAt == "" || metrics.MemoryPercent <= 0 {
 		t.Fatalf("incomplete metrics: %+v", metrics)
+	}
+}
+
+func TestDockerCheckAndApply(t *testing.T) {
+	restoreLook := SetLookPathForTest(func(name string) (string, error) {
+		if name == "docker" {
+			return "/usr/bin/docker", nil
+		}
+		return "", errors.New("not found")
+	})
+	defer restoreLook()
+	oldTrust := composeTrustCheck
+	composeTrustCheck = func([]string) error { return nil }
+	defer func() { composeTrustCheck = oldTrust }()
+	oldLock := dockerLockPath
+	dockerLockPath = filepath.Join(t.TempDir(), "docker.lock")
+	defer func() { dockerLockPath = oldLock }()
+
+	imageCalls := 0
+	restoreRun := SetRunnerForTest(func(_ context.Context, name string, args ...string) ([]byte, int, error) {
+		if name != "/usr/bin/docker" {
+			t.Fatalf("unexpected binary: %s", name)
+		}
+		joined := strings.Join(args, " ")
+		switch {
+		case joined == "compose ls --all --format json":
+			return []byte(`[{"Name":"web","Status":"running(2)","ConfigFiles":"/opt/web/compose.yaml"}]`), 0, nil
+		case strings.Contains(joined, "config --format json"):
+			return []byte(`{"services":{"frontend":{"image":"nginx:1.27"},"worker":{"build":{"context":"."}}}}`), 0, nil
+		case strings.Contains(joined, "image inspect") && strings.Contains(joined, "nginx:1.27"):
+			imageCalls++
+			if imageCalls == 1 {
+				return []byte("sha256:old\n"), 0, nil
+			}
+			return []byte("sha256:new\n"), 0, nil
+		case strings.Contains(joined, "pull --quiet --ignore-buildable"):
+			return []byte("pulled\n"), 0, nil
+		case strings.Contains(joined, "ps --filter"):
+			return []byte("abc\n"), 0, nil
+		case strings.Contains(joined, "inspect --format"):
+			return []byte("sha256:new frontend\n"), 0, nil
+		case strings.Contains(joined, "up -d --pull never"):
+			return []byte("up ok\n"), 0, nil
+		default:
+			t.Fatalf("unexpected docker command: %s", joined)
+		}
+		return nil, 0, nil
+	})
+	defer restoreRun()
+
+	check, err := dockerCheck(context.Background(), []string{"web"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !check.OK || len(check.Services) != 2 {
+		t.Fatalf("unexpected check result: %+v", check)
+	}
+	var frontend *DockerServiceUpdate
+	var worker *DockerServiceUpdate
+	for index := range check.Services {
+		switch check.Services[index].Service {
+		case "frontend":
+			frontend = &check.Services[index]
+		case "worker":
+			worker = &check.Services[index]
+		}
+	}
+	if frontend == nil || frontend.Status != "image-updated" {
+		t.Fatalf("unexpected frontend status: %+v", frontend)
+	}
+	if worker == nil || worker.Status != "build-only" {
+		t.Fatalf("unexpected worker status: %+v", worker)
+	}
+
+	apply, err := dockerApply(context.Background(), []string{"web"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !apply.OK || apply.ExitCode != 0 || apply.Project != "web" {
+		t.Fatalf("unexpected apply result: %+v", apply)
+	}
+	if _, err := dockerCheck(context.Background(), []string{"bad project"}); err == nil {
+		t.Fatal("invalid project name accepted")
 	}
 }

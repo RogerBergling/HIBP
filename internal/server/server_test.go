@@ -758,6 +758,28 @@ func TestHostDetailsEndpoint(t *testing.T) {
 	}
 }
 
+func TestDockerActionValidation(t *testing.T) {
+	ts, _ := testServer(t)
+	body := `{"name":"web01","address":"10.0.0.10","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519"}`
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/hosts", "test-token", body)
+	defer resp.Body.Close()
+	var host store.Host
+	if err := json.NewDecoder(resp.Body).Decode(&host); err != nil {
+		t.Fatal(err)
+	}
+
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/hosts/"+host.ID+"/docker/check", "test-token", `{"project":"bad project"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected invalid project rejection, got %d", resp.StatusCode)
+	}
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/hosts/"+host.ID+"/docker/apply", "test-token", `{"project":"web"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected missing apply confirmation rejection, got %d", resp.StatusCode)
+	}
+}
+
 func TestBootstrapRequiresTrustedHostKey(t *testing.T) {
 	ts, _ := testServer(t)
 	body := `{"name":"web01","address":"10.0.0.10","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519"}`

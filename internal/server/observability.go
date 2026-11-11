@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,8 @@ import (
 	"github.com/RogerBergling/hibp/internal/helper"
 	"github.com/RogerBergling/hibp/internal/store"
 )
+
+var dockerProjectPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 
 var settingDefaults = map[string]string{
 	"collector.enabled":          "1",
@@ -164,6 +167,104 @@ func (s *Server) handleDockerList(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.store.AddAudit(s.auditActor(r), "docker-list", "host", host.ID, strconv.Itoa(len(inventory.Containers))+" containers")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "docker": inventory})
+}
+
+type dockerActionRequest struct {
+	Project      string `json:"project"`
+	Confirm      string `json:"confirm"`
+	Password     string `json:"password"`
+	SudoPassword string `json:"sudo_password"`
+}
+
+func (s *Server) dockerActionRequest(w http.ResponseWriter, r *http.Request, requireConfirm bool) (store.Host, dockerActionRequest, bool) {
+	host, err := s.store.GetHost(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "host not found")
+		return store.Host{}, dockerActionRequest{}, false
+	}
+	var request dockerActionRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return store.Host{}, dockerActionRequest{}, false
+	}
+	request.Project = strings.TrimSpace(request.Project)
+	if !dockerProjectPattern.MatchString(request.Project) {
+		writeError(w, http.StatusBadRequest, "invalid Docker project name")
+		return store.Host{}, dockerActionRequest{}, false
+	}
+	if requireConfirm && request.Confirm != "apply" {
+		writeError(w, http.StatusBadRequest, "confirm must be \"apply\" for a Docker update")
+		return store.Host{}, dockerActionRequest{}, false
+	}
+	if host.AuthType == "password" {
+		if request.Password == "" {
+			writeError(w, http.StatusBadRequest, "password is required for password authentication")
+			return store.Host{}, dockerActionRequest{}, false
+		}
+	}
+	return host, request, true
+}
+
+func (s *Server) handleDockerCheck(w http.ResponseWriter, r *http.Request) {
+	host, request, ok := s.dockerActionRequest(w, r, false)
+	if !ok {
+		return
+	}
+	output, code, err := s.runHelper(r.Context(), host, "docker-check", request.Password, request.SudoPassword, 15*time.Minute, request.Project)
+	if errors.Is(err, errSudoPasswordInvalid) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "sudo_password_invalid"})
+		return
+	}
+	if errors.Is(err, errSudoPasswordRequired) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "sudo_password_required"})
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if code != 0 {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "docker-check helper failed", "exit_code": code, "output": output})
+		return
+	}
+	var result helper.DockerCheckResult
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "invalid docker-check result", "output": output})
+		return
+	}
+	_ = s.store.AddAudit(s.auditActor(r), "docker-check", "host", host.ID, "project="+request.Project)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": result.OK, "result": result})
+}
+
+func (s *Server) handleDockerApply(w http.ResponseWriter, r *http.Request) {
+	host, request, ok := s.dockerActionRequest(w, r, true)
+	if !ok {
+		return
+	}
+	output, code, err := s.runHelper(r.Context(), host, "docker-apply", request.Password, request.SudoPassword, 15*time.Minute, request.Project)
+	if errors.Is(err, errSudoPasswordInvalid) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "sudo_password_invalid"})
+		return
+	}
+	if errors.Is(err, errSudoPasswordRequired) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "sudo_password_required"})
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if code != 0 {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "docker-apply helper failed", "exit_code": code, "output": output})
+		return
+	}
+	var result helper.DockerApplyResult
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "invalid docker-apply result", "output": output})
+		return
+	}
+	_ = s.store.AddAudit(s.auditActor(r), "docker-apply", "host", host.ID, "project="+request.Project)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": result.OK, "result": result})
 }
 
 func (s *Server) handleHostDetails(w http.ResponseWriter, r *http.Request) {

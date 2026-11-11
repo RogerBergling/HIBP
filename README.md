@@ -475,10 +475,11 @@ recovery boundary.
 
 ## Docker, system information, and monitoring
 
-> **Status: Phase 1 implemented.** Read-only system information, Docker
-> inventory, host details, metric history, and configurable collection are
-> available. Docker check/apply, email alerting, monitoring rules, vCenter,
-> HAProxy, OPNsense, and CMDB import are the next phases.
+> **Status: Docker inventory and project-level check/apply implemented.**
+> Read-only system information, Docker inventory, host details, metric history,
+> configurable collection, and explicit Docker check/apply are available. Email
+> alerting, monitoring rules, vCenter, HAProxy, OPNsense, and CMDB import are
+> the next phases.
 
 ### Implemented now
 
@@ -497,6 +498,8 @@ recovery boundary.
   lightweight metrics every five minutes by default.
 - Read-only Docker Compose project/container inventory with health, state,
   image, and ports.
+- Project-level **Check updates** (pull and compare, no restart) and
+  **Apply update** (`docker compose up -d --pull never`, typed confirmation).
 
 Scheduled collection requires a trusted host key and the restricted
 `NOPASSWD` helper. Password-auth hosts and sudo-password hosts can still be
@@ -514,21 +517,49 @@ gives the controller a Docker socket or runs a second privileged daemon.
 
 - `docker-list` — implemented read-only Compose projects, containers, health,
   ports, image tags, and project metadata.
-- `docker-check <project>` — planned: `docker compose pull` and image-ID
+- `docker-check <project>` — implemented: `docker compose pull` and image-ID
   comparison without restarting containers.
-- `docker-apply <project>` — planned: `docker compose up -d --pull never` after
-  explicit confirmation.
+- `docker-apply <project>` — implemented: `docker compose up -d --pull never`
+  after typing `APPLY` in the UI.
 
 Project names come from Docker/Compose metadata, never arbitrary controller
 paths. Compose files, `.env` files, and build contexts must be root-owned and
 not group/world-writable. The default scan root is `/opt`; it is configurable in
 the GUI. HIBP will not run `down -v`, will not prune volumes, and will not
-update containers automatically. Planned mutations will be serialised per host
-and audited.
+update containers automatically. Check/apply operations are serialised with a
+host-wide lock and audited. The generated sudoers rule uses `docker-check *` and
+`docker-apply *`; the helper validates the single project argument, re-reads
+project metadata from Docker, and trust-checks every Compose file. The wildcard
+is not arbitrary shell access.
 
 Containers are **child workloads of a host**, not new SSH-managed “servers”.
 They do not inherit SSH keys or the host’s sudo rule. Standalone containers are
 visible read-only in phase 1; project-level Compose updates come next.
+
+### Host and Docker screenshots
+
+These screenshots use demo data; the Docker project and container names are
+illustrative.
+
+| Host system information | Docker containers and project actions |
+| --- | --- |
+| ![Host system information](docs/screenshots/host-details-system.png) | ![Docker containers and project actions](docs/screenshots/host-details-containers.png) |
+
+### Docker check and apply
+
+In **Host detail → Containers**, each Compose project has:
+
+- **Check updates** — pulls images and compares local image IDs with the image
+  IDs used by running containers. It never restarts anything.
+- **Apply update** — requires typing `APPLY`, then runs
+  `docker compose up -d --pull never` for that project only.
+
+The helper validates the project name, looks up its Compose files from
+`docker compose ls`, and refuses to proceed unless every Compose file and its
+parent directory chain is root-owned and not group/world-writable. The default
+scan root is `/opt`; the project does not have to live there, but the files must
+meet the trust requirement. No `down -v`, no volume pruning, no automatic
+updates.
 
 ### System information
 
@@ -585,10 +616,11 @@ to **merge** or **overwrite**. It will map `external_id`/`ci_id` to
 
 1. **Implemented:** read-only system information, Docker inventory, host detail
    view, twice-daily collection, metric history, fleet/per-host settings.
-2. **Next:** monitoring definitions, SMTP email, Docker check/apply,
-   HTTP/TCP/SSL checks, services.
-3. vCenter, HAProxy, and OPNsense integrations.
-4. CMDB import with preview and merge/overwrite.
+2. **Implemented:** Docker project-level check/apply with trust checks and
+   explicit confirmation.
+3. **Next:** monitoring definitions, SMTP email, HTTP/TCP/SSL checks, services.
+4. vCenter, HAProxy, and OPNsense integrations.
+5. CMDB import with preview and merge/overwrite.
 
 ### Collection settings
 
@@ -623,6 +655,8 @@ reboot-check
 system-info
 metrics
 docker-list
+docker-check <project>
+docker-apply <project>
 ```
 
 It does not accept package names, host names, or arbitrary shell fragments. This
@@ -724,6 +758,8 @@ hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper reboot-check
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper system-info
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper metrics
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-list
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-check *
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-apply *
 EOF
 sudo chmod 0440 /etc/sudoers.d/hibp-helper
 sudo visudo -cf /etc/sudoers.d/hibp-helper
@@ -1408,8 +1444,8 @@ That authority must be narrow and auditable.
 - Prefer a root-owned helper installed on the target, invoked through a
   restricted sudoers rule. The helper accepts a small allowlist of actions
   (`facts`, `check`, `apply`, `reboot`, `reboot-check`, `system-info`,
-  `metrics`, `docker-list`, `custom:<approved-id>`) and validates its
-  arguments.
+  `metrics`, `docker-list`, `docker-check <project>`, `docker-apply <project>`,
+  `custom:<approved-id>`) and validates its arguments.
 - Example sudoers shape (illustrative, not a complete hardening guide):
 
   ```sudoers
@@ -1421,6 +1457,8 @@ That authority must be narrow and auditable.
   hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper system-info
   hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper metrics
   hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-list
+  hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-check *
+  hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-apply *
   ```
 
 - Do not recommend `ALL=(ALL) NOPASSWD: ALL`. If an operator insists, warn
@@ -1544,7 +1582,7 @@ Agent mode is optional and later; v1 uses SSH from the always-on server.
 - SSH host-key TOFU with explicit fingerprint approval and changed-key failure.
 - Manual SSH and sudo password fallbacks with per-run prompts; no password storage.
 - SSH key browser limited to configured directories; it never returns key contents.
-- Fixed helper actions (`facts`, `check`, `apply`, `reboot`, `reboot-check`, `system-info`, `metrics`, `docker-list`) with absolute
+- Fixed helper actions (`facts`, `check`, `apply`, `reboot`, `reboot-check`, `system-info`, `metrics`, `docker-list`, `docker-check`, `docker-apply`) with absolute
   binary paths, a sanitized environment, no shell, and output limits.
 - Explicit-confirmation reboot action through the fixed helper.
 - Per-host and fleet-wide helper installation/update with per-host results.

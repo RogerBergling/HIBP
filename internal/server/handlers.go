@@ -271,11 +271,18 @@ func looksLikeSudoAuthFailure(output string) bool {
 	return false
 }
 
-func (s *Server) runHelper(ctx context.Context, host store.Host, action, sshPassword, sudoPassword string, timeout time.Duration) (string, int, error) {
+func (s *Server) runHelper(ctx context.Context, host store.Host, action, sshPassword, sudoPassword string, timeout time.Duration, args ...string) (string, int, error) {
 	switch action {
-	case "facts", "check", "apply", "reboot", "system-info", "metrics", "docker-list":
+	case "facts", "check", "apply", "reboot", "system-info", "metrics", "docker-list", "docker-check", "docker-apply":
 	default:
 		return "", 0, errors.New("invalid helper action")
+	}
+	if action == "docker-check" || action == "docker-apply" {
+		if len(args) != 1 || !dockerProjectPattern.MatchString(args[0]) {
+			return "", 0, errors.New("invalid Docker project")
+		}
+	} else if len(args) != 0 {
+		return "", 0, errors.New("unexpected helper arguments")
 	}
 	key, err := s.store.GetHostKey(host.ID)
 	if err != nil {
@@ -284,10 +291,14 @@ func (s *Server) runHelper(ctx context.Context, host store.Host, action, sshPass
 	if key == nil {
 		return "", 0, errors.New("host key is not trusted; test and trust the host first")
 	}
-	command := "sudo -n /usr/local/libexec/hibp/hibp-helper " + action
+	helperAction := action
+	if len(args) == 1 {
+		helperAction += " " + args[0]
+	}
+	command := "sudo -n /usr/local/libexec/hibp/hibp-helper " + helperAction
 	input := ""
 	if sudoPassword != "" {
-		command = "sudo -S -p '' /usr/local/libexec/hibp/hibp-helper " + action
+		command = "sudo -S -p '' /usr/local/libexec/hibp/hibp-helper " + helperAction
 		input = sudoPassword + "\n"
 	}
 	output, code, err := remote.RunWithInput(ctx, s.hostTarget(host, sshPassword), &remote.HostKey{KeyType: key.KeyType, Fingerprint: key.Fingerprint}, command, input, timeout)

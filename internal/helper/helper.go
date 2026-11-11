@@ -88,7 +88,7 @@ func SetLookPathForTest(fn func(string) (string, error)) func() {
 }
 
 // Run executes an allowed action and writes its JSON result.
-func Run(ctx context.Context, action string, out io.Writer) error {
+func Run(ctx context.Context, action string, out io.Writer, args ...string) error {
 	switch action {
 	case "facts":
 		facts, err := collectFacts(ctx)
@@ -123,6 +123,18 @@ func Run(ctx context.Context, action string, out io.Writer) error {
 			return err
 		}
 		return json.NewEncoder(out).Encode(inventory)
+	case "docker-check":
+		result, err := dockerCheck(ctx, args)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(out).Encode(result)
+	case "docker-apply":
+		result, err := dockerApply(ctx, args)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(out).Encode(result)
 	case "reboot-check":
 		required, err := rebootRequired(ctx)
 		result := Result{Action: "reboot-check", OK: err == nil, ExitCode: 0}

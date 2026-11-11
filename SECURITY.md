@@ -69,8 +69,9 @@ Out of scope:
 
 ## Docker and monitoring controls
 
-Phase 1 is implemented as read-only observability. The mutating Docker and
-alerting controls below apply to the next phases.
+Read-only observability and project-level Docker check/apply are implemented.
+The email/monitoring and external-platform controls below apply to the next
+phases.
 
 - Docker socket access is root-equivalent. The controller does not connect to
   Docker directly; the root-owned helper exposes only fixed, read-only or
@@ -79,11 +80,14 @@ alerting controls below apply to the next phases.
   deliberately omits environment variables, command lines, mounts, and secrets.
 - The collector never prompts for credentials. Scheduled collection requires
   the restricted NOPASSWD helper; password-auth hosts are collected manually.
-- Docker updates will be project-level Compose operations. Project names and
-  paths come from Docker metadata, not arbitrary controller input. Compose
-  files, `.env` files, and build contexts must be root-owned and not
-  group/world-writable. No automatic updates, no `down -v`, and no volume
-  pruning.
+- Docker updates are project-level Compose operations. Project names and paths
+  come from Docker metadata, not arbitrary controller input. The helper accepts
+  exactly one validated project argument; the `docker-check *` and
+  `docker-apply *` sudoers wildcards are constrained by that validation.
+- Compose files and their parent directory chain must be root-owned and not
+  group/world-writable. `.env` files and build contexts must be protected by the
+  operator. No automatic updates, no `down -v`, and no volume pruning. Check
+  and apply are serialised with a host-wide lock and audited.
 - System information remains read-only. No service start/stop/restart is exposed
   in the first monitoring release. Fleet and per-host collection settings are
   stored in SQLCipher.

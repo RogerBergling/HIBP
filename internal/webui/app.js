@@ -1145,6 +1145,82 @@ function renderHostSettings(data, host, reload) {
   return card;
 }
 
+function showDockerCheckResult(project, result) {
+  const body = el('div', 'modal-body');
+  const meta = el('div', 'status-list');
+  meta.append(
+    detailCard('Project', [['Name', project], ['Result', result.ok ? 'check complete' : 'check failed'], ['Duration', (Number(result.duration_seconds) || 0).toFixed(1) + 's']]),
+  );
+  body.append(meta);
+  const wrap = el('div', 'scroll-list');
+  const table = el('table');
+  const head = el('tr');
+  for (const label of ['Service', 'Image', 'Status', 'Container']) head.append(el('th', '', label));
+  table.append(head);
+  for (const service of result.services || []) {
+    const row = el('tr');
+    const statusClass = service.status === 'up-to-date' ? 'reachable'
+      : service.status === 'pull-failed' ? 'unreachable'
+        : service.status === 'image-updated' || service.status === 'new-image' || service.status === 'container-stale' ? 'review' : 'unknown';
+    const status = el('span', 'pill ' + statusClass, service.status);
+    const statusCell = el('td');
+    statusCell.append(status);
+    row.append(el('td', '', service.service), el('td', '', service.image || '—'), statusCell, el('td', '', service.container_id || '—'));
+    table.append(row);
+  }
+  wrap.append(table);
+  body.append(wrap);
+  if (result.error) body.append(el('pre', 'key-box', result.error));
+  const actions = el('div', 'modal-actions');
+  const close = el('button', 'btn', 'Close');
+  close.type = 'button';
+  actions.append(close);
+  body.append(actions);
+  const closeFn = openModal('Docker check — ' + project, body);
+  close.addEventListener('click', closeFn);
+}
+
+async function checkDockerProject(host, project, reload) {
+  if (!confirm('Pull the latest images for Compose project "' + project + '"? Running containers will not be restarted.')) return;
+  try {
+    const password = await passwordFor(host);
+    const response = await requestWithSudo(
+      host,
+      '/api/v1/hosts/' + encodeURIComponent(host.id) + '/docker/check',
+      (sudoPassword) => ({ project, password, sudo_password: sudoPassword }),
+      { method: 'POST' },
+    );
+    showDockerCheckResult(project, response.result || {});
+    await reload();
+  } catch (error) {
+    if (error.message !== 'cancelled') toast(error.message, 'error');
+  }
+}
+
+async function applyDockerProject(host, project, reload) {
+  const answer = prompt('Type APPLY to recreate containers in Compose project "' + project + '":');
+  if (answer !== 'APPLY') return;
+  try {
+    const password = await passwordFor(host);
+    const response = await requestWithSudo(
+      host,
+      '/api/v1/hosts/' + encodeURIComponent(host.id) + '/docker/apply',
+      (sudoPassword) => ({ project, confirm: 'apply', password, sudo_password: sudoPassword }),
+      { method: 'POST' },
+    );
+    const result = response.result || {};
+    showOutputModal('Docker apply — ' + project, {
+      action: 'docker-apply',
+      ok: response.ok,
+      exit_code: result.exit_code ?? 0,
+      output: result.output || result.error || 'Docker Compose update finished.',
+    });
+    await reload();
+  } catch (error) {
+    if (error.message !== 'cancelled') toast(error.message, 'error');
+  }
+}
+
 function renderContainersPanel(panel, data, host, reload) {
   panel.replaceChildren();
   const info = (data.system_info && data.system_info.docker) || {};
@@ -1154,12 +1230,25 @@ function renderContainersPanel(panel, data, host, reload) {
     ? 'Docker Engine ' + (info.version || 'unknown') + ' · Compose ' + (info.compose_version || 'unknown')
     : 'Docker inventory has not been collected or Docker is not installed.'));
 
-  const projectWrap = el('div', 'scroll-list');
+  const projectWrap = el('div', 'detail-grid');
   if (projects.length === 0) {
-    projectWrap.append(el('div', '', 'No Compose projects cached.'));
+    const empty = el('p', 'muted', 'No Compose projects cached.');
+    projectWrap.append(empty);
   } else {
     for (const project of projects) {
-      projectWrap.append(el('div', '', project.name + ' · ' + (project.status || 'unknown') + (project.config_files ? ' · ' + project.config_files : '')));
+      const card = el('div', 'detail-card');
+      card.append(el('h3', '', project.name));
+      card.append(el('p', 'muted', (project.status || 'unknown') + (project.config_files ? ' · ' + project.config_files : '')));
+      const projectActions = el('div', 'modal-actions');
+      const check = el('button', 'btn small', 'Check updates');
+      check.type = 'button';
+      check.addEventListener('click', () => checkDockerProject(host, project.name, reload));
+      const apply = el('button', 'btn small danger', 'Apply update');
+      apply.type = 'button';
+      apply.addEventListener('click', () => applyDockerProject(host, project.name, reload));
+      projectActions.append(check, apply);
+      card.append(projectActions);
+      projectWrap.append(card);
     }
   }
   panel.append(detailSection('Compose projects', projectWrap));

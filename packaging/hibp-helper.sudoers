@@ -16,3 +16,5 @@ hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper reboot-check
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper system-info
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper metrics
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-list
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-check *
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-apply *

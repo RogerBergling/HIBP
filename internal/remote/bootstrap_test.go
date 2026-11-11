@@ -37,9 +37,15 @@ func TestSudoersContentIsRestricted(t *testing.T) {
 			t.Fatalf("missing restricted rule for %s in:\n%s", action, content)
 		}
 	}
+	for _, action := range []string{"docker-check", "docker-apply"} {
+		want := "roger ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper " + action + " *"
+		if !strings.Contains(content, want) {
+			t.Fatalf("missing restricted wildcard rule for %s in:\n%s", action, content)
+		}
+	}
 	lines := strings.Split(strings.TrimSpace(content), "\n")
-	if len(lines) != 9 {
-		t.Fatalf("expected one comment and eight rules, got %d lines:\n%s", len(lines), content)
+	if len(lines) != 11 {
+		t.Fatalf("expected one comment and ten rules, got %d lines:\n%s", len(lines), content)
 	}
 }
 
