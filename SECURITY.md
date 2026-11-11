@@ -182,7 +182,9 @@ cron-based patch schedules are implemented.
 - Integration polling originates from the controller and can reach internal
   addresses by design. Only administrators can define endpoints; deploy the
   controller on an appropriately restricted network. The URL validators allow
-  HTTP for HAProxy/OPNsense, so use HTTPS for credentialed endpoints.
+  HTTP for HAProxy/OPNsense, so use HTTPS for credentialed endpoints. The
+  runtime has no telemetry or internet requirement; installation and updates
+  are the only external transfer steps.
 - CMDB import is read-only and file-based. HIBP never opens the CMDB database and
   never writes back. Imports are bounded (10 MiB, 5,000 records), validated, and
   previewed before commit. Imported data cannot contain HIBP secrets, and host

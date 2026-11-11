@@ -58,11 +58,13 @@ These files are examples, not a complete distribution package.
    exits):
 
    ```bash
-   sudo -u hibp /usr/local/bin/hibp server \
-     --db /var/lib/hibp/hibp.db --create \
-     --key-dir /etc/hibp/ssh --ssh-config /etc/hibp/ssh/config \
-     --listen 127.0.0.1:8443
+   sudo HIBP_CREATE=1 sh scripts/start-interactive.sh
    ```
+
+   The helper prefers `tmux` and falls back to `screen`; it runs the server as
+   the `hibp` service user and prompts for the passphrase inside the session.
+   Do not use it while a systemd unit is already running against the same
+   database.
 
    Through a tunnel:
 

@@ -1,6 +1,6 @@
 # HIBP - Have I Been Patched
 
-> **Status: v0.5.0 feature set with a production build path.** The repository
+> **Status: v0.5.1 feature set with a production build path.** The repository
 > contains a working Go server, browser UI, SQLCipher storage, host CRUD/import,
 > password + TOTP/passkey authentication, SSH host-key approval, remote helper
 > installation, fact collection, read-only system information, Docker
@@ -115,7 +115,7 @@ End users should not need Go or a compiler.
 
    ```bash
    # Install a specific version
-   sh install.sh --version v0.5.0
+   sh install.sh --version v0.5.1
 
    # Install system-wide (run as a user with write access to /usr/local/bin)
    sudo HIBP_PREFIX=/usr/local/bin sh install.sh
@@ -130,6 +130,10 @@ End users should not need Go or a compiler.
    Release artifacts are built with the production SQLCipher driver. The
    release automation currently publishes **linux-amd64**; build from source or
    use Docker for other architectures.
+
+   For an offline/LAN-only controller, download the archive and `SHA256SUMS`
+   on another machine, transfer them, verify with `sha256sum -c`, and install
+   the binary manually. The runtime does not need internet access.
 
 3. Docker option (the image is published as `ghcr.io/rogerbergling/hibp`):
 
@@ -411,7 +415,7 @@ target helper installation and sudoers example are in
 ## Production deployment checklist
 
 This is the minimum operational and security review before using HIBP against
-real hosts. It reflects the current v0.5.0 implementation; treat it as a
+real hosts. It reflects the current v0.5.1 implementation; treat it as a
 gate, not as a suggestion.
 
 ### 1. Confirm the deployment model
@@ -454,9 +458,24 @@ sudo install -d -o hibp -g hibp -m 0700 /etc/hibp/ssh
 Interactive unlock is supported when the server has a real terminal. For a
 manual-unlock deployment, keep the process in a persistent local console, a
 `tmux`/`screen` session, or an equivalent supervised terminal; if the terminal
-or SSH session dies, the controller and its schedules stop. The server writes
-the passphrase prompt to stdin; systemd services do not have a terminal by
-default.
+or SSH session dies, the controller and its schedules stop. The repository
+includes `scripts/start-interactive.sh`, which prefers `tmux` and falls back to
+`screen`:
+
+```bash
+# First run, create the database, then enter the passphrase in the session
+sudo HIBP_CREATE=1 sh scripts/start-interactive.sh
+
+# After a reboot or when the session is gone
+sudo sh scripts/start-interactive.sh
+```
+
+The script starts the server as the `hibp` service user via `runuser`/`sudo`; it
+does not put the passphrase in argv or the environment. Do not use it while a
+systemd unit is already running against the same database. It assumes the
+default `/etc/hibp/ssh` key/config paths; override `HIBP_KEY_DIR`,
+`HIBP_SSH_CONFIG`, `HIBP_DB`, `HIBP_BIN`, or `HIBP_SESSION` if needed. Paths with
+whitespace are not supported by this helper.
 
 For a headless service:
 
@@ -541,6 +560,14 @@ That command clears TOTP, all passkeys, and all sessions.
   management network. vCenter is HTTPS-only.
 - Integration polling originates from the controller and can reach internal
   networks. Restrict controller egress to the intended endpoints.
+- The runtime does not require internet access or telemetry. It needs SSH to
+  targets, SMTP to the relay, and (if enabled) HTTPS/HTTP to the LAN
+  integrations and monitored endpoints. Installation/upgrades need a release
+  transfer path; use a release tarball on an offline host rather than the
+  GitHub installer when the controller has no internet.
+- For internal-CA vCenter/OPNsense endpoints, add the CA to the controller's
+  trust store (the scratch Docker image includes only the public CA bundle) or
+  use the explicit TLS-verification opt-out only for a controlled lab.
 - Integration poll failures are shown on the source card but are not separately
   emailed. Monitor the controller's own logs/health.
 - External finding notifications are sent on new findings and severity changes;
@@ -713,7 +740,7 @@ during setup, or use `hibp user reset` (which clears all MFA) for recovery.
 
 ## Docker, system information, and monitoring
 
-> **Status: v0.5.0 adds cron-based patch schedules and run history.**
+> **Status: v0.5.1 adds cron-based patch schedules and run history.**
 > Read-only system information, Docker inventory, host details, metric history,
 > configurable collection, explicit Docker check/apply, monitoring definitions,
 > SMTP email alerts, vCenter alarms, HAProxy stats, OPNsense gateways,
@@ -1322,7 +1349,7 @@ as core features rather than afterthoughts.
 ## Product requirements
 
 > These are product requirements and design targets, not a claim that every item
-> is implemented. See [Implemented in v0.5.0](#implemented-in-v050) and
+> is implemented. See [Implemented in v0.5.1](#implemented-in-v051) and
 > [Known limitations before production](#known-limitations-before-production)
 > for the current status.
 
@@ -1742,7 +1769,7 @@ The current release derives the SQLCipher key directly from the database
 passphrase with Argon2id and keeps SMTP/integration secrets inside the encrypted
 database. It does **not** implement a separate credential vault, envelope/DEK
 wrapping, or passphrase rotation. The following is a future design goal, not a
-claim about v0.5.0:
+claim about v0.5.1:
 
 - Generate a random data encryption key (DEK) for a credential vault.
 - Derive a key-encryption key (KEK) from the database passphrase with Argon2id,
@@ -1985,7 +2012,7 @@ Current status:
   remote-code-execution feature.
 - Consider reproducible builds for the server and agent binaries.
 
-### Implemented in v0.5.0
+### Implemented in v0.5.1
 
 - SQLCipher database with Argon2id-derived keys and a validated `.meta` sidecar.
 - `0600` database, sidecar, key, and backup files; wrong-passphrase test.
@@ -2542,7 +2569,7 @@ internal/webui/           embedded HTML/CSS/JS
 third_party/go-sqlite3/   patched mattn driver with sqlite3_key before open
 packaging/Dockerfile          production SQLCipher 4.20 + musl static build
 packaging/                systemd unit, sudoers example, install notes
-scripts/                  README validator, release installer, developer bootstrap
+scripts/                  README validator, release installer, interactive session, developer bootstrap
 tests/                    Python validator tests
 docs/screenshots/         current build screenshots
 .github/workflows/        CI
@@ -2840,7 +2867,7 @@ Current validation status:
 - `go test -race ./...` passes.
 - `make static` produces a development ELF with no dynamic dependencies.
 - The current-SQLCipher production Docker build and release workflow passed for
-  `v0.5.0`; the published archive checksum, installed binary, and SQLCipher
+  `v0.5.1`; the published archive checksum, installed binary, and SQLCipher
   production driver were verified.
 - The store/server suite passes against the production driver with current
   system `libsqlcipher`, including backup and restore.

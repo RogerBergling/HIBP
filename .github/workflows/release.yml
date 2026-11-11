@@ -34,7 +34,8 @@ jobs:
           tar -czf "dist/hibp-${GITHUB_REF_NAME}-linux-amd64.tar.gz" -C dist hibp
           rm -f dist/hibp
           cp scripts/install.sh dist/install.sh
-          (cd dist && sha256sum hibp-*.tar.gz > SHA256SUMS)
+          cp scripts/start-interactive.sh dist/start-interactive.sh
+          (cd dist && sha256sum hibp-*.tar.gz start-interactive.sh > SHA256SUMS)
           ls -lh dist
 
       - name: Publish container image
