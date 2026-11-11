@@ -6,6 +6,12 @@ PROD_TAGS ?= sqlcipher_mattn libsqlcipher netgo osusergo sqlite_omit_load_extens
 SQLCIPHER_CFLAGS ?= $(shell pkg-config --cflags sqlcipher 2>/dev/null)
 SQLCIPHER_LDFLAGS ?= $(shell pkg-config --libs sqlcipher 2>/dev/null)
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo 0.1.0-dev)
+BUILD_NUMBER ?= $(shell if [ -n "$$GITHUB_RUN_NUMBER" ]; then printf '%s' "$$GITHUB_RUN_NUMBER"; elif git rev-list --count HEAD >/dev/null 2>&1; then git rev-list --count HEAD; else printf 'dev'; fi)
+BUILD_COMMIT ?= $(shell if [ -n "$$GITHUB_SHA" ]; then printf '%s' "$$GITHUB_SHA" | cut -c1-12; elif git rev-parse --short=12 HEAD >/dev/null 2>&1; then git rev-parse --short=12 HEAD; else printf 'unknown'; fi)
+BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+BUILD_TARGET ?= $(shell $(GO) env GOOS 2>/dev/null || printf unknown)/$(shell $(GO) env GOARCH 2>/dev/null || printf unknown)
+BUILD_TYPE ?= development
+LDFLAGS ?= -X main.version=$(VERSION) -X main.buildNumber=$(BUILD_NUMBER) -X main.buildCommit=$(BUILD_COMMIT) -X main.buildDate=$(BUILD_DATE) -X main.buildTarget=$(BUILD_TARGET) -X main.buildType=$(BUILD_TYPE)
 
 .PHONY: help check-go check-cc check-docker check-sqlcipher bootstrap build build-system test race vet static production static-production validate package clean
 
@@ -59,7 +65,7 @@ check-docker:
 
 build: check-go check-cc
 	mkdir -p dist
-	CGO_ENABLED=1 $(GO) build -trimpath -tags "$(TAGS)" -o $(BIN) ./cmd/hibp
+	CGO_ENABLED=1 $(GO) build -trimpath -tags "$(TAGS)" -ldflags '$(LDFLAGS)' -o $(BIN) ./cmd/hibp
 
 # Production driver using the distribution's dynamic SQLCipher. This is useful
 # for local testing when Docker is unavailable; release artifacts must use the
@@ -67,7 +73,7 @@ build: check-go check-cc
 build-system: check-go check-cc check-sqlcipher
 	mkdir -p dist
 	CGO_ENABLED=1 CGO_CFLAGS="$(SQLCIPHER_CFLAGS)" CGO_LDFLAGS="$(SQLCIPHER_LDFLAGS)" \
-		$(GO) build -trimpath -tags "$(PROD_TAGS)" -o $(BIN) ./cmd/hibp
+		$(GO) build -trimpath -tags "$(PROD_TAGS)" -ldflags '$(LDFLAGS)' -o $(BIN) ./cmd/hibp
 
 test: check-go check-cc
 	CGO_ENABLED=1 $(GO) test ./...
@@ -81,7 +87,7 @@ vet: check-go check-cc
 static: check-go check-cc
 	mkdir -p dist
 	CGO_ENABLED=1 $(GO) build -trimpath -tags "$(TAGS)" \
-		-ldflags '-s -w -linkmode external -extldflags "-static"' \
+		-ldflags '-s -w -linkmode external -extldflags "-static" $(LDFLAGS)' \
 		-o $(BIN) ./cmd/hibp
 	@file $(BIN)
 	@ldd $(BIN) 2>&1 || true
@@ -89,7 +95,14 @@ static: check-go check-cc
 # Production artifact: current SQLCipher + patched mattn driver in a pinned
 # Alpine/musl build image. Requires Docker.
 production: check-docker
-	docker build --build-arg VERSION="$(VERSION)" -f packaging/Dockerfile -t hibp-production .
+	docker build \
+		--build-arg VERSION="$(VERSION)" \
+		--build-arg BUILD_NUMBER="$(BUILD_NUMBER)" \
+		--build-arg BUILD_COMMIT="$(BUILD_COMMIT)" \
+		--build-arg BUILD_DATE="$(BUILD_DATE)" \
+		--build-arg BUILD_TARGET="$(BUILD_TARGET)" \
+		--build-arg BUILD_TYPE="release" \
+		-f packaging/Dockerfile -t hibp-production .
 
 # Local production build when SQLCIPHER_CFLAGS and SQLCIPHER_LDFLAGS point at
 # a current static SQLCipher (normally supplied by the Alpine build image).
@@ -97,7 +110,7 @@ static-production: check-go check-cc
 	mkdir -p dist
 	CGO_ENABLED=1 CGO_CFLAGS="$(SQLCIPHER_CFLAGS)" CGO_LDFLAGS="$(SQLCIPHER_LDFLAGS)" \
 		$(GO) build -trimpath -tags "$(PROD_TAGS)" \
-		-ldflags '-s -w -linkmode external -extldflags "-static"' \
+		-ldflags '-s -w -linkmode external -extldflags "-static" $(LDFLAGS)' \
 		-o $(BIN) ./cmd/hibp
 	@file $(BIN)
 	@ldd $(BIN) 2>&1 || true

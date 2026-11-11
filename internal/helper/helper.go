@@ -16,23 +16,26 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/RogerBergling/hibp/internal/buildinfo"
 )
 
 const maxOutput = 1 << 20 // 1 MiB
 
 // Facts is the JSON contract returned by the facts action.
 type Facts struct {
-	OSID           string `json:"os_id"`
-	OSVersion      string `json:"os_version"`
-	OSPrettyName   string `json:"os_pretty_name"`
-	Kernel         string `json:"kernel"`
-	PackageManager string `json:"package_manager"`
-	UptimeSeconds  int64  `json:"uptime_seconds"`
-	BootTime       string `json:"boot_time"`
-	PendingUpdates int    `json:"pending_updates"`
-	RebootRequired bool   `json:"reboot_required"`
-	DiskFreeBytes  int64  `json:"disk_free_bytes"`
-	TimeSyncOK     bool   `json:"time_sync_ok"`
+	OSID           string         `json:"os_id"`
+	OSVersion      string         `json:"os_version"`
+	OSPrettyName   string         `json:"os_pretty_name"`
+	Kernel         string         `json:"kernel"`
+	PackageManager string         `json:"package_manager"`
+	UptimeSeconds  int64          `json:"uptime_seconds"`
+	BootTime       string         `json:"boot_time"`
+	PendingUpdates int            `json:"pending_updates"`
+	RebootRequired bool           `json:"reboot_required"`
+	DiskFreeBytes  int64          `json:"disk_free_bytes"`
+	TimeSyncOK     bool           `json:"time_sync_ok"`
+	Agent          buildinfo.Info `json:"agent"`
 }
 
 // Result is the JSON contract for check/apply/reboot/reboot-check.
@@ -186,6 +189,7 @@ func collectFacts(ctx context.Context) (Facts, error) {
 		BootTime:       now.Add(-time.Duration(uptimeSeconds) * time.Second).Format(time.RFC3339),
 		DiskFreeBytes:  diskFreeBytes("/"),
 		TimeSyncOK:     timeSyncOK(ctx),
+		Agent:          buildinfo.Current,
 	}
 	facts.PendingUpdates = countPending(ctx, facts.PackageManager)
 	facts.RebootRequired, _ = rebootRequired(ctx)

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/RogerBergling/hibp/internal/auth"
+	"github.com/RogerBergling/hibp/internal/buildinfo"
 	"github.com/RogerBergling/hibp/internal/store"
 	"github.com/go-webauthn/webauthn/webauthn"
 )
@@ -409,6 +410,40 @@ func TestAuthRequired(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestStatusIncludesBuildInformation(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "inventory.hibp"), []byte("correct horse battery staple"), store.Options{
+		Create: true, KDFTime: 1, KDFMemory: 64 * 1024, KDFThreads: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	want := buildinfo.Info{
+		Version: "0.6.2", BuildNumber: "1234", BuildCommit: "abc123def456",
+		BuildDate: "2026-11-11T12:00:00Z", BuildTarget: "linux/amd64", BuildType: "release",
+	}
+	app, err := New(Config{Store: db, Build: want, SSHConfigPath: filepath.Join(dir, "missing-config")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	app.handleStatus(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", recorder.Code)
+	}
+	var response struct {
+		Version string         `json:"version"`
+		Build   buildinfo.Info `json:"build"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Version != want.Version || response.Build != want {
+		t.Fatalf("unexpected build response: %+v", response)
 	}
 }
 

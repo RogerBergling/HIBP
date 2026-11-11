@@ -57,7 +57,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version":       s.version,
+		"version":       s.build.Version,
+		"build":         s.build,
 		"hosts":         hosts,
 		"audit_entries": entries,
 		"time":          crypto.Now(),
@@ -515,6 +516,7 @@ func storeFactsFromHelper(facts helper.Facts) store.Facts {
 		DiskFreeBytes:  facts.DiskFreeBytes,
 		TimeSyncOK:     facts.TimeSyncOK,
 		PendingUpdates: facts.PendingUpdates,
+		Agent:          facts.Agent,
 	}
 }
 

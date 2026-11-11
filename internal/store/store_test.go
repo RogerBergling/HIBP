@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/RogerBergling/hibp/internal/buildinfo"
 )
 
 func testOptions() Options {
@@ -38,6 +40,10 @@ func TestCreateHostAuditBackup(t *testing.T) {
 		CollectedAt: "2026-11-10T12:00:00Z", UptimeSeconds: 3600,
 		Kernel: "6.8.0-51", OSPrettyName: "Ubuntu 24.04 LTS",
 		PackageManager: "apt", PendingUpdates: 4, RebootRequired: true, TimeSyncOK: true,
+		Agent: buildinfo.Info{
+			Version: "0.6.2", BuildNumber: "1234", BuildCommit: "abc123def456",
+			BuildDate: "2026-11-11T12:00:00Z", BuildTarget: "linux/amd64", BuildType: "release",
+		},
 	}); err != nil {
 		t.Fatalf("save facts: %v", err)
 	}
@@ -50,6 +56,10 @@ func TestCreateHostAuditBackup(t *testing.T) {
 	}
 	if hosts[0].Facts == nil || hosts[0].Facts.PendingUpdates != 4 {
 		t.Fatalf("unexpected facts: %+v", hosts[0].Facts)
+	}
+	if hosts[0].Facts.Agent.Version != "0.6.2" || hosts[0].Facts.Agent.BuildNumber != "1234" ||
+		hosts[0].Facts.Agent.BuildCommit != "abc123def456" {
+		t.Fatalf("unexpected agent build: %+v", hosts[0].Facts.Agent)
 	}
 	if err := s.VerifyAudit(); err != nil {
 		t.Fatalf("verify audit: %v", err)

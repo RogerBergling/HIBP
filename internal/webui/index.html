@@ -151,6 +151,7 @@
         <div class="server-top"><span class="status-dot"></span> hibp-server</div>
         <div class="server-meta">
           <b id="server-version">dev</b><br>
+          <span id="server-build" class="server-build">build —</span><br>
           Database <b>unlocked</b><br>
           <span id="server-hosts">0 hosts</span> · <span id="server-time">—</span>
         </div>
@@ -193,20 +194,22 @@
             <div class="card-head">
               <div class="card-title">Hosts</div>
               <div class="card-sub" id="hosts-sub">0 hosts</div>
-              <div class="card-actions"><button class="link-button" id="table-update-helpers">Update helpers</button><button class="link-button" id="table-ssh-config">SSH config</button><button class="link-button" id="table-cmdb">CMDB import</button><button class="link-button" id="table-import">Import CSV</button></div>
+              <div class="card-actions"><button class="link-button" id="table-update-selected" type="button" disabled>Update selected</button><button class="link-button" id="table-update-helpers" type="button">Update helpers</button><button class="link-button" id="table-ssh-config">SSH config</button><button class="link-button" id="table-cmdb">CMDB import</button><button class="link-button" id="table-import">Import CSV</button></div>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th style="width:16%">Host</th>
-                    <th style="width:15%">OS</th>
-                    <th style="width:9%">Pending</th>
-                    <th style="width:11%">Last check</th>
-                    <th style="width:7%">Uptime</th>
-                    <th style="width:7%">Reboot</th>
-                    <th style="width:11%">Status</th>
-                    <th style="width:24%">Actions</th>
+                    <th style="width:3%"><input type="checkbox" class="row-select" id="hosts-select-all" aria-label="Select all hosts" title="Select all hosts"></th>
+                    <th style="width:15%">Host</th>
+                    <th style="width:12%">OS</th>
+                    <th style="width:12%" title="Build reported by the installed helper">Agent</th>
+                    <th style="width:7%">Pending</th>
+                    <th style="width:9%">Last check</th>
+                    <th style="width:6%">Uptime</th>
+                    <th style="width:6%">Reboot</th>
+                    <th style="width:9%">Status</th>
+                    <th style="width:21%">Actions</th>
                   </tr>
                 </thead>
                 <tbody id="hosts-body"></tbody>
@@ -256,7 +259,7 @@
             <div class="page-title">Hosts</div>
             <div class="page-sub" id="hosts-page-sub">All managed hosts</div>
           </div>
-          <div class="head-actions"><button class="btn" id="fleet-update-helpers" type="button">Update helpers</button></div>
+          <div class="head-actions"><button class="btn" id="fleet-update-selected" type="button" disabled>Update selected</button><button class="btn" id="fleet-update-helpers" type="button">Update helpers</button></div>
         </div>
         <section class="card table-card">
           <div class="card-head">
@@ -267,14 +270,16 @@
             <table>
               <thead>
                 <tr>
-                  <th style="width:16%">Host</th>
-                  <th style="width:15%">OS</th>
-                  <th style="width:9%">Pending</th>
-                  <th style="width:11%">Last check</th>
-                  <th style="width:7%">Uptime</th>
-                  <th style="width:7%">Reboot</th>
-                  <th style="width:11%">Status</th>
-                  <th style="width:24%">Actions</th>
+                  <th style="width:3%"><input type="checkbox" class="row-select" id="hosts-select-all-full" aria-label="Select all hosts" title="Select all hosts"></th>
+                  <th style="width:15%">Host</th>
+                  <th style="width:12%">OS</th>
+                  <th style="width:12%" title="Build reported by the installed helper">Agent</th>
+                  <th style="width:7%">Pending</th>
+                  <th style="width:9%">Last check</th>
+                  <th style="width:6%">Uptime</th>
+                  <th style="width:6%">Reboot</th>
+                  <th style="width:9%">Status</th>
+                  <th style="width:21%">Actions</th>
                 </tr>
               </thead>
               <tbody id="hosts-body-full"></tbody>

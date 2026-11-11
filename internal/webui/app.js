@@ -2,6 +2,7 @@
 
 const state = {
   hosts: [],
+  selectedHosts: new Set(),
   audit: [],
   monitors: [],
   alerts: [],
@@ -29,6 +30,69 @@ document.addEventListener('keydown', (event) => {
 });
 
 const $ = (id) => document.getElementById(id);
+
+function versionLabel(version) {
+  const value = String(version || '').trim();
+  if (!value) return '';
+  return value.startsWith('v') ? value : 'v' + value;
+}
+
+function buildIdentity(info) {
+  if (!info) return '';
+  const parts = [];
+  if (info.version) parts.push(versionLabel(info.version));
+  if (info.build_number) parts.push('build ' + info.build_number);
+  if (info.build_commit) parts.push('commit ' + info.build_commit);
+  if (info.build_date) parts.push(info.build_date);
+  if (info.build_target) parts.push(info.build_target);
+  if (info.build_type) parts.push(info.build_type);
+  return parts.join(' · ');
+}
+
+function buildCompact(info) {
+  if (!info) return '';
+  const parts = [];
+  if (info.version) parts.push(versionLabel(info.version));
+  if (info.build_number) parts.push('build ' + info.build_number);
+  if (info.build_commit) parts.push('commit ' + info.build_commit);
+  return parts.join(' · ');
+}
+
+function selectedHosts() {
+  return state.hosts.filter((host) => state.selectedHosts.has(host.id));
+}
+
+function syncHostSelection() {
+  const hostIDs = new Set(state.hosts.map((host) => host.id));
+  for (const id of Array.from(state.selectedHosts)) {
+    if (!hostIDs.has(id)) state.selectedHosts.delete(id);
+  }
+  for (const checkbox of document.querySelectorAll('.host-select')) {
+    checkbox.checked = state.selectedHosts.has(checkbox.dataset.hostId);
+  }
+  const total = state.hosts.length;
+  const count = state.selectedHosts.size;
+  for (const id of ['hosts-select-all', 'hosts-select-all-full']) {
+    const node = $(id);
+    if (!node) continue;
+    node.checked = total > 0 && count === total;
+    node.indeterminate = count > 0 && count < total;
+  }
+  for (const id of ['table-update-selected', 'fleet-update-selected']) {
+    const node = $(id);
+    if (!node) continue;
+    node.disabled = count === 0;
+    node.textContent = count ? 'Update selected (' + count + ')' : 'Update selected';
+  }
+}
+
+function setAllHostSelection(checked) {
+  state.selectedHosts.clear();
+  if (checked) {
+    for (const host of state.hosts) state.selectedHosts.add(host.id);
+  }
+  syncHostSelection();
+}
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -371,7 +435,15 @@ function renderAll() {
 }
 
 function renderStatus() {
-  $('server-version').textContent = 'HIBP ' + (state.status.version || 'dev');
+  const build = state.status.build || { version: state.status.version };
+  const full = buildIdentity(build);
+  $('server-version').textContent = 'HIBP ' + (versionLabel(build.version) || 'dev');
+  $('server-version').title = full;
+  const buildParts = [];
+  if (build.build_number) buildParts.push('build ' + build.build_number);
+  if (build.build_commit) buildParts.push('commit ' + build.build_commit);
+  $('server-build').textContent = buildParts.join(' · ') || 'build unknown';
+  $('server-build').title = full;
   $('server-hosts').textContent = (state.hosts.length) + ' hosts';
   $('server-time').textContent = state.status.time ? new Date(state.status.time).toLocaleTimeString() : '—';
   $('nav-host-count').textContent = String(state.hosts.length);
@@ -419,11 +491,26 @@ function renderHosts() {
   const rows = state.hosts.map(hostRow);
   $('hosts-body').replaceChildren(...rows);
   $('hosts-body-full').replaceChildren(...state.hosts.map(hostRow));
+  syncHostSelection();
 }
 
 function hostRow(host) {
   const tr = el('tr');
   const facts = host.facts || {};
+
+  const selectTd = el('td');
+  const select = el('input', 'row-select host-select');
+  select.type = 'checkbox';
+  select.dataset.hostId = host.id;
+  select.checked = state.selectedHosts.has(host.id);
+  select.title = 'Select ' + host.name + ' for a helper update';
+  select.setAttribute('aria-label', select.title);
+  select.addEventListener('change', () => {
+    if (select.checked) state.selectedHosts.add(host.id);
+    else state.selectedHosts.delete(host.id);
+    syncHostSelection();
+  });
+  selectTd.append(select);
 
   const hostTd = el('td');
   const hostCell = el('div', 'host-cell');
@@ -449,6 +536,24 @@ function hostRow(host) {
   const os = el('div', 'os', facts.os_pretty_name || host.os_family || 'Unknown');
   os.append(el('small', '', facts.kernel || (host.auth_type + ' auth')));
   osTd.append(os);
+
+  const agent = facts.agent || {};
+  const agentTd = el('td');
+  if (agent.version) {
+    const controller = state.status.build || { version: state.status.version };
+    const stale = Boolean(controller.version && agent.version !== controller.version) ||
+      Boolean(controller.build_commit && agent.build_commit && agent.build_commit !== controller.build_commit);
+    const agentEl = el('div', 'agent-version' + (stale ? ' stale' : ''), versionLabel(agent.version));
+    const detail = [];
+    if (agent.build_number) detail.push('build ' + agent.build_number);
+    if (agent.build_commit) detail.push(agent.build_commit);
+    if (detail.length) agentEl.append(el('small', '', detail.join(' · ')));
+    agentEl.title = buildIdentity(agent) + (stale ? ' — differs from the running controller' : '');
+    agentTd.append(agentEl);
+  } else {
+    agentTd.append(el('span', 'muted', 'not reported'));
+    agentTd.title = 'Update the helper or collect facts to report the installed build.';
+  }
 
   const pending = Number(facts.pending_updates || 0);
   const pendingTd = el('td');
@@ -480,7 +585,7 @@ function hostRow(host) {
   actions.append(actionButton('Reboot', () => rebootHost(host), 'danger'));
   actionsTd.append(actions);
 
-  tr.append(hostTd, osTd, pendingTd, checkTd, uptimeTd, rebootTd, statusTd, actionsTd);
+  tr.append(selectTd, hostTd, osTd, agentTd, pendingTd, checkTd, uptimeTd, rebootTd, statusTd, actionsTd);
   return tr;
 }
 
@@ -1907,17 +2012,20 @@ async function bootstrapHost(host) {
   }
 }
 
-async function fleetUpdateHelpers() {
+async function fleetUpdateHelpers(hosts = null) {
   if (fleetUpdateRunning) {
     toast('A fleet helper update is already running', 'error');
     return;
   }
-  const hosts = state.hosts.slice();
-  if (hosts.length === 0) {
-    toast('No hosts to update', 'error');
+  const targets = Array.isArray(hosts) ? hosts.slice() : state.hosts.slice();
+  if (targets.length === 0) {
+    toast(hosts ? 'No hosts selected' : 'No hosts to update', 'error');
     return;
   }
-  if (!confirm('Update the HIBP helper on all ' + hosts.length + ' hosts?\n\nThis uploads the running controller binary, rewrites the sudoers rule, and may prompt for credentials. Hosts with untrusted keys are skipped.')) {
+  const scope = hosts
+    ? (targets.length === 1 ? 'the selected host' : 'the ' + targets.length + ' selected hosts')
+    : ('all ' + targets.length + ' hosts');
+  if (!confirm('Update the HIBP helper on ' + scope + '?\n\nThis uploads the running controller binary, rewrites the sudoers rule, and may prompt for credentials. Hosts with untrusted keys are skipped.')) {
     return;
   }
 
@@ -1938,7 +2046,7 @@ async function fleetUpdateHelpers() {
   stop.type = 'button';
   actions.append(stop);
   body.append(actions);
-  const close = openModal('Fleet helper update', body, () => { cancelled = true; });
+  const close = openModal(hosts ? 'Selected helper update' : 'Fleet helper update', body, () => { cancelled = true; });
   const rows = new Map();
   const rowFor = (host) => {
     let row = rows.get(host.id);
@@ -1978,11 +2086,11 @@ async function fleetUpdateHelpers() {
   let failed = 0;
   let skipped = 0;
   try {
-    for (let index = 0; index < hosts.length; index++) {
+    for (let index = 0; index < targets.length; index++) {
       if (cancelled) break;
-      const host = hosts[index];
+      const host = targets[index];
       setStatus(host, 'running', 'unknown', 'connecting…');
-      summary.textContent = 'Updating ' + (index + 1) + ' of ' + hosts.length + '…';
+      summary.textContent = 'Updating ' + (index + 1) + ' of ' + targets.length + '…';
       try {
         const password = await passwordFor(host);
         if (cancelled) break;
@@ -2175,6 +2283,7 @@ function renderOverviewPanel(panel, data, host) {
       ['OS', facts.os_pretty_name],
       ['Kernel', facts.kernel],
       ['Package manager', facts.package_manager],
+      ['Helper build', buildCompact(facts.agent) || 'not reported'],
       ['Uptime', formatUptime(facts.uptime_seconds)],
     ]),
     detailCard('Patch state', [
@@ -2753,6 +2862,8 @@ function openModal(title, content, onClose, sizeClass = '') {
 }
 
 function showAddHostModal(host = null, prefill = null) {
+  // A click listener must never leak its Event into the edit path.
+  if (host && !host.id) host = null;
   const editing = Boolean(host);
   const source = host || prefill || {};
   const form = el('form', 'modal-body');
@@ -3509,8 +3620,8 @@ function bind() {
   }
   $('top-refresh').addEventListener('click', loadAll);
   $('refresh-button').addEventListener('click', loadAll);
-  $('top-add-host').addEventListener('click', showAddHostModal);
-  $('empty-add').addEventListener('click', showAddHostModal);
+  $('top-add-host').addEventListener('click', () => showAddHostModal());
+  $('empty-add').addEventListener('click', () => showAddHostModal());
   $('import-button').addEventListener('click', showImportModal);
   $('table-import').addEventListener('click', showImportModal);
   $('hosts-import').addEventListener('click', showImportModal);
@@ -3518,8 +3629,13 @@ function bind() {
   $('hosts-cmdb').addEventListener('click', showCMDBImportModal);
   $('table-ssh-config').addEventListener('click', showSSHConfigModal);
   $('hosts-ssh-config').addEventListener('click', showSSHConfigModal);
-  $('table-update-helpers').addEventListener('click', fleetUpdateHelpers);
-  $('fleet-update-helpers').addEventListener('click', fleetUpdateHelpers);
+  $('table-update-helpers').addEventListener('click', () => fleetUpdateHelpers());
+  $('fleet-update-helpers').addEventListener('click', () => fleetUpdateHelpers());
+  $('table-update-selected').addEventListener('click', () => fleetUpdateHelpers(selectedHosts()));
+  $('fleet-update-selected').addEventListener('click', () => fleetUpdateHelpers(selectedHosts()));
+  for (const id of ['hosts-select-all', 'hosts-select-all-full']) {
+    $(id).addEventListener('change', (event) => setAllHostSelection(event.target.checked));
+  }
   $('open-settings').addEventListener('click', showSettingsModal);
   $('monitor-add').addEventListener('click', () => showMonitorModal());
   $('monitor-notifications').addEventListener('click', showSMTPModal);

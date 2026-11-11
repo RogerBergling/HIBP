@@ -140,6 +140,7 @@ code { background: rgba(139, 160, 189, .10); padding: 1px 4px; border-radius: 4p
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 10px rgba(53, 208, 127, .7); }
 .server-meta { color: var(--muted); font-size: 10.5px; line-height: 1.55; margin-top: 7px; }
 .server-meta b { color: #cfe0f5; font-weight: 600; }
+.server-build { color: var(--muted-2); font-size: 9.5px; overflow-wrap: anywhere; }
 .user-row { display: flex; align-items: center; gap: 9px; margin-top: 13px; padding-top: 12px; border-top: 1px solid var(--border-soft); }
 .avatar { width: 27px; height: 27px; border-radius: 50%; background: linear-gradient(145deg, #38bdf8, #6366f1); display: grid; place-items: center; color: #07111f; font-weight: 800; font-size: 10px; }
 .user-name { font-size: 11px; font-weight: 650; }
@@ -165,6 +166,7 @@ code { background: rgba(139, 160, 189, .10); padding: 1px 4px; border-radius: 4p
 .btn .plus { font-size: 15px; line-height: 1; margin-top: -1px; }
 .link-button { border: none; background: none; color: #7dd3fc; font-size: 10.5px; font-weight: 600; padding: 0; }
 .link-button:hover { color: #bae6fd; text-decoration: underline; }
+.link-button:disabled { opacity: .45; cursor: not-allowed; text-decoration: none; }
 .page-head { display: flex; align-items: flex-end; gap: 16px; }
 .page-title { font-size: 26px; line-height: 1.1; font-weight: 780; letter-spacing: -.02em; }
 .page-sub { color: var(--muted); font-size: 11.5px; margin-top: 6px; }
@@ -210,6 +212,11 @@ th:last-child, td:last-child { padding-right: 15px; }
 .host-ip { font-size: 9.5px; color: var(--muted); margin-top: 1px; }
 .os { color: #b9c9de; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .os small { display: block; color: var(--muted); font-size: 9.5px; margin-top: 1px; }
+.row-select { width: 13px; height: 13px; margin: 0; accent-color: #14b8a6; cursor: pointer; vertical-align: middle; }
+.agent-version { color: #bae6fd; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agent-version small { display: block; color: var(--muted); font-size: 9px; font-weight: 400; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; }
+.agent-version.stale { color: var(--amber); }
+.agent-version.stale small { color: var(--amber); }
 .pending { display: inline-flex; align-items: center; gap: 5px; font-weight: 650; }
 .pending.zero { color: var(--green); }
 .pending.low { color: var(--amber); }

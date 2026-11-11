@@ -44,6 +44,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build production image
-        run: docker build -f packaging/Dockerfile -t hibp-production .
+        run: |
+          docker build \
+            --build-arg VERSION="$(git describe --tags --always | sed 's/^v//')" \
+            --build-arg BUILD_NUMBER="${GITHUB_RUN_NUMBER}" \
+            --build-arg BUILD_COMMIT="${GITHUB_SHA:0:12}" \
+            --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --build-arg BUILD_TARGET="linux/amd64" \
+            --build-arg BUILD_TYPE="ci" \
+            -f packaging/Dockerfile -t hibp-production .
       - name: Verify production binary
         run: docker run --rm hibp-production version

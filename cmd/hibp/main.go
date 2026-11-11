@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/RogerBergling/hibp/internal/auth"
+	"github.com/RogerBergling/hibp/internal/buildinfo"
 	"github.com/RogerBergling/hibp/internal/crypto"
 	"github.com/RogerBergling/hibp/internal/helper"
 	"github.com/RogerBergling/hibp/internal/server"
@@ -25,12 +26,44 @@ import (
 	"golang.org/x/term"
 )
 
-var version = "0.1.0-dev"
+// These values are overridden by the Makefile and production image with
+// -ldflags. The defaults keep a plain `go build` usable for development.
+var (
+	version     = "0.1.0-dev"
+	buildNumber = "dev"
+	buildCommit = "unknown"
+	buildDate   = "unknown"
+	buildTarget = "unknown"
+	buildType   = "development"
+)
+
+func currentBuild() buildinfo.Info {
+	return buildinfo.Info{
+		Version:     version,
+		BuildNumber: buildNumber,
+		BuildCommit: buildCommit,
+		BuildDate:   buildDate,
+		BuildTarget: buildTarget,
+		BuildType:   buildType,
+	}
+}
+
+func printVersion() {
+	current := buildinfo.Current
+	fmt.Println("hibp " + current.Version)
+	fmt.Println("build:  " + current.BuildNumber)
+	fmt.Println("commit: " + current.BuildCommit)
+	fmt.Println("date:   " + current.BuildDate)
+	fmt.Println("target: " + current.BuildTarget)
+	fmt.Println("type:   " + current.BuildType)
+	fmt.Println("sqlcipher driver:", store.DriverName)
+}
 
 func main() {
 	// SQLite creates -wal and -shm files; keep every file created by HIBP
 	// owner-only even if the service manager uses a permissive umask.
 	syscall.Umask(0o077)
+	buildinfo.Current = currentBuild()
 	args := normalizeArgs(os.Args)
 	if len(args) < 1 {
 		usage()
@@ -45,8 +78,7 @@ func main() {
 	case "user":
 		err = runUser(args[1:])
 	case "version", "--version", "-version":
-		fmt.Println("hibp " + version)
-		fmt.Println("sqlcipher driver:", store.DriverName)
+		printVersion()
 	case "help", "--help", "-h":
 		usage()
 	default:
@@ -87,7 +119,7 @@ Usage:
   hibp server [flags]     Run the local browser UI and API
   hibp helper <action>    Run a fixed target action (facts|check|apply|reboot|reboot-check|system-info|metrics|docker-list|docker-check|docker-apply)
   hibp user reset         Reset the local account password, TOTP, and passkeys
-  hibp version            Print the version
+  hibp version            Print the version and build identity
 
 Server flags:
   -db string              Database path (default: XDG data directory)
@@ -97,7 +129,7 @@ Server flags:
   -key-dir string         SSH key directory, comma-separated (default: ~/.ssh)
   -ssh-config string      OpenSSH client config (default: ~/.ssh/config)
   -demo                   Seed sample hosts when the database is empty
-  -version                Print the version`)
+  -version                Print the version and build identity`)
 }
 
 func defaultKeyDir() string {
@@ -163,12 +195,12 @@ func runServer(args []string) error {
 	keyDir := flags.String("key-dir", defaultKeyDir(), "SSH key directory, comma-separated for multiple")
 	sshConfig := flags.String("ssh-config", filepath.Join(defaultKeyDir(), "config"), "local OpenSSH client config")
 	demo := flags.Bool("demo", false, "seed sample hosts when empty")
-	showVersion := flags.Bool("version", false, "print version")
+	showVersion := flags.Bool("version", false, "print version and build identity")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if *showVersion {
-		fmt.Println("hibp " + version)
+		printVersion()
 		return nil
 	}
 	if *listen != "127.0.0.1:8443" && !strings.HasPrefix(*listen, "127.0.0.1:") && !strings.HasPrefix(*listen, "localhost:") {
@@ -201,6 +233,7 @@ func runServer(args []string) error {
 	app, err := server.New(server.Config{
 		Store:         db,
 		Version:       version,
+		Build:         buildinfo.Current,
 		KeyDirs:       splitList(*keyDir),
 		SSHConfigPath: *sshConfig,
 	})
@@ -217,7 +250,7 @@ func runServer(args []string) error {
 		return err
 	}
 	url := "http://localhost:" + port + "/"
-	fmt.Fprintf(os.Stderr, "HIBP %s\n", version)
+	fmt.Fprintf(os.Stderr, "HIBP %s\n", buildinfo.Current.String())
 	fmt.Fprintf(os.Stderr, "SQLCipher: %s\n", store.DriverName)
 	if !store.ProductionDriver {
 		fmt.Fprintln(os.Stderr, "WARNING: this is the M1 spike driver. Build with `make production` before deployment.")

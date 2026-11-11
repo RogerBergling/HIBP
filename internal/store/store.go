@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RogerBergling/hibp/internal/buildinfo"
 	"github.com/RogerBergling/hibp/internal/crypto"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/blake2b"
@@ -69,16 +70,17 @@ type Host struct {
 
 // Facts is the latest collected host state.
 type Facts struct {
-	CollectedAt    string `json:"collected_at"`
-	UptimeSeconds  int64  `json:"uptime_seconds"`
-	BootTime       string `json:"boot_time"`
-	Kernel         string `json:"kernel"`
-	OSPrettyName   string `json:"os_pretty_name"`
-	PackageManager string `json:"package_manager"`
-	RebootRequired bool   `json:"reboot_required"`
-	DiskFreeBytes  int64  `json:"disk_free_bytes"`
-	TimeSyncOK     bool   `json:"time_sync_ok"`
-	PendingUpdates int    `json:"pending_updates"`
+	CollectedAt    string         `json:"collected_at"`
+	UptimeSeconds  int64          `json:"uptime_seconds"`
+	BootTime       string         `json:"boot_time"`
+	Kernel         string         `json:"kernel"`
+	OSPrettyName   string         `json:"os_pretty_name"`
+	PackageManager string         `json:"package_manager"`
+	RebootRequired bool           `json:"reboot_required"`
+	DiskFreeBytes  int64          `json:"disk_free_bytes"`
+	TimeSyncOK     bool           `json:"time_sync_ok"`
+	PendingUpdates int            `json:"pending_updates"`
+	Agent          buildinfo.Info `json:"agent"`
 }
 
 // HostKey is a trusted SSH host key.
@@ -691,7 +693,9 @@ func (s *Store) ListHosts() ([]Host, error) {
 	rows, err := s.db.Query(`SELECT h.id,h.name,h.address,h.port,h.username,h.auth_type,h.key_path,
 		h.os_family,h.os_version,h.status,h.tags,h.group_name,h.cmdb_ci_id,h.created_at,h.updated_at,
 		f.collected_at,f.uptime_seconds,f.boot_time,f.kernel,f.os_pretty_name,f.package_manager,
-		f.reboot_required,f.disk_free_bytes,f.time_sync_ok,f.pending_updates
+		f.reboot_required,f.disk_free_bytes,f.time_sync_ok,f.pending_updates,
+		f.agent_version,f.agent_build_number,f.agent_build_commit,f.agent_build_date,
+		f.agent_build_target,f.agent_build_type
 		FROM hosts h LEFT JOIN host_facts f ON f.host_id=h.id ORDER BY h.name`)
 	if err != nil {
 		return nil, err
@@ -713,7 +717,9 @@ func (s *Store) FindHostByAddress(address string, port int) (Host, error) {
 	row := s.db.QueryRow(`SELECT h.id,h.name,h.address,h.port,h.username,h.auth_type,h.key_path,
 		h.os_family,h.os_version,h.status,h.tags,h.group_name,h.cmdb_ci_id,h.created_at,h.updated_at,
 		f.collected_at,f.uptime_seconds,f.boot_time,f.kernel,f.os_pretty_name,f.package_manager,
-		f.reboot_required,f.disk_free_bytes,f.time_sync_ok,f.pending_updates
+		f.reboot_required,f.disk_free_bytes,f.time_sync_ok,f.pending_updates,
+		f.agent_version,f.agent_build_number,f.agent_build_commit,f.agent_build_date,
+		f.agent_build_target,f.agent_build_type
 		FROM hosts h LEFT JOIN host_facts f ON f.host_id=h.id WHERE h.address=? AND h.port=?`, address, port)
 	return scanHost(row)
 }
@@ -723,7 +729,9 @@ func (s *Store) GetHost(id string) (Host, error) {
 	row := s.db.QueryRow(`SELECT h.id,h.name,h.address,h.port,h.username,h.auth_type,h.key_path,
 		h.os_family,h.os_version,h.status,h.tags,h.group_name,h.cmdb_ci_id,h.created_at,h.updated_at,
 		f.collected_at,f.uptime_seconds,f.boot_time,f.kernel,f.os_pretty_name,f.package_manager,
-		f.reboot_required,f.disk_free_bytes,f.time_sync_ok,f.pending_updates
+		f.reboot_required,f.disk_free_bytes,f.time_sync_ok,f.pending_updates,
+		f.agent_version,f.agent_build_number,f.agent_build_commit,f.agent_build_date,
+		f.agent_build_target,f.agent_build_type
 		FROM hosts h LEFT JOIN host_facts f ON f.host_id=h.id WHERE h.id=?`, id)
 	return scanHost(row)
 }
@@ -735,11 +743,14 @@ type scanner interface {
 func scanHost(row scanner) (Host, error) {
 	var host Host
 	var collectedAt, bootTime, kernel, pretty, pkg sql.NullString
+	var agentVersion, agentBuildNumber, agentBuildCommit sql.NullString
+	var agentBuildDate, agentBuildTarget, agentBuildType sql.NullString
 	var uptime, disk, pending sql.NullInt64
 	var reboot, timeSync sql.NullBool
 	err := row.Scan(&host.ID, &host.Name, &host.Address, &host.Port, &host.Username, &host.AuthType, &host.KeyPath,
 		&host.OSFamily, &host.OSVersion, &host.Status, &host.Tags, &host.GroupName, &host.CMDBCIID, &host.CreatedAt, &host.UpdatedAt,
-		&collectedAt, &uptime, &bootTime, &kernel, &pretty, &pkg, &reboot, &disk, &timeSync, &pending)
+		&collectedAt, &uptime, &bootTime, &kernel, &pretty, &pkg, &reboot, &disk, &timeSync, &pending,
+		&agentVersion, &agentBuildNumber, &agentBuildCommit, &agentBuildDate, &agentBuildTarget, &agentBuildType)
 	if err != nil {
 		return Host{}, err
 	}
@@ -755,6 +766,14 @@ func scanHost(row scanner) (Host, error) {
 			DiskFreeBytes:  disk.Int64,
 			TimeSyncOK:     timeSync.Bool,
 			PendingUpdates: int(pending.Int64),
+			Agent: buildinfo.Info{
+				Version:     agentVersion.String,
+				BuildNumber: agentBuildNumber.String,
+				BuildCommit: agentBuildCommit.String,
+				BuildDate:   agentBuildDate.String,
+				BuildTarget: agentBuildTarget.String,
+				BuildType:   agentBuildType.String,
+			},
 		}
 	}
 	return host, nil
@@ -825,16 +844,22 @@ func (s *Store) SaveFactsAs(actor, hostID string, facts Facts) error {
 		return err
 	}
 	_, err = tx.Exec(`INSERT INTO host_facts
-		(host_id,collected_at,uptime_seconds,boot_time,kernel,os_pretty_name,package_manager,reboot_required,disk_free_bytes,time_sync_ok,pending_updates)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?)
+		(host_id,collected_at,uptime_seconds,boot_time,kernel,os_pretty_name,package_manager,reboot_required,disk_free_bytes,time_sync_ok,pending_updates,
+			agent_version,agent_build_number,agent_build_commit,agent_build_date,agent_build_target,agent_build_type)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(host_id) DO UPDATE SET
 			collected_at=excluded.collected_at, uptime_seconds=excluded.uptime_seconds,
 			boot_time=excluded.boot_time, kernel=excluded.kernel, os_pretty_name=excluded.os_pretty_name,
 			package_manager=excluded.package_manager, reboot_required=excluded.reboot_required,
 			disk_free_bytes=excluded.disk_free_bytes, time_sync_ok=excluded.time_sync_ok,
-			pending_updates=excluded.pending_updates`,
+			pending_updates=excluded.pending_updates, agent_version=excluded.agent_version,
+			agent_build_number=excluded.agent_build_number, agent_build_commit=excluded.agent_build_commit,
+			agent_build_date=excluded.agent_build_date, agent_build_target=excluded.agent_build_target,
+			agent_build_type=excluded.agent_build_type`,
 		hostID, facts.CollectedAt, facts.UptimeSeconds, facts.BootTime, facts.Kernel, facts.OSPrettyName,
-		facts.PackageManager, facts.RebootRequired, facts.DiskFreeBytes, facts.TimeSyncOK, facts.PendingUpdates)
+		facts.PackageManager, facts.RebootRequired, facts.DiskFreeBytes, facts.TimeSyncOK, facts.PendingUpdates,
+		facts.Agent.Version, facts.Agent.BuildNumber, facts.Agent.BuildCommit, facts.Agent.BuildDate,
+		facts.Agent.BuildTarget, facts.Agent.BuildType)
 	if err != nil {
 		_ = tx.Rollback()
 		return err

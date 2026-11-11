@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/RogerBergling/hibp/internal/auth"
+	"github.com/RogerBergling/hibp/internal/buildinfo"
 	"github.com/RogerBergling/hibp/internal/remote"
 	"github.com/RogerBergling/hibp/internal/store"
 	"github.com/RogerBergling/hibp/internal/webui"
@@ -29,6 +30,7 @@ var dummyPasswordHash = auth.DummyPasswordHash()
 type Config struct {
 	Store         *store.Store
 	Version       string
+	Build         buildinfo.Info
 	KeyDirs       []string
 	SSHConfigPath string
 }
@@ -36,7 +38,7 @@ type Config struct {
 // Server is the HIBP HTTP server.
 type Server struct {
 	store              *store.Store
-	version            string
+	build              buildinfo.Info
 	keyDirs            []string
 	sshConfigPath      string
 	dummyPasswordHash  string
@@ -99,9 +101,16 @@ func New(cfg Config) (*Server, error) {
 		}
 		sshConfigPath = filepath.Join(home, ".ssh", "config")
 	}
+	build := cfg.Build
+	if strings.TrimSpace(build.Version) == "" {
+		build.Version = cfg.Version
+	}
+	if strings.TrimSpace(build.Version) == "" {
+		build.Version = "dev"
+	}
 	s := &Server{
 		store:              cfg.Store,
-		version:            cfg.Version,
+		build:              build,
 		keyDirs:            keyDirs,
 		sshConfigPath:      sshConfigPath,
 		dummyPasswordHash:  dummyPasswordHash,

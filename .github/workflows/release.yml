@@ -16,7 +16,15 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build production image
-        run: docker build --build-arg VERSION="${GITHUB_REF_NAME#v}" -f packaging/Dockerfile -t "hibp:${GITHUB_REF_NAME}" .
+        run: |
+          docker build \
+            --build-arg VERSION="${GITHUB_REF_NAME#v}" \
+            --build-arg BUILD_NUMBER="${GITHUB_RUN_NUMBER}" \
+            --build-arg BUILD_COMMIT="${GITHUB_SHA:0:12}" \
+            --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --build-arg BUILD_TARGET="linux/amd64" \
+            --build-arg BUILD_TYPE="release" \
+            -f packaging/Dockerfile -t "hibp:${GITHUB_REF_NAME}" .
 
       - name: Extract production binary
         run: |
