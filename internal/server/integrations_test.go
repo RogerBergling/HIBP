@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -9,7 +10,42 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/vmware/govmomi/simulator"
 )
+
+func TestVCenterPollWithSimulator(t *testing.T) {
+	model := simulator.VPX()
+	defer model.Remove()
+	if err := model.Create(); err != nil {
+		t.Fatal(err)
+	}
+	model.Service.TLS = new(tls.Config)
+	server := model.Service.NewServer()
+	defer server.Close()
+	port := server.URL.Port()
+	if port == "" {
+		t.Fatal("simulator did not expose a port")
+	}
+	username := ""
+	password := ""
+	if server.URL.User != nil {
+		username = server.URL.User.Username()
+		password, _ = server.URL.User.Password()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	result, err := (&Server{}).pollVCenter(ctx, integrationConfig{
+		URL:      "https://" + server.URL.Hostname() + ":" + port + "/sdk",
+		Username: username, Password: password, Insecure: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Summary, "managed entities") {
+		t.Fatalf("unexpected vCenter summary: %s", result.Summary)
+	}
+}
 
 func TestHAProxyStatsPoll(t *testing.T) {
 	csvBody := `# pxname,svname,qcur,status,check_status,check_code,addr,lastchg
