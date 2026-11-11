@@ -39,6 +39,9 @@ In scope:
 - sudo helper argument validation and privilege boundaries
 - audit-chain integrity and log redaction
 - import/export parsing, CSV injection, path traversal
+- monitoring probes, SMTP delivery, and vCenter/HAProxy/OPNsense integrations
+- CMDB file import and host merge/overwrite behavior
+- release packaging, dependency selection, and build supply chain
 - privilege escalation from the controller or a managed target
 
 Out of scope:
@@ -49,15 +52,16 @@ Out of scope:
 - social engineering, physical access, or stolen unlocked laptops
 - denial of service caused by intentionally patching a host into a bad state
 
-## Known M1 security debt
+## Known limitations before production
 
 - The **development** build uses `mutecomm/go-sqlcipher` v4.4.2. Do not deploy
   it. Production artifacts must be built with `make production`, which uses
   current SQLCipher 4.20 and the patched `third_party/go-sqlite3` driver.
 - Password SSH and sudo password fallbacks are manual-run only and never
-  stored. Vault-backed scheduled password authentication, RBAC, external audit
-  anchoring, TPM-sealed keys, agent mode, and signed playbooks are not
-  implemented yet.
+  stored. `ssh-agent`, hardware-backed keys, SSH certificates, and
+  passphrase-protected key files are not implemented. The UI/import paths accept
+  `agent` and `certificate`, but the transport will fail; scheduled collection
+  only processes `auth_type=key`.
 - The browser session cookie is an administrator credential. It is HttpOnly,
   SameSite=Strict, and only a SHA-256 hash is stored in SQLCipher. Protect the
   browser profile, SSH tunnel, and controller.
@@ -66,6 +70,45 @@ Out of scope:
   relying party IDs cannot be IP addresses.
 - Account recovery is local-only: `hibp user reset` requires the database
   passphrase and access to the controller. There is no email or remote reset.
+  There is also no post-enrollment UI for adding/rotating passkeys or replacing
+  TOTP; the reset command clears all MFA.
+- Some host mutation paths (create/update/delete, trust-key, facts) record the
+  audit actor as `local`, not the authenticated username. The audit chain is
+  hash-chained but not keyed or externally anchored; a database writer can
+  rewrite it consistently.
+- The API and import paths accept an absolute `key_path` outside the configured
+  key-browser roots. Filesystem permissions on the service account are the real
+  boundary; give it only the intended key directory.
+- Schema upgrades do not create an automatic pre-migration backup and do not
+  hard-refuse every future schema version. Take a manual backup before each
+  upgrade and keep the matching binary. There is no passphrase-rekey or
+  envelope/DEK-wrapping workflow.
+- Backup verification opens the copy and checks that migrations exist; it does
+  not verify the full audit chain. There is no backup-without-secrets mode and
+  no built-in backup retention.
+- A fresh database is claimed through the loopback UI. Until the first account
+  and MFA exist, any local user who can reach the port could claim it.
+- The packaged systemd unit needs path and unlock customization:
+  `ProtectHome=true` blocks `~/.ssh`, a passphrase file is required for a
+  headless start, and backups outside `ReadWritePaths` are denied.
+- No RBAC, scheduler, job queue, run history, package diff, approved playbooks,
+  or host disabled/maintenance state. Patch and reboot operations are manual.
+- Fleet monitors can emit one email per host; there is no aggregation or global
+  rate limit. Audit, alert, and integration-event retention is not implemented.
+  Integration poll failures are visible on the source card but not emailed.
+- There is no TLS termination or supported reverse-proxy mode; the UI must stay
+  on loopback. There is no Unix-socket listener, request access log, Prometheus
+  endpoint, or built-in controller self-monitoring.
+- Release archives are checksummed but not signed. There is no SBOM or
+  provenance attestation. The installer reads `SHA256SUMS` from the same GitHub
+  release, which is not independent publisher authentication. The Docker base
+  image tag and SQLCipher source download are not digest/checksum-pinned. CI
+  runs `govulncheck` but not `gosec`, Trivy/Grype, or a full dependency review.
+- CMDB import is not a single transaction; a mid-commit failure can leave
+  earlier rows applied. Regular CSV import matches duplicates by address/port,
+  not CMDB ID. Imported `agent` hosts are not schedulable until changed.
+- Real target, cross-distro, helper-rollout, reboot, and package-update testing
+  is still required on disposable VMs before broad production use.
 
 ## Docker, monitoring, email, and integration controls
 
@@ -120,7 +163,8 @@ implemented.
   integration can use SMTP default recipients or its own recipient list.
 - Integration polling originates from the controller and can reach internal
   addresses by design. Only administrators can define endpoints; deploy the
-  controller on an appropriately restricted network.
+  controller on an appropriately restricted network. The URL validators allow
+  HTTP for HAProxy/OPNsense, so use HTTPS for credentialed endpoints.
 - CMDB import is read-only and file-based. HIBP never opens the CMDB database and
   never writes back. Imports are bounded (10 MiB, 5,000 records), validated, and
   previewed before commit. Imported data cannot contain HIBP secrets, and host
@@ -133,6 +177,12 @@ implemented.
 ## Operational guidance
 
 - Use a unique database passphrase and full-disk encryption.
+- Complete first-run account and MFA setup immediately; until then any local
+  user who can reach the loopback UI could claim the administrator account.
+- If using the packaged systemd unit, create `/etc/hibp/ssh`,
+  `/etc/hibp/ssh/config`, and `/etc/hibp/db.passphrase` with the documented
+  ownership/modes, or adjust the unit. Keep backups under `/var/lib/hibp` or add
+  the backup directory to `ReadWritePaths`.
 - Keep the database, backups, and SSH keys at mode `0600`.
 - Verify host-key fingerprints through an independent channel.
 - Do not use `NOPASSWD: ALL`; use the narrow helper rule.
@@ -147,4 +197,5 @@ implemented.
   only against hosts you intend to manage.
 - Keep at least one encrypted backup off the controller and test restores.
 - Treat the session cookie, the SSH tunnel, and the controller as credentials.
-- Review playbooks before approval. Arbitrary shell is intentionally disabled.
+- Review any future approved playbooks before activation. Arbitrary shell is
+  intentionally disabled in this release.

@@ -1,6 +1,6 @@
 # HIBP - Have I Been Patched
 
-> **Status: M1 feature set with a production build path.** The repository
+> **Status: v0.4.0 feature set with a production build path.** The repository
 > contains a working Go server, browser UI, SQLCipher storage, host CRUD/import,
 > password + TOTP/passkey authentication, SSH host-key approval, remote helper
 > installation, fact collection, read-only system information, Docker
@@ -9,19 +9,25 @@
 > chain, backup/restore, helper actions, tests, and CI. `make production` builds
 > against current SQLCipher 4.20 in a pinned Alpine/musl image; the development
 > build still uses the 2020 spike driver and prints a warning. SSH password and
-> sudo fallbacks are manual-run only. Scheduler, playbooks, and agent mode are
-> not implemented yet.
+> sudo fallbacks are manual-run only.
+>
+> **Not yet production-complete:** the scheduler, scheduled patch jobs, run
+> history/package diffs, approved playbooks, agent mode, RBAC, and MFA device
+> management UI are not implemented. Read
+> [Production deployment checklist](#production-deployment-checklist) and
+> [Known limitations before production](#known-limitations-before-production)
+> before exposing this to real hosts.
 >
 > **Name:** HIBP stands for **Have I Been Patched**. It is not affiliated with
 > Have I Been Pwned (haveibeenpwned.com).
 
-HIBP is a Linux-first patch management controller. It runs as an always-on
-server that owns the encrypted database, scheduler, credentials, and job queue;
-the operator uses a laptop client or a browser through an SSH tunnel. It
-inventories hosts, checks for pending updates using each distribution's native
-package manager, applies updates on demand or on a schedule, and records exactly
-what changed. The database is a single encrypted file that the operator chooses
-and can back up. A CLI and a background service use the same core.
+HIBP is a Linux-first patch management controller. The intended deployment is an
+always-on server that owns the encrypted database and performs collection,
+monitoring, and explicit patch operations. The operator uses a laptop browser
+through an SSH tunnel. The current release inventories hosts, checks for pending
+updates using each distribution's native package manager, applies updates on
+demand, and records audit events. Scheduled patch jobs and a job queue are
+planned, not implemented.
 
 ## Screenshots
 
@@ -46,6 +52,7 @@ them. Alert history is recorded even when email delivery is disabled or fails.
 - [Install a release](#install-a-release-recommended)
 - [Install prerequisites](#install-prerequisites)
 - [Quick start (source build)](#quick-start-source-build)
+- [Production deployment checklist](#production-deployment-checklist)
 - [Authentication and MFA](#authentication-and-mfa)
 - [Docker, system information, and monitoring](#docker-system-information-and-monitoring)
 - [Target sudo setup](#target-sudo-setup)
@@ -68,6 +75,7 @@ them. Alert history is recorded even when email delivery is disabled or fails.
 - [Confirmed decisions](#confirmed-decisions)
 - [Ideas worth adding](#ideas-worth-adding)
 - [Deferred decisions](#deferred-decisions)
+- [Known limitations before production](#known-limitations-before-production)
 - [Validation](#validation)
 - [License](#license)
 
@@ -120,18 +128,22 @@ End users should not need Go or a compiler.
    release automation currently publishes **linux-amd64**; build from source or
    use Docker for other architectures.
 
-3. Docker option (once a release image is published):
+3. Docker option (the image is published as `ghcr.io/rogerbergling/hibp`):
 
    ```bash
    docker pull ghcr.io/rogerbergling/hibp:latest
    mkdir -p /var/lib/hibp
    chown 65532:65532 /var/lib/hibp
-   docker run --rm -it --network host      -v /var/lib/hibp:/var/lib/hibp      ghcr.io/rogerbergling/hibp:latest      server --db /var/lib/hibp/hibp.db --create --listen 127.0.0.1:8443
+   docker run --rm -it --network host \
+     -v /var/lib/hibp:/var/lib/hibp \
+     ghcr.io/rogerbergling/hibp:latest \
+     server --db /var/lib/hibp/hibp.db --create --listen 127.0.0.1:8443
    ```
 
-> **No release yet?** The installer only works after a GitHub release exists. If
-> it reports `no published GitHub release found`, use `make bootstrap` to build
-> from source, or create a `v*` tag to run the release workflow.
+   The container runs as UID/GID `65532`. If you need SSH keys, mount a
+   controller-owned key directory read-only and pass `--key-dir` and
+   `--ssh-config`; the scratch image has no home-directory key defaults. Do not
+   place the database on a network filesystem.
 
 You do **not** need the prerequisites below unless you are building from source.
 
@@ -140,8 +152,10 @@ You do **not** need the prerequisites below unless you are building from source.
 These prerequisites are only needed when you build HIBP from source.
 
 HIBP's development build needs **Go 1.27 or newer** and a **C compiler** because
-the SQLCipher driver uses CGO. The production build uses **Docker** and builds
-Go, SQLCipher, and OpenSSL inside the image.
+the SQLCipher driver uses CGO. Use the latest Go 1.27 patch release; CI runs
+`govulncheck` as a release gate. A local older patch may report standard-library
+issues that are already fixed upstream. The production build uses **Docker** and
+builds Go, SQLCipher, and OpenSSL inside the image.
 
 If you want the repository to install Go locally for you, run:
 
@@ -391,6 +405,171 @@ static ELF, or `make production` for the current-SQLCipher Docker build. The
 target helper installation and sudoers example are in
 [`packaging/README.md`](packaging/README.md).
 
+## Production deployment checklist
+
+This is the minimum operational and security review before using HIBP against
+real hosts. It reflects the current v0.4.0 implementation; treat it as a
+gate, not as a suggestion.
+
+### 1. Confirm the deployment model
+
+- Use a dedicated Linux controller (Ubuntu 24.04/26.04 is the documented
+  baseline) with a dedicated, unprivileged service account.
+- Keep the browser UI on loopback and reach it through an SSH tunnel. The
+  current code does not terminate TLS and has no supported reverse-proxy mode.
+  Do not publish port 8443 or the Unix-equivalent API to a network.
+- HIBP is single-operator in this release. There is no RBAC, approval workflow,
+  or separation between an operator and an auditor.
+- The current release does not implement a scheduler, job queue, run history,
+  package diff, host disable/maintenance state, or approved playbooks. Patch
+  and reboot actions are manual. If those are hard requirements, do not go
+  live with this release.
+
+### 2. Create the service account and protected paths
+
+```bash
+sudo useradd --system --home /var/lib/hibp --shell /usr/sbin/nologin hibp
+sudo install -d -o hibp -g hibp -m 0700 /var/lib/hibp
+sudo install -d -o root -g hibp -m 0750 /etc/hibp
+sudo install -d -o hibp -g hibp -m 0700 /etc/hibp/ssh
+```
+
+- Put SSH keys in a directory owned by the HIBP service account, with key files
+  at mode `0600`. The packaged systemd unit sets `ProtectHome=true`, so keys
+  under `/home/hibp/.ssh` are not readable. Use `--key-dir /etc/hibp/ssh` and
+  `--ssh-config /etc/hibp/ssh/config`, or adjust the unit deliberately.
+- Keep the database, sidecar, backups, and passphrase file off network
+  filesystems. File locking and SQLCipher consistency assume local storage.
+- If the service unit uses `ProtectSystem=strict`, only paths listed in
+  `ReadWritePaths` are writable. Put backups under `/var/lib/hibp` or add an
+  explicit writable backup directory to the unit. The web UI accepts arbitrary
+  absolute paths, but the unit may still deny them.
+
+### 3. Choose the database unlock policy
+
+Manual terminal unlock is appropriate for an interactive desktop, not a
+headless service. For a headless service:
+
+- Store the passphrase in a `0400` or `0600` file readable only by the HIBP
+  service account, with full-disk encryption, and pass `--passphrase-file`.
+- Accept that the service account can read the passphrase while the host is
+  running. This is the availability/security trade-off; there is no TPM-sealed
+  unlock in this release.
+- Do not put the passphrase in the unit file, an environment variable, shell
+  history, or an unencrypted backup.
+- Use a long random passphrase (20+ random characters is a reasonable minimum);
+  the enforced 12-character minimum is a floor, not a recommendation.
+- There is no passphrase-rotation command and no envelope/DEK wrapping in this
+  release. Plan to restore from a backup made with the new key, or rebuild and
+  re-enroll, if the passphrase changes.
+
+### 4. Complete first-run setup immediately
+
+Start the controller once with `--create`, open it through the SSH tunnel, and
+create the administrator plus MFA. Until the first account is created, any
+local user who can reach the loopback port could claim the administrator
+account. Do not leave a freshly created database unattended.
+
+The UI supports TOTP and passkeys at enrollment. It does not yet provide a
+post-enrollment device-management screen. Register a backup authenticator
+during setup and test recovery with `hibp user reset` before relying on it.
+That command clears TOTP, all passkeys, and all sessions.
+
+### 5. Validate SSH and helper rollout on a canary
+
+- Scheduled collection runs only for hosts with `auth_type=key` and a trusted
+  host key. Manual password SSH is supported, but no password is stored.
+- `agent` and `certificate` are accepted by the schema/UI/import paths but the
+  SSH transport currently implements only an unencrypted key file or a manual
+  password. Do not select those modes until the transport is extended.
+- Verify the host fingerprint through an independent channel before clicking
+  **Trust**. Do not trust a first-use prompt blindly.
+- Install the helper on one canary host first, verify the generated
+  `/etc/sudoers.d/hibp-helper` with `visudo -c`, then run a dry-run patch check.
+- The helper is a root-owned binary. Do not loosen the rule to
+  `NOPASSWD: ALL`; keep the fixed action list.
+- Confirm targets have working package repositories, time synchronization,
+  free disk space, and a tested reboot policy.
+
+### 6. Test email and alert volume
+
+- Use STARTTLS or implicit TLS for authenticated SMTP. Test the exact sender
+  domain and recipient list with **Save and send test** before relying on alerts.
+- Configure SPF, DKIM, and DMARC for the sender domain; a valid SMTP login does
+  not guarantee inbox delivery.
+- Start with one host or one group. A fleet-scoped monitor can send one message
+  per host and per state change; HIBP does not aggregate fleet alerts.
+- Alert events are recorded even when SMTP is disabled or delivery fails. Check
+  the alert tables as well as the mailbox.
+- There is no alert-event retention policy yet. Plan database growth and
+  external log review.
+
+### 7. Configure integrations with least privilege
+
+- vCenter: use a dedicated read-only account that can read all managed entities
+  and alarms. The poller retrieves triggered alarm state and never changes
+  vCenter. Keep TLS verification enabled unless you deliberately accept a
+  self-signed lab.
+- HAProxy: expose only the stats CSV endpoint; do not give HIBP the admin socket
+  or runtime-control credentials. Prefer a dedicated stats user.
+- OPNsense: use a dedicated API key/secret with read-only gateway/status access.
+- Use HTTPS for any credentialed HAProxy or OPNsense endpoint. The current URL
+  validation permits `http://` for those integrations, which would expose Basic
+  auth/API credentials on the network; if you must use HTTP, isolate the
+  management network. vCenter is HTTPS-only.
+- Integration polling originates from the controller and can reach internal
+  networks. Restrict controller egress to the intended endpoints.
+- Integration poll failures are shown on the source card but are not separately
+  emailed. Monitor the controller's own logs/health.
+- External finding notifications are sent on new findings and severity changes;
+  there is no repeat-reminder policy for integrations in this release.
+
+### 8. Back up before use and before every upgrade
+
+- Create a backup immediately after setup and before every application or
+  schema upgrade. The current migration path does not create an automatic
+  pre-migration backup.
+- Back up the database and its `.meta` sidecar together. A backup without the
+  sidecar cannot be opened.
+- The backup verifier checks that the copy opens and contains migrations; it
+  does not currently verify the full audit chain or offer a
+  backup-without-secrets mode.
+- Test a restore to a new path while the service is stopped, then open the
+  restored file with the original passphrase and verify hosts and audit.
+- Keep at least one encrypted backup off the controller and define retention.
+- Do not rely on an older binary to open a database written by a newer release.
+  The current code does not yet hard-refuse every future schema version, so
+  keep the matching release binary with the backup.
+
+### 9. Decide what monitoring the controller itself needs
+
+HIBP exposes only `/healthz`, and there is no built-in Prometheus endpoint,
+access log, or alert on its own disk/database/backup failures. At minimum:
+
+- monitor the systemd unit, process restarts, journal errors, disk space, and
+  database/backup growth;
+- alert on the controller host being unreachable;
+- keep time synchronized;
+- review the audit log and `hibp user reset` recovery path periodically;
+- test that the service starts after a reboot with the chosen unlock policy.
+
+### 10. Security sign-off
+
+Before declaring go-live:
+
+- Confirm the UI is reachable only through the SSH tunnel.
+- Confirm the service runs as a non-root user and the database directory is
+  `0700`.
+- Confirm host keys were verified out of band and the helper sudoers rule was
+  reviewed.
+- Confirm SMTP and integration secrets are absent from unit files, shell
+  history, logs, screenshots, and backups that are not access-controlled.
+- Confirm release checksums were verified. Release artifacts are checksummed but
+  not signed, and the Docker build is not currently reproducible or SBOM-backed;
+  see [Supply chain](#supply-chain) and
+  [Known limitations before production](#known-limitations-before-production).
+- Complete a restore test and a helper canary before managing the full fleet.
+
 ## Authentication and MFA
 
 HIBP is single-user in v1. There is no default token and no remote account
@@ -408,6 +587,10 @@ account, then to enroll at least one second factor.
 A password alone never unlocks the fleet. A pending password session is
 short-lived and cannot access `/api/v1/hosts` or any other application endpoint.
 
+Until the first account and MFA are created, any local user who can reach the
+loopback port could claim the administrator account. Complete setup immediately
+after creating the database; do not leave a fresh database running unattended.
+
 ### Password handling
 
 - Passwords are hashed with Argon2id (64 MiB, 3 iterations, 2 threads) with a
@@ -419,6 +602,8 @@ short-lived and cannot access `/api/v1/hosts` or any other application endpoint.
   attempts per username in 15 minutes return `429 Too Many Requests`.
 - Missing usernames still pay the Argon2 cost, so response timing does not
   reveal whether the account exists.
+- The enforced minimum is 12 characters; use a long random password or a
+  password-manager-generated value. There is no breach-corpus check.
 
 ### Sessions
 
@@ -472,6 +657,15 @@ clears TOTP, passkeys, and all sessions. It requires local access to the
 controller and the database passphrase. That is intentionally a physical-access
 recovery boundary.
 
+### MFA device management
+
+Enrollment is available during first-run setup. The current UI does not expose a
+post-enrollment screen for adding another passkey, replacing TOTP, or deleting a
+credential. The server API has begin/finish endpoints for passkey registration
+and TOTP replacement by an already MFA-verified session, but there is no
+administrator UI for them yet. In practice, register a backup authenticator
+during setup, or use `hibp user reset` (which clears all MFA) for recovery.
+
 ### Security boundaries
 
 - **Single-user, no RBAC.** The authenticated account is the administrator.
@@ -482,6 +676,11 @@ recovery boundary.
 - **The UI is loopback-only.** Do not expose it directly to a network.
 - **MFA is mandatory after setup.** A stolen password alone cannot reach hosts.
 - **Passkeys need `localhost`; TOTP is the fallback on `127.0.0.1`.**
+- **SSH transport is limited.** The current transport supports an unencrypted
+  private-key file or a manual password. `ssh-agent`, hardware-backed keys, and
+  SSH certificate authentication are selectable/importable in some paths but
+  are not implemented by the transport. Passphrase-protected key files are not
+  supported. Scheduled collection requires `auth_type=key`.
 
 ## Docker, system information, and monitoring
 
@@ -527,12 +726,12 @@ recovery boundary.
 
 Scheduled collection requires a trusted host key and the restricted
 `NOPASSWD` helper. Password-auth hosts and sudo-password hosts can still be
-collected manually from the host detail view; the scheduler never prompts.
+collected manually from the host detail view; the collector never prompts.
 
-Ten-second polling is allowed as a per-host or fleet setting, but it is not the
-default. With 2–500 hosts it creates a self-inflicted SSH/CPU load. The
-recommended defaults are 60 seconds for availability checks, 5 minutes for
-metrics, and 12 hours for full facts.
+Ten-second polling is allowed for metrics as a per-host or fleet setting, but it
+is not the default. With 2–500 hosts it creates a self-inflicted SSH/CPU load.
+Recommended defaults are 5 minutes for metrics, 12 hours for full facts, and at
+least 60 seconds for network monitors.
 
 ### Docker containers
 
@@ -740,11 +939,12 @@ override them in **Host detail → System → Collection settings**:
 - `collector.metrics_interval` — default `5m`; minimum `10s`.
 - `collector.facts_interval` — default `12h`.
 - `metrics.retention_days` — default `30`, validated 1–3650.
-- `docker.scan_roots` — default `/opt`, used by Docker inventory and project
-  update checks.
+- `docker.scan_roots` — stored in the UI as a future setting; the current Docker
+  helper discovers projects through `docker compose ls`, so this value does not
+  affect inventory or updates yet.
 
 Host overrides take precedence over fleet defaults; **Use fleet defaults**
-removes the host overrides. The scheduler reloads settings every minute.
+removes the host overrides. The collector reloads settings every minute.
 
 ## Target sudo setup
 
@@ -1051,6 +1251,11 @@ as core features rather than afterthoughts.
 
 ## Product requirements
 
+> These are product requirements and design targets, not a claim that every item
+> is implemented. See [Implemented in v0.4.0](#implemented-in-v040) and
+> [Known limitations before production](#known-limitations-before-production)
+> for the current status.
+
 ### Server and laptop client
 
 - `hibp server` runs on an always-on Linux host. It owns the encrypted database,
@@ -1241,6 +1446,10 @@ Additional distribution rules:
 
 ## Recommended architecture
 
+> The current release is a loopback-only server with helper actions. Scheduler,
+> job queue, client mode, Unix-socket listener, and TLS/reverse-proxy support are
+> design targets, not implemented features.
+
 ### Deployment model
 
 The primary deployment is server-authoritative:
@@ -1274,8 +1483,10 @@ distribution, and audit ordering would add significant complexity and risk.
 
 **Recommendation:** make the server the primary target. It solves the
 laptop-sleep problem and keeps the database key, SSH credentials, and audit trail
-on one hardened host. Schedules pause after a server reboot until manual unlock.
-Add a native desktop client later only if the browser UI is insufficient.
+on one hardened host. This release has no scheduler; background collection and
+monitoring stop when the server process stops and resume when it is unlocked and
+started again. Add a native desktop client later only if the browser UI is
+insufficient.
 
 ### Why not only agentless?
 
@@ -1378,7 +1589,7 @@ hibp agent (systemd timer) ── outbound mTLS ──► hibp server
 
 HIBP is a privileged remote administration tool. See [`SECURITY.md`](SECURITY.md)
 for vulnerability reporting and scope. The security model below is the design
-baseline; the M1 implementation status is called out explicitly.
+baseline; the current implementation status is called out explicitly.
 
 ### Assets
 
@@ -1405,7 +1616,9 @@ baseline; the M1 implementation status is called out explicitly.
 - Unauthorized patch runs by someone without the database passphrase and OS
   access to the server.
 - Silent modification of the audit log by accident, detected by the hash chain.
-- Credential leakage into logs, provided redaction is implemented and tested.
+- Credential leakage into logs is avoided by design, but there is no exhaustive
+  secret-redaction test suite yet; review new log statements and integration
+  error output during upgrades.
 
 **Not protected against:**
 
@@ -1456,10 +1669,13 @@ baseline; the M1 implementation status is called out explicitly.
   through stdin, a file descriptor, or an OS keyring, never through a command
   line that other local users can read from `/proc`.
 
-For credentials, use **envelope encryption** even though the whole database is
-already encrypted:
+The current release derives the SQLCipher key directly from the database
+passphrase with Argon2id and keeps SMTP/integration secrets inside the encrypted
+database. It does **not** implement a separate credential vault, envelope/DEK
+wrapping, or passphrase rotation. The following is a future design goal, not a
+claim about v0.4.0:
 
-- Generate a random data encryption key (DEK) for the credential vault.
+- Generate a random data encryption key (DEK) for a credential vault.
 - Derive a key-encryption key (KEK) from the database passphrase with Argon2id,
   or obtain it from the OS keyring/TPM.
 - Wrap the DEK with the KEK and store only the wrapped DEK in the database.
@@ -1468,19 +1684,22 @@ already encrypted:
 - Rotating the passphrase rewraps the DEK; it does not require re-encrypting
   every secret.
 
-This is defense in depth and makes future key rotation and multi-user support
-practical. If v1 keeps credentials only in the OS keyring, the envelope design
-can be added later without changing the host schema.
+Until that exists, changing the database passphrase requires restoring or
+rebuilding the database with the new key.
 
 ### Credential handling
 
-Preferred order, from safest to riskiest:
+The current SSH transport supports:
 
-1. `ssh-agent` or a hardware-backed key. The private key never enters HIBP.
-2. SSH certificate authentication with short-lived certificates.
-3. A passphrase-protected private key file referenced by path.
-4. An unencrypted private key file with strict `0600` permissions and a clear
-   warning.
+1. An unencrypted private-key file referenced by path, mode `0600`.
+2. Manual password/keyboard-interactive authentication for a single run.
+
+The following are design goals and are **not implemented**:
+
+- `ssh-agent` or hardware-backed keys.
+- SSH certificate authentication.
+- Passphrase-protected private-key files.
+- A stored credential vault or scheduled password authentication.
 
 Password and keyboard-interactive SSH authentication are an **explicit opt-in
 fallback**, disabled by default. They are not part of the security baseline.
@@ -1515,8 +1734,9 @@ Rules:
 ### Single-user access
 
 - v1 has one operator and no RBAC. "Single user" does not mean unauthenticated.
-- The server binds to a Unix socket or `127.0.0.1`. The laptop connects through
-  an SSH tunnel, so the server's remote surface is SSH, not an exposed web port.
+- The implemented server binds only to loopback (`127.0.0.1`/`localhost`); a
+  Unix-socket listener is planned. The laptop connects through an SSH tunnel, so
+  the server's remote surface is SSH, not an exposed web port.
 - The UI requires a local password plus TOTP and/or a passkey. The database
   passphrase is a separate startup secret and is not reused for the web login.
 - The browser receives an HttpOnly, SameSite=Strict session cookie. Only a
@@ -1555,8 +1775,8 @@ That authority must be narrow and auditable.
 - Prefer a root-owned helper installed on the target, invoked through a
   restricted sudoers rule. The helper accepts a small allowlist of actions
   (`facts`, `check`, `apply`, `reboot`, `reboot-check`, `system-info`,
-  `metrics`, `docker-list`, `docker-check <project>`, `docker-apply <project>`,
-  `custom:<approved-id>`) and validates its arguments.
+  `metrics`, `docker-list`, `docker-check <project>`, `docker-apply <project>`)
+  and validates its arguments.
 - Example sudoers shape (illustrative, not a complete hardening guide):
 
   ```sudoers
@@ -1636,7 +1856,8 @@ Agent mode is optional and later; v1 uses SSH from the always-on server.
   `rsa-sha2-512`), connection timeouts, keepalives, and rate limits. Password
   fallback, when explicitly enabled, uses SSH password/keyboard-interactive
   authentication over the encrypted channel and never plaintext.
-- The local API binds to a Unix socket by default. If a TCP listener is enabled,
+- The local API binds only to loopback in this release; a Unix-socket mode is
+  planned. If a TCP listener is exposed beyond loopback in a later release,
   require TLS, authentication, CSRF protection where relevant, and an explicit
   opt-in. Do not expose the GUI or API to the network by default.
 
@@ -1659,25 +1880,35 @@ Agent mode is optional and later; v1 uses SSH from the always-on server.
 
 ### Backup security
 
-- Backups remain encrypted and require the same passphrase, or a separately
-  managed backup key.
+- Backups remain encrypted and require the same database key. A separately
+  managed backup key is not implemented.
 - Always back up the database and the `.meta` sidecar together.
 - Use SQLite's online backup API for a consistent copy while the database is
   open. Do not copy a live WAL database by hand.
-- Verify the backup by opening it and checking the schema version and audit
-  chain.
+- The current verifier opens the backup and checks that migrations exist; it does
+  not verify the schema version or the full audit chain. Perform those checks
+  manually after a restore.
 - Keep at least one backup off the server and test restore procedures.
-- Backups contain credentials and host keys. Treat them as crown jewels. Offer a
-  "backup without secrets" mode for operators who prefer to re-enter credentials
-  after a restore.
+- Backups contain the encrypted database, including SMTP/integration secrets and
+  host metadata. Treat them as crown jewels. A "backup without secrets" mode is
+  planned, not implemented.
 - Apply retention and access controls. Encrypt the backup destination as well
-  where possible.
+  where possible; there is no automatic backup-retention policy in the app.
 
 ### Supply chain
 
-- Pin dependencies and commit lockfiles. Generate an SBOM for releases.
-- Publish SHA-256 checksums and, where possible, sign release artifacts.
-- Run `govulncheck`, `gosec`, and dependency review in CI.
+Current status:
+
+- `go.sum` is committed and release archives are checksummed. The installer
+  reads `SHA256SUMS` from the same GitHub release, so this is integrity checking,
+  not independent publisher authentication. Artifacts are not signed yet, and
+  there is no SBOM or provenance attestation.
+- CI runs tests, race tests, vet, `govulncheck`, the README validator, a static
+  build, and a production Docker build. It does not yet run `gosec`,
+  Trivy/Grype, or a full dependency review.
+- The Docker base image tag and SQLCipher source download are not
+  digest/checksum-pinned in the Dockerfile. Pin them before regulated
+  distribution.
 - Do not disable distribution repository signature checks. Do not add
   `--nogpgcheck`, `--allow-unauthenticated`, or `--force` as defaults.
 - Warn on expired repository keys, unreachable mirrors, and EOL distributions.
@@ -1685,19 +1916,29 @@ Agent mode is optional and later; v1 uses SSH from the always-on server.
   remote-code-execution feature.
 - Consider reproducible builds for the server and agent binaries.
 
-### Implemented in M1
+### Implemented in v0.4.0
 
 - SQLCipher database with Argon2id-derived keys and a validated `.meta` sidecar.
 - `0600` database, sidecar, key, and backup files; wrong-passphrase test.
-- Argon2id password login, TOTP, passkeys, HttpOnly sessions, recovery CLI, Host/Origin checks, CSP, and security headers.
+- Argon2id password login, TOTP, WebAuthn passkeys, HttpOnly sessions, local
+  account recovery, Host/Origin checks, CSP, and security headers.
 - SSH host-key TOFU with explicit fingerprint approval and changed-key failure.
-- Manual SSH and sudo password fallbacks with per-run prompts; no password storage.
-- SSH key browser limited to configured directories; it never returns key contents.
-- Fixed helper actions (`facts`, `check`, `apply`, `reboot`, `reboot-check`, `system-info`, `metrics`, `docker-list`, `docker-check`, `docker-apply`) with absolute
-  binary paths, a sanitized environment, no shell, and output limits.
+- Manual SSH and sudo password fallbacks with per-run prompts; no password
+  storage.
+- SSH key browser limited to configured directories; it never returns key
+  contents.
+- Fixed helper actions (`facts`, `check`, `apply`, `reboot`, `reboot-check`,
+  `system-info`, `metrics`, `docker-list`, `docker-check`, `docker-apply`) with
+  absolute binary paths, a sanitized environment, no shell, and output limits.
 - Explicit-confirmation reboot action through the fixed helper.
 - Per-host and fleet-wide helper installation/update with per-host results.
-- Read-only system information, Docker inventory, metric history, host detail view, and configurable fleet/per-host collection settings.
+- Read-only system information, Docker inventory, metric history, host detail
+  view, systemd unit visibility, and configurable collection settings.
+- Monitoring checks, alert history, SMTP email delivery, repeat/cooldown/
+  recovery behaviour, and manual immediate checks.
+- Read-only vCenter active-alarm, HAProxy stats, and OPNsense gateway
+  integrations with event history and email.
+- Read-only CMDB CSV/JSON import with preview and merge/overwrite modes.
 - Local SSH config reader for prefilling hosts, with simple `Include` support,
   wildcard/`Match` filtering, and no private-key reads.
 - Remote helper installation from the UI with `visudo` validation, a restricted
@@ -1705,24 +1946,80 @@ Agent mode is optional and later; v1 uses SSH from the always-on server.
 - Hash-chained audit log with verification.
 - CSV import limits, preview/commit, duplicate policy, and CSV-injection
   neutralization on export.
-- Online encrypted backup with sidecar copy and verification.
+- Online encrypted backup with sidecar copy and open/migration verification.
 - Production build path: patched `mattn/go-sqlite3` + current SQLCipher 4.20,
   statically linked in a pinned Alpine/musl image.
-- Unit, integration, race, README, and Python validator tests.
+- Unit, integration, race, README, Python, and headless UI tests.
 
-### Known security gaps in M1
+### Known limitations before production
 
 - The **development** build uses the 2020 `mutecomm` spike driver. Do not deploy
   it; use the `make production` artifact.
-- Password SSH fallback is manual-run only; it is never stored in the database.
-  Scheduled password authentication requires an external vault and is deferred.
-- No RBAC, external audit anchor, TPM-sealed key, agent mode, or signed
-  playbooks yet.
-- The browser session cookie is an admin credential; protect the SSH tunnel, browser profile, and controller.
-- Passkeys require a `localhost` origin; `127.0.0.1` is TOTP-only.
-- Recovery is local-only via `hibp user reset`; there is no self-service reset.
-- Systemd hardening has not been validated against every distribution.
-- Real target testing is limited to local unit/integration tests so far.
+- SSH support is limited to an unencrypted key file or a manual password.
+  `ssh-agent`, hardware-backed keys, SSH certificates, and passphrase-protected
+  key files are not implemented. The schema/UI/import paths accept `agent` and
+  `certificate`, but the transport will fail. Scheduled collection skips every
+  host whose `auth_type` is not exactly `key`.
+- MFA device management is enrollment-only in the UI. Adding/rotating a passkey
+  or replacing TOTP after setup is not exposed; `hibp user reset` clears all MFA.
+- No scheduler, job queue, per-run history, package diff, approved playbooks,
+  host disabled/maintenance state, or RBAC. Patch and reboot operations are
+  manual. This is a feature gap, not a hardening detail.
+- Some host mutations (create/update/delete, trust-key, facts) are audited with
+  the actor `"local"` rather than the authenticated username. The audit chain is
+  tamper-evident, not tamper-proof, and has no external anchor.
+- Schema migrations do not currently create an automatic pre-migration backup
+  and do not hard-refuse every future schema version. Take and verify a manual
+  backup before every upgrade, and keep the matching binary with it.
+- Backup verification checks that the copy opens and contains migrations; it
+  does not verify the full audit chain, and there is no
+  backup-without-secrets mode.
+- There is no passphrase-rotation/rekey workflow and no envelope/DEK credential
+  wrapping. Changing the key means restoring/rebuilding with the new key.
+- The API and CSV/CMDB import accept an absolute `key_path` outside the
+  configured key-browser roots. The browser UI restricts navigation, but the
+  server does not enforce the roots; filesystem permissions on the service
+  account are the real boundary. Use a dedicated key directory and account.
+- The packaged systemd unit expects `/etc/hibp/ssh`,
+  `/etc/hibp/ssh/config`, and `/etc/hibp/db.passphrase`. Create them with the
+  documented ownership/modes or edit the unit. `ProtectHome=true` blocks
+  `~/.ssh`; a headless start requires the passphrase file; backups outside
+  `ReadWritePaths` are denied. See
+  [Production deployment checklist](#production-deployment-checklist).
+- A fresh database is claimed through the loopback UI. Until the first account
+  and MFA exist, any local user who can reach the port could claim it.
+- Fleet-scoped monitors can generate one alert per host; there is no alert
+  aggregation or global rate limiting. SMTP sends are serialized, so a slow or
+  unavailable relay can delay later alerts. Email delivery failures are recorded
+  in alert/integration history but are not retried automatically. Audit, alert,
+  and integration-event tables have no retention policy.
+- Integration poll failures are shown on the source card but are not separately
+  emailed. External findings do not have a repeat-reminder policy. vCenter reads
+  active triggered alarms only; HAProxy parsing is best-effort across versions;
+  OPNsense currently covers gateway status only. The HAProxy/OPNsense URL
+  validators allow `http://` even with credentials, so use HTTPS and a
+  restricted management network.
+- The host CSV export endpoint is authenticated but is not exposed in the UI
+  and does not write an audit entry. If you use it for evidence handling, add an
+  external audit step.
+- The UI has no TLS termination or supported reverse-proxy mode and must stay on
+  loopback. There is no Unix-socket listener, request access log, Prometheus
+  endpoint, or built-in controller self-monitoring.
+- Release archives are checksummed but not signed. The installer obtains
+  `SHA256SUMS` from the same GitHub release, so it provides integrity checking
+  but not independent publisher authentication. The Docker build uses a mutable
+  base tag, the SQLCipher source archive is not checksum-verified in the
+  Dockerfile, and no SBOM/provenance is published. CI runs `govulncheck` but not
+  `gosec`, Trivy/Grype, or a full dependency review.
+- The Docker `docker.scan_roots` setting is stored in the UI but is not used by
+  the current Docker helper; project discovery comes from `docker compose ls`.
+- CMDB import commits host writes one by one; a mid-commit database error can
+  leave earlier rows applied. Regular CSV import matches duplicates by address
+  and port, not by `cmdb_ci_id`. Imported `agent` hosts are not schedulable until
+  their authentication is changed.
+- Real target testing is limited to local unit/integration tests. The
+  cross-distro matrix, helper rollout, sudoers behaviour, and reboot/package
+  updates still need validation on disposable VMs before a broad rollout.
 
 ## Data model
 
@@ -1744,7 +2041,7 @@ ISO 8601, and durations are stored in seconds.
 | `users` | Local administrator account and MFA state. | `id`, `username`, `password_hash`, `totp_secret`, `totp_pending_secret`, `totp_enabled`, `totp_last_step`, `created_at`, `updated_at` |
 | `user_passkeys` | WebAuthn credential records. | `id`, `user_id`, `credential_id`, `credential_json`, `sign_count`, `name`, `created_at`, `last_used_at` |
 | `sessions` | Hashed browser sessions. | `id`, `user_id`, `token_hash`, `created_at`, `expires_at`, `last_seen_at`, `mfa_verified` |
-| `hosts` | Managed hosts. | `id`, `name`, `address`, `port`, `os_family`, `os_version`, `enabled`, `group_id`, `cmdb_ci_id`, `created_at`, `updated_at`, `deleted_at` |
+| `hosts` | Managed hosts. | `id`, `name`, `address`, `port`, `username`, `auth_type`, `key_path`, `os_family`, `os_version`, `status`, `tags`, `group_name`, `cmdb_ci_id`, `created_at`, `updated_at` |
 | `host_facts` | Latest collected facts. | `host_id`, `collected_at`, `uptime_seconds`, `boot_time`, `kernel`, `os_pretty_name`, `package_manager`, `reboot_required`, `disk_free_bytes`, `time_sync_ok` |
 | `host_system_info` | Latest read-only system snapshot. | `host_id`, `collected_at`, `payload_json` |
 | `host_metrics` | Metric history. | `host_id`, `collected_at`, `cpu_percent`, `memory_percent`, `swap_percent`, `disk_percent`, `load1`, `load5`, `load15`, `uptime_seconds` |
@@ -1764,7 +2061,7 @@ ISO 8601, and durations are stored in seconds.
 | `schedules` | Per-host or per-group schedules. | `id`, `name`, `target_type`, `target_id`, `cron`, `timezone`, `jitter_seconds`, `window_start`, `window_end`, `missed_run_policy`, `policy_id`, `enabled`, `next_run_at` |
 | `jobs` | A requested patch operation. | `id`, `trigger`, `requested_by`, `policy_snapshot`, `created_at`, `started_at`, `finished_at`, `status`, `cancel_requested` |
 | `job_targets` | Per-host state within a job. | `job_id`, `host_id`, `status`, `started_at`, `finished_at`, `exit_code`, `error`, `run_id` |
-| `runs` | Per-host execution history. | `id`, `host_id`, `job_id`, `trigger`, `started_at`, `finished_at`, `status`, `reboot_required_before`, `reboot_required_after`, `kernel_before`, `kernel_after`, `log_digest`, `log_blob` |
+| `runs` | Implemented table reserved for per-host execution history; patch actions do not populate it yet. | `id`, `host_id`, `action`, `started_at`, `finished_at`, `status`, `exit_code`, `output`, `error` |
 | `run_packages` | Package-level diff for a run. | `run_id`, `package`, `old_version`, `new_version`, `action`, `status`, `security`, `repository` |
 | `pending_updates` | Latest known pending updates. | `host_id`, `package`, `current_version`, `candidate_version`, `security`, `repository`, `first_seen`, `last_seen` |
 | `playbooks` | Approved custom actions. | `id`, `name`, `version`, `sha256`, `signature`, `content`, `approved_by`, `approved_at`, `enabled` |
@@ -1847,14 +2144,21 @@ Rules:
 - UTF-8, RFC 4180 quoting, header row required, maximum file size and row count.
 - `name` and `address` are required. Validate IPv4, IPv6, and DNS names.
 - `port` defaults to 22 and must be in the valid range.
-- `auth_type` is one of `key`, `agent`, `certificate`, `password`.
-- `key_path` is a reference, not key material. The file must exist and should be
-  `0600`. Never import a private key through CSV.
+- `auth_type` is one of `key`, `agent`, `certificate`, `password`. The current
+  SSH transport implements only `key` (unencrypted key file) and manual
+  `password`; imported `agent`/`certificate` hosts are not schedulable.
+- `key_path` is a reference, not key material. It must be absolute; the import
+  does not verify that the file exists or is `0600`. Never import a private key
+  through CSV.
 - `tags` is a quoted, comma-separated list.
-- `cmdb_ci_id` is the stable link to a `cmdb-lite` CI.
-- Duplicate policy is explicit: `error`, `skip`, or `update`. Match by
-  `cmdb_ci_id` first, then by name and address.
-- Preview before commit. Show validation errors per row. Commit transactionally.
+- `cmdb_ci_id` is the stable link to a `cmdb-lite` CI, but the regular CSV
+  importer currently matches duplicates by address and port only. Use the
+  dedicated **CMDB import** for CMDB-ID matching.
+- Duplicate policy is explicit: `error`, `skip`, or `update`, matched by address
+  and port.
+- Preview before commit. Show validation errors per row. Individual host writes
+  are audited, but the import is not one database transaction: a mid-commit
+  failure can leave earlier rows applied.
 - Host keys are never trusted automatically during import. The first connection
   still requires fingerprint approval.
 
@@ -1883,6 +2187,10 @@ not accept passwords, private keys, or scripts.
   is supplied.
 - Import name, IP/hostname attributes, OS version, environment, group, and tags
   where present. Preview is mandatory; merge and overwrite modes are explicit.
+- Imported hosts with missing auth metadata default to `agent` in some paths;
+  change them to a supported key-file auth type before expecting scheduled
+  collection. Host writes are not a single transaction, so review the preview
+  and keep a backup before a large import.
 - Do not import secrets from the CMDB. `cmdb-lite` explicitly does not store
   them, and HIBP does not add them to the CMDB.
 - Never open the `cmdb-lite` database directly. It has its own passphrase,
@@ -1909,11 +2217,12 @@ not accept passwords, private keys, or scripts.
 - Write the matching `.meta` sidecar next to the backup.
 - Refuse to overwrite an existing backup unless the operator explicitly chooses
   a new path.
-- Verify the backup by opening it, checking the schema version, and running an
-  audit-chain check.
-- Keep at least one backup off the server.
-- Offer a "backup without secrets" mode that omits credential material and
-  requires re-entry after restore.
+- Verify the backup by opening it and checking that migrations exist. The
+  current verifier does **not** run a full audit-chain check.
+- Keep at least one backup off the server and test restore procedures.
+- There is no "backup without secrets" mode in this release. Every backup
+  contains the encrypted database and therefore the SMTP/integration secrets and
+  host metadata; protect it accordingly.
 - Record backup creation, destination, and result in the audit log, but not the
   passphrase.
 
@@ -1921,18 +2230,21 @@ not accept passwords, private keys, or scripts.
 
 - Restore to a **new** path. Never overwrite a live database in place.
 - Require the passphrase that was active when the backup was created.
-- Verify the restored database and audit chain before switching to it.
+- Open the restored database and verify the host count and audit chain manually;
+  the built-in restore verifier currently checks that migrations exist.
 - Keep the old database until the restored one is validated.
 - Test the restore procedure, not just the backup procedure.
 
 ### Schema migrations
 
-- On open, compare the database schema version with the application's supported
-  version.
-- If the database is older, create an automatic pre-migration backup, then run
-  forward-only migrations in a transaction.
-- If the database is newer, refuse to open it. Do not attempt a downgrade.
-- Store a checksum for every applied migration. A mismatch is a hard failure.
+- On open, the current implementation applies known forward-only migrations and
+  stores a checksum for each applied migration. A checksum mismatch is a hard
+  failure.
+- It does **not** yet create an automatic pre-migration backup and does not
+  robustly refuse every database written by a newer release. Take a manual,
+  verified backup before every upgrade and keep the matching binary with it.
+- Migrations are applied in transactions where SQLite/SQLCipher permits it.
+  Review a failed migration before retrying; do not paste partial SQL manually.
 - Test migrations against fixtures from every supported previous version.
 - Use expand/contract changes for columns that are renamed or removed. Do not
   drop data in the same release that stops using it.
@@ -1974,7 +2286,7 @@ changes:
 
 ### Current state
 
-M1 is implemented in Go:
+The current release is implemented in Go:
 
 - `cmd/hibp` server, helper, and local recovery commands
 - `internal/crypto` Argon2id key derivation and `.meta` sidecar
@@ -2001,8 +2313,8 @@ Define the constraint precisely:
 - **No runtime dependency:** one statically linked ELF; no Python, Node, JVM,
   database server, web server, or OpenSSL shared library.
 - **Browser UI:** the UI is embedded HTML/CSS/JS served by the binary on
-  `127.0.0.1` or a Unix socket. The laptop uses its browser through an SSH
-  tunnel. No GTK/WebKit.
+  `127.0.0.1`. The laptop uses its browser through an SSH tunnel. No GTK/WebKit
+  and no Unix-socket listener in this release.
 - **No separate assets:** the UI is compiled into the binary with `embed`.
 - **Not "no target requirements":** managed hosts still need SSH and their
   native package manager. That is the point of the tool.
@@ -2051,17 +2363,22 @@ Go is the chosen stack:
   `sqlite3_key` call) linked against SQLCipher 4.20.0.
 - `golang.org/x/crypto` — SSH, Argon2id, and BLAKE2b.
 - `golang.org/x/term` — terminal passphrase prompt.
-- `github.com/google/uuid` — host and run IDs.
+- `github.com/google/uuid` — host, user, and run IDs.
+- `github.com/go-webauthn/webauthn` — passkey registration and login.
+- `github.com/shirou/gopsutil/v4` — CPU, memory, disk, load, and host information.
+- `github.com/vmware/govmomi` — read-only vCenter alarm polling.
+- `github.com/skip2/go-qrcode` — TOTP enrollment QR codes.
 - Standard library: `embed`, `net/http`, `database/sql`, `encoding/csv`,
   `crypto/rand`, `log/slog`.
 
 All dependencies are compiled into the binary. The only runtime requirement on
-the server is the Linux kernel and the target hosts' SSH/package managers.
+the server is the Linux kernel; managed hosts need SSH and their native package
+manager.
 
 ### Packaging and "single executable"
 
-- One static ELF named `hibp`, with `server`, `helper`, and `version` commands.
-  A future `client`/`agent` command can reuse the same core.
+- One static ELF named `hibp`, with `server`, `helper`, `user reset`, and
+  `version` commands. A future `client`/`agent` command can reuse the same core.
 - Embedded browser UI; no `web/` directory, Node/Python runtime, or external web
   server.
 - `make static` builds the development ELF; `make production` builds the
@@ -2072,7 +2389,10 @@ the server is the Linux kernel and the target hosts' SSH/package managers.
   `.deb`/`.rpm` are future convenience wrappers around the same binary.
 - No Flatpak in v1. The sandbox complicates SSH agent/key access, and the
   browser UI already avoids GUI toolkit dependencies.
-- Publish SHA-256 checksums and an SBOM. Sign releases if possible.
+- Current releases publish SHA-256 checksums but are not signed. There is no
+  SBOM or build-provenance attestation yet; generate one before regulated
+  distribution and pin the Docker base image/toolchain and SQLCipher source
+  checksum.
 
 ### Cross-distro validation
 
@@ -2133,7 +2453,7 @@ packaging/Dockerfile          production SQLCipher 4.20 + musl static build
 packaging/                systemd unit, sudoers example, install notes
 scripts/                  README validator, release installer, developer bootstrap
 tests/                    Python validator tests
-docs/screenshots/         real M1 screenshot
+docs/screenshots/         current build screenshots
 .github/workflows/        CI
 ```
 
@@ -2288,30 +2608,33 @@ If you decide to merge anyway, do it deliberately:
 These are settled unless you explicitly change them:
 
 - **Deployment:** an always-on Linux server is the primary host. The laptop is a
-  client and can also be enrolled as a managed target. The same binary supports
-  server, client, and optional standalone modes. The server owns the database,
-  scheduler, credentials, and audit log.
+  client and can also be enrolled as a managed target. The current release ships
+  `server` and `helper` modes; separate client/agent modes are planned. The
+  server owns the database, credentials, audit log, collection, and monitoring;
+  the scheduler and job queue are not implemented yet.
 - **Server OS:** Ubuntu LTS (24.04/26.04; 22.04 best-effort) is the supported server baseline. The
   static binary may run on other distributions, but Ubuntu is what we test and
   support first.
 - **UI:** browser-based. The server embeds the HTML/CSS/JS and serves it on
-  `127.0.0.1` or a Unix socket; the laptop uses a browser through an SSH tunnel.
-  No GTK/WebKit dependency.
+  loopback (`127.0.0.1`/`localhost`); the laptop uses a browser through an SSH
+  tunnel. There is no Unix-socket listener, TLS termination, or supported
+  reverse-proxy mode in this release. No GTK/WebKit dependency.
 - **Stack:** Go. The development build uses the 2020 `mutecomm/go-sqlcipher`
   driver and prints a warning. The production SQLCipher driver is a locally
   patched, maintained `mattn/go-sqlite3` linked against current SQLCipher built
   in a pinned Alpine/musl image.
 - **Database:** SQLite with SQLCipher, stored as a user-chosen file with a
   `.meta` sidecar. No PostgreSQL in v1.
-- **Unattended unlock:** manual. The server starts locked after a reboot and
-  schedules are paused until the operator unlocks the database. No TPM2 or
-  persisted database key in v1.
-- **Authentication:** SSH keys, `ssh-agent`, hardware-backed keys, and SSH
-  certificates by default. Password SSH is an explicit opt-in fallback, disabled
-  by default, never stored in plaintext, and **manual-runs only in v1**.
+- **Unattended unlock:** manual terminal prompt or a `0600` passphrase file
+  readable by the service account. There is no TPM2-sealed key, persisted key,
+  or automatic unlock in this release. Schedules are not implemented.
+- **Authentication:** the current transport supports an unencrypted SSH key file
+  or manual password authentication. `ssh-agent`, hardware-backed keys, SSH
+  certificates, and passphrase-protected key files are planned, not implemented.
+  Password SSH is an explicit opt-in fallback, never stored, and manual-run only.
   Vault-backed scheduled password auth is deferred.
-- **Remote actions:** built-in patch actions plus approved, signed, versioned
-  playbooks. No arbitrary shell in v1.
+- **Remote actions:** built-in fixed patch/reboot/helper actions only. Approved,
+  signed, versioned playbooks are planned; arbitrary shell is not supported.
 - **Users:** single-user v1. No RBAC; the server is protected by the OS account,
   SSH key, and database passphrase.
 - **Fleet size:** design target is 2–500 hosts.
@@ -2420,18 +2743,25 @@ git-create check --offline
 git-create secrets .
 ```
 
-M1 validation status:
+Current validation status:
 
 - `go test ./...` passes.
 - `go vet ./...` passes.
 - `go test -race ./...` passes.
 - `make static` produces a development ELF with no dynamic dependencies.
-- The current-SQLCipher production Docker build is defined in CI and must pass
-  before release.
+- The current-SQLCipher production Docker build and release workflow passed for
+  `v0.4.0`; the published archive checksum, installed binary, and SQLCipher
+  production driver were verified.
 - The store/server suite passes against the production driver with current
   system `libsqlcipher`, including backup and restore.
 - README validator and Python validator tests pass.
-- A release must still pass the cross-distro matrix and real target tests.
+- Headless browser tests cover monitoring, SMTP settings, CMDB import, and
+  external integration screens.
+- vCenter polling is covered by a govmomi simulator test; HAProxy and OPNsense
+  polling are covered by local HTTP fixtures.
+- A release still needs the cross-distro matrix, real target/helper tests,
+  backup-restore drills, and a review of the deployment-specific systemd paths
+  before broad production use.
 
 ## License
 

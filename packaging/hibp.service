@@ -8,7 +8,12 @@ Wants=network-online.target
 Type=simple
 User=hibp
 Group=hibp
-ExecStart=/usr/local/bin/hibp server --db /var/lib/hibp/hibp.db --listen 127.0.0.1:8443
+Environment=HOME=/var/lib/hibp
+WorkingDirectory=/var/lib/hibp
+# Adjust the key, SSH-config, and passphrase paths to your layout. The shipped
+# unit expects a 0600/0400 passphrase file readable by the service account and a
+# controller-owned key directory outside the home directory.
+ExecStart=/usr/local/bin/hibp server --db /var/lib/hibp/hibp.db --listen 127.0.0.1:8443 --key-dir /etc/hibp/ssh --ssh-config /etc/hibp/ssh/config --passphrase-file /etc/hibp/db.passphrase
 Restart=on-failure
 RestartSec=5
 UMask=0077
@@ -18,7 +23,9 @@ ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/hibp
 StateDirectory=hibp
+StateDirectoryMode=0700
 RuntimeDirectory=hibp
+RuntimeDirectoryMode=0700
 LimitCORE=0
 LimitNOFILE=4096
 CapabilityBoundingSet=
@@ -30,8 +37,13 @@ SystemCallErrorNumber=EPERM
 [Install]
 WantedBy=multi-user.target
 
-# Manual unlock note:
-# The server prompts for the database passphrase on its controlling terminal.
-# For a headless service, use a 0600 passphrase file with --passphrase-file and
-# full-disk encryption, or start the service interactively for the first unlock.
-# Do not store the passphrase in the unit file or environment.
+# Unlock note:
+# This unit uses --passphrase-file for a non-interactive start. The file must be
+# readable only by the service account (0400/0600) and should be protected by
+# full-disk encryption. For a manual interactive unlock, edit ExecStart to omit
+# --passphrase-file and run the service with a controlling terminal; do not put
+# the passphrase in the unit file or environment.
+#
+# Backups: ProtectSystem=strict makes everything except /var/lib/hibp read-only.
+# Use a backup path under /var/lib/hibp or add your backup directory to
+# ReadWritePaths after reviewing the permissions.
