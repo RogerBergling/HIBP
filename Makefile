@@ -11,7 +11,7 @@ BUILD_COMMIT ?= $(shell if [ -n "$$GITHUB_SHA" ]; then printf '%s' "$$GITHUB_SHA
 BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 BUILD_TARGET ?= $(shell $(GO) env GOOS 2>/dev/null || printf unknown)/$(shell $(GO) env GOARCH 2>/dev/null || printf unknown)
 BUILD_TYPE ?= development
-LDFLAGS ?= -X main.version=$(VERSION) -X main.buildNumber=$(BUILD_NUMBER) -X main.buildCommit=$(BUILD_COMMIT) -X main.buildDate=$(BUILD_DATE) -X main.buildTarget=$(BUILD_TARGET) -X main.buildType=$(BUILD_TYPE)
+HIBP_LDFLAGS ?= -X main.version=$(VERSION) -X main.buildNumber=$(BUILD_NUMBER) -X main.buildCommit=$(BUILD_COMMIT) -X main.buildDate=$(BUILD_DATE) -X main.buildTarget=$(BUILD_TARGET) -X main.buildType=$(BUILD_TYPE)
 
 .PHONY: help check-go check-cc check-docker check-sqlcipher bootstrap build build-system test race vet static production static-production validate package clean
 
@@ -65,7 +65,7 @@ check-docker:
 
 build: check-go check-cc
 	mkdir -p dist
-	CGO_ENABLED=1 $(GO) build -trimpath -tags "$(TAGS)" -ldflags '$(LDFLAGS)' -o $(BIN) ./cmd/hibp
+	CGO_ENABLED=1 $(GO) build -trimpath -tags "$(TAGS)" -ldflags '$(HIBP_LDFLAGS)' -o $(BIN) ./cmd/hibp
 
 # Production driver using the distribution's dynamic SQLCipher. This is useful
 # for local testing when Docker is unavailable; release artifacts must use the
@@ -73,7 +73,7 @@ build: check-go check-cc
 build-system: check-go check-cc check-sqlcipher
 	mkdir -p dist
 	CGO_ENABLED=1 CGO_CFLAGS="$(SQLCIPHER_CFLAGS)" CGO_LDFLAGS="$(SQLCIPHER_LDFLAGS)" \
-		$(GO) build -trimpath -tags "$(PROD_TAGS)" -ldflags '$(LDFLAGS)' -o $(BIN) ./cmd/hibp
+		$(GO) build -trimpath -tags "$(PROD_TAGS)" -ldflags '$(HIBP_LDFLAGS)' -o $(BIN) ./cmd/hibp
 
 test: check-go check-cc
 	CGO_ENABLED=1 $(GO) test ./...
@@ -87,7 +87,7 @@ vet: check-go check-cc
 static: check-go check-cc
 	mkdir -p dist
 	CGO_ENABLED=1 $(GO) build -trimpath -tags "$(TAGS)" \
-		-ldflags '-s -w -linkmode external -extldflags "-static" $(LDFLAGS)' \
+		-ldflags '-s -w -linkmode external -extldflags "-static" $(HIBP_LDFLAGS)' \
 		-o $(BIN) ./cmd/hibp
 	@file $(BIN)
 	@ldd $(BIN) 2>&1 || true
@@ -110,7 +110,7 @@ static-production: check-go check-cc
 	mkdir -p dist
 	CGO_ENABLED=1 CGO_CFLAGS="$(SQLCIPHER_CFLAGS)" CGO_LDFLAGS="$(SQLCIPHER_LDFLAGS)" \
 		$(GO) build -trimpath -tags "$(PROD_TAGS)" \
-		-ldflags '-s -w -linkmode external -extldflags "-static" $(LDFLAGS)' \
+		-ldflags '-s -w -linkmode external -extldflags "-static" $(HIBP_LDFLAGS)' \
 		-o $(BIN) ./cmd/hibp
 	@file $(BIN)
 	@ldd $(BIN) 2>&1 || true
