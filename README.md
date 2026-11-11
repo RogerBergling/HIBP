@@ -1,19 +1,21 @@
 # HIBP - Have I Been Patched
 
-> **Status: v0.4.0 feature set with a production build path.** The repository
+> **Status: v0.5.0 feature set with a production build path.** The repository
 > contains a working Go server, browser UI, SQLCipher storage, host CRUD/import,
 > password + TOTP/passkey authentication, SSH host-key approval, remote helper
 > installation, fact collection, read-only system information, Docker
 > inventory, metric history, monitoring, SMTP email alerts, vCenter/HAProxy/
-> OPNsense integrations, CMDB import, reboot control, SSH config import, audit
-> chain, backup/restore, helper actions, tests, and CI. `make production` builds
-> against current SQLCipher 4.20 in a pinned Alpine/musl image; the development
-> build still uses the 2020 spike driver and prints a warning. SSH password and
-> sudo fallbacks are manual-run only.
+> OPNsense integrations, CMDB import, cron-based patch schedules and run
+> history, reboot control, SSH config import, audit chain, backup/restore,
+> helper actions, tests, and CI. `make production` builds against current
+> SQLCipher 4.20 in a pinned Alpine/musl image; the development build still uses
+> the 2020 spike driver and prints a warning. SSH password and sudo fallbacks
+> are manual-run only.
 >
-> **Not yet production-complete:** the scheduler, scheduled patch jobs, run
-> history/package diffs, approved playbooks, agent mode, RBAC, and MFA device
-> management UI are not implemented. Read
+> **Not yet production-complete:** package-level run diffs, approval workflows,
+> a general durable job queue with retry/resume, approved playbooks, agent mode,
+> RBAC, and MFA device management UI are not implemented. The scheduler is a
+> single-process cron engine. Read
 > [Production deployment checklist](#production-deployment-checklist) and
 > [Known limitations before production](#known-limitations-before-production)
 > before exposing this to real hosts.
@@ -23,11 +25,12 @@
 
 HIBP is a Linux-first patch management controller. The intended deployment is an
 always-on server that owns the encrypted database and performs collection,
-monitoring, and explicit patch operations. The operator uses a laptop browser
-through an SSH tunnel. The current release inventories hosts, checks for pending
-updates using each distribution's native package manager, applies updates on
-demand, and records audit events. Scheduled patch jobs and a job queue are
-planned, not implemented.
+monitoring, scheduled checks/applies, and explicit patch operations. The
+operator uses a laptop browser through an SSH tunnel. The current release
+inventories hosts, checks for pending updates using each distribution's native
+package manager, applies updates on demand or through cron schedules, and
+records audit events and per-host run history. It does not yet provide a
+durable job queue, approvals, or package-level diff evidence.
 
 ## Screenshots
 
@@ -112,7 +115,7 @@ End users should not need Go or a compiler.
 
    ```bash
    # Install a specific version
-   sh install.sh --version v0.4.0
+   sh install.sh --version v0.5.0
 
    # Install system-wide (run as a user with write access to /usr/local/bin)
    sudo HIBP_PREFIX=/usr/local/bin sh install.sh
@@ -408,7 +411,7 @@ target helper installation and sudoers example are in
 ## Production deployment checklist
 
 This is the minimum operational and security review before using HIBP against
-real hosts. It reflects the current v0.4.0 implementation; treat it as a
+real hosts. It reflects the current v0.5.0 implementation; treat it as a
 gate, not as a suggestion.
 
 ### 1. Confirm the deployment model
@@ -420,10 +423,11 @@ gate, not as a suggestion.
   Do not publish port 8443 or the Unix-equivalent API to a network.
 - HIBP is single-operator in this release. There is no RBAC, approval workflow,
   or separation between an operator and an auditor.
-- The current release does not implement a scheduler, job queue, run history,
-  package diff, host disable/maintenance state, or approved playbooks. Patch
-  and reboot actions are manual. If those are hard requirements, do not go
-  live with this release.
+- The current release implements cron-based check/apply schedules, per-host run
+  history, and manual run-now. It does not implement a durable job queue,
+  package-level diffs, approvals, automatic retries/resume, host
+  disable/maintenance state, or approved playbooks. Review the scheduler
+  limitations before making it authoritative.
 
 ### 2. Create the service account and protected paths
 
@@ -447,8 +451,14 @@ sudo install -d -o hibp -g hibp -m 0700 /etc/hibp/ssh
 
 ### 3. Choose the database unlock policy
 
-Manual terminal unlock is appropriate for an interactive desktop, not a
-headless service. For a headless service:
+Interactive unlock is supported when the server has a real terminal. For a
+manual-unlock deployment, keep the process in a persistent local console, a
+`tmux`/`screen` session, or an equivalent supervised terminal; if the terminal
+or SSH session dies, the controller and its schedules stop. The server writes
+the passphrase prompt to stdin; systemd services do not have a terminal by
+default.
+
+For a headless service:
 
 - Store the passphrase in a `0400` or `0600` file readable only by the HIBP
   service account, with full-disk encryption, and pass `--passphrase-file`.
@@ -462,6 +472,9 @@ headless service. For a headless service:
 - There is no passphrase-rotation command and no envelope/DEK wrapping in this
   release. Plan to restore from a backup made with the new key, or rebuild and
   re-enroll, if the passphrase changes.
+- Schedules and collection do not run until the server is unlocked and running.
+  Interactive unlock is therefore an availability decision, not just a UI
+  preference.
 
 ### 4. Complete first-run setup immediately
 
@@ -486,19 +499,28 @@ That command clears TOTP, all passkeys, and all sessions.
   **Trust**. Do not trust a first-use prompt blindly.
 - Install the helper on one canary host first, verify the generated
   `/etc/sudoers.d/hibp-helper` with `visudo -c`, then run a dry-run patch check.
+- Create a **check-only** schedule for the canary and inspect the run history
+  before creating an apply schedule. Start with a small host assignment and
+  low concurrency.
 - The helper is a root-owned binary. Do not loosen the rule to
   `NOPASSWD: ALL`; keep the fixed action list.
 - Confirm targets have working package repositories, time synchronization,
-  free disk space, and a tested reboot policy.
+  free disk space, and a tested reboot policy. Alpine lacks systemd service
+  monitoring and needs `sudo`/`visudo` installed for helper setup.
 
 ### 6. Test email and alert volume
 
 - Use STARTTLS or implicit TLS for authenticated SMTP. Test the exact sender
   domain and recipient list with **Save and send test** before relying on alerts.
+  A local Postfix relay with no authentication can be used by selecting plain
+  SMTP and `127.0.0.1:25` (or the LAN address); restrict that relay to trusted
+  sources.
 - Configure SPF, DKIM, and DMARC for the sender domain; a valid SMTP login does
   not guarantee inbox delivery.
 - Start with one host or one group. A fleet-scoped monitor can send one message
   per host and per state change; HIBP does not aggregate fleet alerts.
+- Schedule summaries use the same SMTP configuration. Start with
+  failure-only notifications and verify the local Postfix queue and logs.
 - Alert events are recorded even when SMTP is disabled or delivery fails. Check
   the alert tables as well as the mailbox.
 - There is no alert-event retention policy yet. Plan database growth and
@@ -529,6 +551,10 @@ That command clears TOTP, all passkeys, and all sessions.
 - Create a backup immediately after setup and before every application or
   schema upgrade. The current migration path does not create an automatic
   pre-migration backup.
+- In the backup dialog, leave the path blank to use the database directory, or
+  enter an existing directory. HIBP creates a timestamped
+  `hibp-YYYY-MM-DD-HHMMSS.bac` plus `.meta` file. A new absolute file path is
+  also accepted.
 - Back up the database and its `.meta` sidecar together. A backup without the
   sidecar cannot be opened.
 - The backup verifier checks that the copy opens and contains migrations; it
@@ -537,6 +563,7 @@ That command clears TOTP, all passkeys, and all sessions.
 - Test a restore to a new path while the service is stopped, then open the
   restored file with the original passphrase and verify hosts and audit.
 - Keep at least one encrypted backup off the controller and define retention.
+  A same-directory backup does not protect against disk loss or ransomware.
 - Do not rely on an older binary to open a database written by a newer release.
   The current code does not yet hard-refuse every future schema version, so
   keep the matching release binary with the backup.
@@ -569,6 +596,8 @@ Before declaring go-live:
   see [Supply chain](#supply-chain) and
   [Known limitations before production](#known-limitations-before-production).
 - Complete a restore test and a helper canary before managing the full fleet.
+- Run a check-only schedule against the canary before enabling an apply
+  schedule, then inspect Recent runs and the audit log.
 
 ## Authentication and MFA
 
@@ -684,12 +713,13 @@ during setup, or use `hibp user reset` (which clears all MFA) for recovery.
 
 ## Docker, system information, and monitoring
 
-> **Status: v0.4.0 adds read-only external integrations and CMDB import.**
+> **Status: v0.5.0 adds cron-based patch schedules and run history.**
 > Read-only system information, Docker inventory, host details, metric history,
 > configurable collection, explicit Docker check/apply, monitoring definitions,
-> SMTP email alerts, vCenter alarms, HAProxy stats, OPNsense gateways, and
-> cmdb-lite CSV/JSON import are available. The scheduler and approved playbooks
-> remain the next major phases.
+> SMTP email alerts, vCenter alarms, HAProxy stats, OPNsense gateways,
+> cmdb-lite CSV/JSON import, patch schedules, and per-host run history are
+> available. Package-level diffs, approvals, and a durable job queue remain the
+> next major phases.
 
 ### Implemented now
 
@@ -719,6 +749,9 @@ during setup, or use `hibp user reset` (which clears all MFA) for recovery.
   repeat/cooldown behaviour, recovery notices, and a persistent alert history.
 - Live **Monitoring** view plus a read-only alert event table; no service
   start/stop/restart or automatic remediation.
+- **Schedules** view with cron-based check/apply jobs, fleet/group/tag/host
+  assignments, maintenance windows, jitter, concurrency limits, optional
+  catch-up, email summaries, and per-host run history.
 - Read-only **Integrations** view for vCenter active alarms, HAProxy stats,
   and OPNsense gateway status, with per-integration recipients and event history.
 - Read-only CMDB import (CSV or JSON) with preview, merge/overwrite modes, and
@@ -855,6 +888,40 @@ must use **Update helpers** before service monitoring has unit-level state.
 | --- | --- |
 | ![Monitoring and alert history](docs/screenshots/monitoring.png) | ![Email notification settings](docs/screenshots/smtp-settings.png) |
 
+### Patch schedules
+
+The **Schedules** view runs patch checks or applies on a five-field cron
+expression in a selected IANA timezone. The controller process must be running
+and the database unlocked; schedules are not a separate daemon and do not
+survive a stopped controller.
+
+- **Check only** is a dry run through the target package manager. **Apply**
+  installs all available updates through the fixed root-owned helper; security-
+  only filtering is not implemented. Reboots are never automatic.
+- Assignments support the fleet, groups, tags, and individual hosts. Only hosts
+  with key-file authentication, a trusted host key, and the restricted
+  `NOPASSWD` helper are eligible; others are counted as skipped.
+- Each schedule has a late-start window, jitter, maximum host concurrency
+  (1–20), and an optional “run the latest missed occurrence” mode. Cron presets
+  are available in the UI for daily, weekly, six-hourly, and monthly runs. The
+  controller-wide scheduler cap is 20 concurrent host operations.
+- The scheduler runs in the controller process. A missed window is skipped
+  unless catch-up is enabled. Apply jobs are not retried automatically, and
+  there is no durable job queue, approval gate, or automatic reboot.
+- Every host attempt is written to **Recent runs** with action, status, exit
+  code, duration, a bounded output excerpt, and an audit entry. Package-level
+  old/new version diffs are not yet extracted.
+- Email summaries can be disabled, sent on failures, or sent for every run.
+  Recipients fall back to the SMTP defaults; a local Postfix relay in
+  no-authentication mode works over a reachable TCP socket.
+- **Run now** performs the configured check/apply immediately without waiting
+  for the next cron occurrence. Use a single canary schedule before enabling a
+  fleet-wide apply.
+
+| Patch schedules and run history |
+| --- |
+| ![Patch schedules and run history](docs/screenshots/schedules.png) |
+
 ### External integrations
 
 The **Integrations** view configures three read-only sources. All credentials
@@ -928,7 +995,10 @@ commit:
    Docker/systemd health, alert history, repeat/cooldown/recovery behaviour.
 4. **Implemented:** read-only vCenter alarms, HAProxy stats, OPNsense gateway
    status, and cmdb-lite CSV/JSON import with preview and merge/overwrite.
-5. **Next:** scheduler, approved playbooks, and unattended run history.
+5. **Implemented:** cron-based check/apply scheduling, maintenance windows,
+   jitter, concurrency, run history, and email summaries.
+6. **Next:** durable job queue with retry/resume, package-level diffs, approval
+   gates, and reboot orchestration.
 
 ### Collection settings
 
@@ -1252,7 +1322,7 @@ as core features rather than afterthoughts.
 ## Product requirements
 
 > These are product requirements and design targets, not a claim that every item
-> is implemented. See [Implemented in v0.4.0](#implemented-in-v040) and
+> is implemented. See [Implemented in v0.5.0](#implemented-in-v050) and
 > [Known limitations before production](#known-limitations-before-production)
 > for the current status.
 
@@ -1483,10 +1553,9 @@ distribution, and audit ordering would add significant complexity and risk.
 
 **Recommendation:** make the server the primary target. It solves the
 laptop-sleep problem and keeps the database key, SSH credentials, and audit trail
-on one hardened host. This release has no scheduler; background collection and
-monitoring stop when the server process stops and resume when it is unlocked and
-started again. Add a native desktop client later only if the browser UI is
-insufficient.
+on one hardened host. The scheduler and background collection stop when the
+server process stops and resume when it is unlocked and started again. Add a
+native desktop client later only if the browser UI is insufficient.
 
 ### Why not only agentless?
 
@@ -1673,7 +1742,7 @@ The current release derives the SQLCipher key directly from the database
 passphrase with Argon2id and keeps SMTP/integration secrets inside the encrypted
 database. It does **not** implement a separate credential vault, envelope/DEK
 wrapping, or passphrase rotation. The following is a future design goal, not a
-claim about v0.4.0:
+claim about v0.5.0:
 
 - Generate a random data encryption key (DEK) for a credential vault.
 - Derive a key-encryption key (KEK) from the database passphrase with Argon2id,
@@ -1916,7 +1985,7 @@ Current status:
   remote-code-execution feature.
 - Consider reproducible builds for the server and agent binaries.
 
-### Implemented in v0.4.0
+### Implemented in v0.5.0
 
 - SQLCipher database with Argon2id-derived keys and a validated `.meta` sidecar.
 - `0600` database, sidecar, key, and backup files; wrong-passphrase test.
@@ -1939,6 +2008,9 @@ Current status:
 - Read-only vCenter active-alarm, HAProxy stats, and OPNsense gateway
   integrations with event history and email.
 - Read-only CMDB CSV/JSON import with preview and merge/overwrite modes.
+- Cron-based check/apply schedules with fleet/group/tag/host assignments,
+  maintenance windows, jitter, concurrency limits, catch-up, email summaries,
+  manual run-now, and per-host run history.
 - Local SSH config reader for prefilling hosts, with simple `Include` support,
   wildcard/`Match` filtering, and no private-key reads.
 - Remote helper installation from the UI with `visudo` validation, a restricted
@@ -1946,7 +2018,8 @@ Current status:
 - Hash-chained audit log with verification.
 - CSV import limits, preview/commit, duplicate policy, and CSV-injection
   neutralization on export.
-- Online encrypted backup with sidecar copy and open/migration verification.
+- Online encrypted backup with sidecar copy, timestamped directory backups, and
+  open/migration verification.
 - Production build path: patched `mattn/go-sqlite3` + current SQLCipher 4.20,
   statically linked in a pinned Alpine/musl image.
 - Unit, integration, race, README, Python, and headless UI tests.
@@ -1962,9 +2035,13 @@ Current status:
   host whose `auth_type` is not exactly `key`.
 - MFA device management is enrollment-only in the UI. Adding/rotating a passkey
   or replacing TOTP after setup is not exposed; `hibp user reset` clears all MFA.
-- No scheduler, job queue, per-run history, package diff, approved playbooks,
-  host disabled/maintenance state, or RBAC. Patch and reboot operations are
-  manual. This is a feature gap, not a hardening detail.
+- Patch scheduling is a single-process cron engine, not a durable job queue.
+  There is no approval gate, automatic retry/resume, package-level old/new diff,
+  security-only filtering, automatic reboot, host disabled/maintenance state,
+  or global queue across schedules. A controller stop interrupts work; runs
+  only happen while the database is unlocked and the process is alive. Per-host
+  output is bounded to 16 KiB in run history. Only key-auth hosts with a trusted
+  key are eligible.
 - Some host mutations (create/update/delete, trust-key, facts) are audited with
   the actor `"local"` rather than the authenticated username. The audit chain is
   tamper-evident, not tamper-proof, and has no external anchor.
@@ -1992,7 +2069,7 @@ Current status:
   aggregation or global rate limiting. SMTP sends are serialized, so a slow or
   unavailable relay can delay later alerts. Email delivery failures are recorded
   in alert/integration history but are not retried automatically. Audit, alert,
-  and integration-event tables have no retention policy.
+  integration-event, and run-history retention is not implemented.
 - Integration poll failures are shown on the source card but are not separately
   emailed. External findings do not have a repeat-reminder policy. vCenter reads
   active triggered alarms only; HAProxy parsing is best-effort across versions;
@@ -2017,6 +2094,14 @@ Current status:
   leave earlier rows applied. Regular CSV import matches duplicates by address
   and port, not by `cmdb_ci_id`. Imported `agent` hosts are not schedulable until
   their authentication is changed.
+- Patch schedules and manual patch/reboot actions do not share a per-host
+  operation lock. Do not trigger a manual patch or reboot on a host while a
+  schedule is applying updates there. The scheduler limits concurrency per
+  schedule (and to 20 controller-wide) but cannot coordinate with another
+  operator action.
+- A schedule assigned to a fleet or large group runs per eligible host. Keep
+  concurrency low and use a canary schedule; there is no global alert
+  aggregation for scheduled patch failures.
 - Real target testing is limited to local unit/integration tests. The
   cross-distro matrix, helper rollout, sudoers behaviour, and reboot/package
   updates still need validation on disposable VMs before a broad rollout.
@@ -2024,15 +2109,16 @@ Current status:
 ## Data model
 
 The current schema is implemented in `internal/store/migrations/001_init.sql`
-through `005_integrations.sql`. Domain objects use UUIDs, timestamps are UTC
+through `006_scheduler.sql`. Domain objects use UUIDs, timestamps are UTC
 ISO 8601, and durations are stored in seconds.
 
 > **Implemented:** `schema_migrations`, `app_meta`, `hosts`, `host_facts`,
-> `host_keys`, `runs` (table only), `users`, `user_passkeys`, `sessions`,
+> `host_keys`, `runs`, `users`, `user_passkeys`, `sessions`,
 > `audit_log`, `host_system_info`, `host_metrics`, `docker_projects`,
 > `docker_containers`, `settings`, `monitors`, `monitor_assignments`,
-> `monitor_state`, `alert_events`, `host_services`, `integration_state`, and
-> `integration_events`. The remaining tables below are planned.
+> `monitor_state`, `alert_events`, `host_services`, `integration_state`,
+> `integration_events`, `schedules`, and `schedule_assignments`. The remaining
+> tables below are planned.
 
 | Table | Purpose | Key fields |
 |---|---|---|
@@ -2061,7 +2147,8 @@ ISO 8601, and durations are stored in seconds.
 | `schedules` | Per-host or per-group schedules. | `id`, `name`, `target_type`, `target_id`, `cron`, `timezone`, `jitter_seconds`, `window_start`, `window_end`, `missed_run_policy`, `policy_id`, `enabled`, `next_run_at` |
 | `jobs` | A requested patch operation. | `id`, `trigger`, `requested_by`, `policy_snapshot`, `created_at`, `started_at`, `finished_at`, `status`, `cancel_requested` |
 | `job_targets` | Per-host state within a job. | `job_id`, `host_id`, `status`, `started_at`, `finished_at`, `exit_code`, `error`, `run_id` |
-| `runs` | Implemented table reserved for per-host execution history; patch actions do not populate it yet. | `id`, `host_id`, `action`, `started_at`, `finished_at`, `status`, `exit_code`, `output`, `error` |
+| `runs` | Scheduled per-host execution history; populated by the scheduler, not yet by manual patch actions. | `id`, `schedule_id`, `host_id`, `action`, `started_at`, `finished_at`, `status`, `exit_code`, `output`, `error` |
+| `schedules`, `schedule_assignments` | Cron patch definitions and fleet/group/tag/host assignments. | `id`, `name`, `mode`, `cron`, `timezone`, `window_minutes`, `jitter_seconds`, `max_concurrency`, `notify`, `recipients`, `scope`, `target` |
 | `run_packages` | Package-level diff for a run. | `run_id`, `package`, `old_version`, `new_version`, `action`, `status`, `security`, `repository` |
 | `pending_updates` | Latest known pending updates. | `host_id`, `package`, `current_version`, `candidate_version`, `security`, `repository`, `first_seen`, `last_seen` |
 | `playbooks` | Approved custom actions. | `id`, `name`, `version`, `sha256`, `signature`, `content`, `approved_by`, `approved_at`, `enabled` |
@@ -2214,6 +2301,9 @@ not accept passwords, private keys, or scripts.
 
 - Use SQLite's online backup API for a consistent copy while the database is
   open.
+- In the UI, leave the path blank to use the database directory, or enter an
+  existing directory to create `hibp-YYYY-MM-DD-HHMMSS.bac` plus `.meta`.
+  A new absolute file path can also be supplied.
 - Write the matching `.meta` sidecar next to the backup.
 - Refuse to overwrite an existing backup unless the operator explicitly chooses
   a new path.
@@ -2368,6 +2458,7 @@ Go is the chosen stack:
 - `github.com/shirou/gopsutil/v4` — CPU, memory, disk, load, and host information.
 - `github.com/vmware/govmomi` — read-only vCenter alarm polling.
 - `github.com/skip2/go-qrcode` — TOTP enrollment QR codes.
+- `github.com/robfig/cron/v3` — cron expression parsing for patch schedules.
 - Standard library: `embed`, `net/http`, `database/sql`, `encoding/csv`,
   `crypto/rand`, `log/slog`.
 
@@ -2440,13 +2531,13 @@ Implemented layout:
 ```text
 go.mod / go.sum           Go module and pinned dependencies
 Makefile                  build, test, static, validate, package
-cmd/hibp/main.go          server, helper, and version commands
+cmd/hibp/main.go          server, helper, user reset, and version commands
 internal/crypto/          Argon2id, sidecar, tokens, zeroization
-internal/store/           SQLCipher, migrations, hosts, facts, keys, backup, audit
+internal/store/           SQLCipher, migrations, hosts, schedules, runs, backup, audit
 internal/store/migrations SQL schema
 internal/remote/          SSH transport and host-key policy
 internal/helper/          fixed target actions
-internal/server/          browser UI/API, auth, security headers, import/export
+internal/server/          browser UI/API, auth, scheduler, monitoring, integrations
 internal/webui/           embedded HTML/CSS/JS
 third_party/go-sqlite3/   patched mattn driver with sqlite3_key before open
 packaging/Dockerfile          production SQLCipher 4.20 + musl static build
@@ -2488,7 +2579,7 @@ Implemented:
 Not yet:
 
 - Real target matrix and sudo helper install test.
-- Scheduler, playbooks, scheduler-driven notifications, and agent.
+- Durable job queue, package diffs, playbooks, and agent mode.
 
 ### M2 - Patch execution (partial)
 
@@ -2500,24 +2591,23 @@ Implemented:
 
 Still missing:
 
-- Per-host job queue and concurrency control.
-- Run history and per-package drill-down.
-- Cancellation, retries, and post-reboot verification.
+- A durable per-host job queue and manual-patch run history.
+- Cancellation, automatic retries, and post-reboot verification.
 - Package diff/security classification and evidence export.
 
-### M3 - Scheduling and unattended execution
+### M3 - Scheduling and unattended execution (partial)
 
-- Scheduler with maintenance windows, jitter, missed-run policy, and concurrency.
-- Run the scheduler on the always-on server; no agent is required.
-- Manual database unlock after a server reboot; show the locked/paused state and
-  do not run jobs until unlocked.
-- Notifications via email, webhook, and ntfy for failures, reboot required, stale
-  hosts, Docker/service availability, HTTP/TLS checks, and threshold alarms.
-  Email monitoring alerts are implemented; scheduler-driven notifications and
-  webhook/ntfy channels remain.
-- Next-run and run-history UI.
-- Acceptance: a daily schedule runs with the laptop closed, survives a server
-  restart after manual unlock, and reports the result.
+- **Implemented:** cron schedules with maintenance windows, jitter, missed-run
+  policy, concurrency, check/apply modes, run-now, run history, audit entries,
+  and email summaries.
+- The scheduler runs inside the controller process; no agent is required.
+- The database must be unlocked and the server running. There is no suspended
+  UI state or durable queue across process restarts; an interrupted run is not
+  resumed automatically.
+- Notifications via email are implemented for monitoring and schedules;
+  webhook/ntfy channels and scheduler-driven reboot notifications remain.
+- **Still missing:** durable queue, automatic retry, approval gates,
+  package-level diffs, reboot orchestration, and host maintenance state.
 
 ### M4 - Security hardening
 
@@ -2610,8 +2700,8 @@ These are settled unless you explicitly change them:
 - **Deployment:** an always-on Linux server is the primary host. The laptop is a
   client and can also be enrolled as a managed target. The current release ships
   `server` and `helper` modes; separate client/agent modes are planned. The
-  server owns the database, credentials, audit log, collection, and monitoring;
-  the scheduler and job queue are not implemented yet.
+  server owns the database, credentials, audit log, collection, monitoring, and
+  cron scheduler. A durable job queue and approval workflow are not implemented.
 - **Server OS:** Ubuntu LTS (24.04/26.04; 22.04 best-effort) is the supported server baseline. The
   static binary may run on other distributions, but Ubuntu is what we test and
   support first.
@@ -2750,13 +2840,13 @@ Current validation status:
 - `go test -race ./...` passes.
 - `make static` produces a development ELF with no dynamic dependencies.
 - The current-SQLCipher production Docker build and release workflow passed for
-  `v0.4.0`; the published archive checksum, installed binary, and SQLCipher
+  `v0.5.0`; the published archive checksum, installed binary, and SQLCipher
   production driver were verified.
 - The store/server suite passes against the production driver with current
   system `libsqlcipher`, including backup and restore.
 - README validator and Python validator tests pass.
-- Headless browser tests cover monitoring, SMTP settings, CMDB import, and
-  external integration screens.
+- Headless browser tests cover monitoring, SMTP settings, CMDB import,
+  schedules, and external integration screens.
 - vCenter polling is covered by a govmomi simulator test; HAProxy and OPNsense
   polling are covered by local HTTP fixtures.
 - A release still needs the cross-distro matrix, real target/helper tests,

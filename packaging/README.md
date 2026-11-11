@@ -42,13 +42,25 @@ These files are examples, not a complete distribution package.
    the headless option; treat that as an explicit availability/security
    trade-off.
 
-4. Create/open the database once, then complete first-run setup immediately:
+4. Create/open the database once, then complete first-run setup immediately.
+   Headless/service example:
 
    ```bash
    sudo -u hibp /usr/local/bin/hibp server \
      --db /var/lib/hibp/hibp.db --create \
      --key-dir /etc/hibp/ssh --ssh-config /etc/hibp/ssh/config \
      --passphrase-file /etc/hibp/db.passphrase \
+     --listen 127.0.0.1:8443
+   ```
+
+   Interactive-unlock example (run in a persistent local console or a
+   `tmux`/`screen` session; the scheduler and collector stop if this process
+   exits):
+
+   ```bash
+   sudo -u hibp /usr/local/bin/hibp server \
+     --db /var/lib/hibp/hibp.db --create \
+     --key-dir /etc/hibp/ssh --ssh-config /etc/hibp/ssh/config \
      --listen 127.0.0.1:8443
    ```
 
@@ -62,7 +74,8 @@ These files are examples, not a complete distribution package.
    and/or a passkey. Until this is complete, any local user who can reach the
    loopback port could claim the account. Stop the manual server after setup.
 
-5. Install the systemd unit, adjust paths if needed, and start it:
+5. Install the systemd unit for headless/unattended start, or adapt it for your
+   interactive policy:
 
    ```bash
    sudo install -m 0644 packaging/hibp.service /etc/systemd/system/hibp.service
@@ -74,6 +87,11 @@ These files are examples, not a complete distribution package.
    `/var/lib/hibp`. `ProtectSystem=strict` only permits writes under
    `/var/lib/hibp`; choose a backup path there or add your backup directory to
    `ReadWritePaths` after reviewing its ownership.
+
+   If you require interactive unlock, do **not** enable the shipped
+   `--passphrase-file` unit unchanged. Start the server manually in a persistent
+   terminal, or add a tested TTY configuration to a separate unit. A systemd
+   service has no controlling terminal by default.
 
 6. For upgrades, stop the service, take and verify a backup of the database and
    `.meta` sidecar, install the new binary, start the service, and check the

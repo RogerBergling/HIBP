@@ -237,6 +237,7 @@ func runServer(args []string) error {
 	go app.RunCollector(ctx)
 	go app.RunMonitor(ctx)
 	go app.RunIntegrations(ctx)
+	go app.RunScheduler(ctx)
 	errCh := make(chan error, 1)
 	go func() { errCh <- httpServer.Serve(listener) }()
 	select {

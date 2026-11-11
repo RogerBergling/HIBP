@@ -7,6 +7,8 @@ const state = {
   alerts: [],
   integrations: [],
   integrationEvents: [],
+  schedules: [],
+  runs: [],
   status: {},
   view: 'dashboard',
   passwords: new Map(),
@@ -94,8 +96,8 @@ function updateUserDisplay() {
 
 function setView(view) {
   state.view = view;
-  const sections = ['dashboard', 'hosts', 'audit', 'monitoring', 'integrations'];
-  const labels = { dashboard: 'Overview', hosts: 'Hosts', audit: 'Audit log', monitoring: 'Monitoring', integrations: 'Integrations' };
+  const sections = ['dashboard', 'hosts', 'audit', 'monitoring', 'schedules', 'integrations'];
+  const labels = { dashboard: 'Overview', hosts: 'Hosts', audit: 'Audit log', monitoring: 'Monitoring', schedules: 'Schedules', integrations: 'Integrations' };
   for (const section of sections) {
     $('view-' + section).classList.toggle('hidden', section !== view);
   }
@@ -104,6 +106,7 @@ function setView(view) {
   }
   $('crumb-view').textContent = labels[view] || 'Overview';
   if (view === 'monitoring') renderMonitoring();
+  if (view === 'schedules') renderSchedules();
   if (view === 'integrations') renderIntegrations();
 }
 
@@ -331,13 +334,15 @@ async function signOut() {
 
 async function loadAll() {
   try {
-    const [status, hosts, audit, monitors, alerts, integrations] = await Promise.all([
+    const [status, hosts, audit, monitors, alerts, integrations, schedules, runs] = await Promise.all([
       api('/api/v1/status'),
       api('/api/v1/hosts'),
       api('/api/v1/audit?limit=200'),
       api('/api/v1/monitors'),
       api('/api/v1/alerts?limit=200'),
       api('/api/v1/integrations'),
+      api('/api/v1/schedules'),
+      api('/api/v1/runs?limit=100'),
     ]);
     state.status = status;
     state.hosts = hosts.hosts || [];
@@ -346,6 +351,8 @@ async function loadAll() {
     state.alerts = alerts.alerts || [];
     state.integrations = integrations.integrations || [];
     state.integrationEvents = integrations.events || [];
+    state.schedules = schedules.schedules || [];
+    state.runs = runs.runs || [];
     renderAll();
     $('last-refresh').textContent = 'updated ' + new Date().toLocaleTimeString();
   } catch (error) {
@@ -359,6 +366,7 @@ function renderAll() {
   renderHosts();
   renderAudit();
   renderMonitoring();
+  renderSchedules();
   renderIntegrations();
 }
 
@@ -1360,6 +1368,328 @@ async function showIntegrationModal(source) {
     } finally {
       test.disabled = false;
       test.textContent = 'Save and test';
+    }
+  });
+}
+
+function scheduleModeLabel(mode) {
+  return mode === 'apply' ? 'apply' : 'check';
+}
+
+function scheduleStatusBadge(status) {
+  const cls = status === 'success' ? 'green' : status === 'failed' ? 'red' : status === 'running' ? 'amber' : 'amber';
+  return el('span', 'badge ' + cls, status || 'not run');
+}
+
+function formatRunDuration(run) {
+  const started = new Date(run.started_at).getTime();
+  const finished = new Date(run.finished_at).getTime();
+  if (Number.isNaN(started) || Number.isNaN(finished)) return '—';
+  const seconds = Math.max(0, Math.round((finished - started) / 1000));
+  if (seconds < 60) return seconds + 's';
+  if (seconds < 3600) return Math.floor(seconds / 60) + 'm ' + (seconds % 60) + 's';
+  return Math.floor(seconds / 3600) + 'h ' + Math.floor((seconds % 3600) / 60) + 'm';
+}
+
+function renderSchedules() {
+  const body = $('schedule-body');
+  if (!body) return;
+  const schedules = state.schedules || [];
+  const runs = state.runs || [];
+  const enabled = schedules.filter((schedule) => schedule.enabled).length;
+  const applying = schedules.filter((schedule) => schedule.mode === 'apply').length;
+  $('schedule-summary').textContent = schedules.length + ' schedule' + (schedules.length === 1 ? '' : 's') + ' · ' + enabled + ' enabled · ' + applying + ' apply';
+  body.replaceChildren();
+  if (!schedules.length) {
+    body.append(emptyTableRow(7, 'No patch schedules yet. Add a schedule to run checks or applies on a cron-like cadence.'));
+  }
+  for (const schedule of schedules) {
+    const row = el('tr');
+    const nameTd = el('td');
+    nameTd.append(el('div', 'host-name', schedule.name));
+    nameTd.append(el('div', 'host-ip', (schedule.enabled ? 'enabled' : 'disabled') + (schedule.run_if_missed ? ' · catch up' : '')));
+    const modeTd = el('td');
+    modeTd.append(el('span', 'badge ' + (schedule.mode === 'apply' ? 'red' : 'amber'), scheduleModeLabel(schedule.mode)));
+    const cronTd = el('td');
+    cronTd.append(el('div', 'mono', schedule.cron));
+    cronTd.append(el('div', 'host-ip', schedule.timezone || 'UTC'));
+    const targetTd = el('td');
+    const targetWrap = el('div', 'assignment-pills');
+    for (const assignment of schedule.assignments || []) targetWrap.append(el('span', 'assignment-pill', monitorAssignmentLabel(assignment)));
+    targetTd.append(targetWrap);
+    const nextTd = el('td');
+    if (schedule.next_run_at) {
+      const next = el('span', 'nowrap', new Date(schedule.next_run_at).toLocaleString());
+      next.title = schedule.next_run_at;
+      nextTd.append(next);
+      nextTd.append(el('div', 'muted', schedule.timezone || 'UTC'));
+    } else {
+      nextTd.append(el('span', 'muted', '—'));
+    }
+    const lastTd = el('td');
+    const lastStatus = scheduleStatusBadge(schedule.last_status || '');
+    if (schedule.last_summary) lastStatus.title = schedule.last_summary;
+    lastTd.append(lastStatus);
+    if (schedule.last_summary) lastTd.append(el('div', 'muted monitor-status-summary', schedule.last_summary));
+    if (schedule.last_run_at) lastTd.append(el('div', 'muted', relativeTime(schedule.last_run_at)));
+    const actionsTd = el('td');
+    const actions = el('div', 'actions');
+    const run = actionButton('Run now', () => runScheduleNow(schedule));
+    run.disabled = !schedule.enabled;
+    if (!schedule.enabled) run.title = 'Enable the schedule first';
+    actions.append(run, actionButton('Edit', () => showScheduleModal(schedule)), actionButton('Delete', () => deleteSchedule(schedule), 'danger'));
+    actionsTd.append(actions);
+    row.append(nameTd, modeTd, cronTd, targetTd, nextTd, lastTd, actionsTd);
+    body.append(row);
+  }
+
+  const runBody = $('schedule-run-body');
+  runBody.replaceChildren();
+  if (!runs.length) {
+    runBody.append(emptyTableRow(8, 'No scheduled runs yet. Run-now results and scheduled patch attempts appear here.'));
+  }
+  const scheduleNames = new Map(schedules.map((schedule) => [schedule.id, schedule.name]));
+  const hostNames = new Map(state.hosts.map((host) => [host.id, host.name]));
+  for (const run of runs) {
+    const row = el('tr');
+    const timeTd = el('td');
+    const time = el('span', 'nowrap', relativeTime(run.started_at));
+    time.title = new Date(run.started_at).toLocaleString();
+    timeTd.append(time);
+    const scheduleTd = el('td', '', scheduleNames.get(run.schedule_id) || (run.schedule_id ? run.schedule_id.slice(0, 8) : 'manual'));
+    const hostTd = el('td', '', hostNames.get(run.host_id) || (run.host_id ? run.host_id.slice(0, 8) : '—'));
+    const actionTd = el('td', '', run.action === 'patch-apply' ? 'apply' : run.action === 'patch-check' ? 'check' : run.action);
+    const statusTd = el('td');
+    statusTd.append(scheduleStatusBadge(run.status));
+    const exitTd = el('td', '', String(run.exit_code));
+    const durationTd = el('td', '', run.status === 'running' ? 'running' : formatRunDuration(run));
+    const outputTd = el('td', 'alert-detail', (run.error || run.output || '').replace(/\s+/g, ' ').slice(0, 180));
+    outputTd.title = [run.error, run.output].filter(Boolean).join('\n');
+    row.append(timeTd, scheduleTd, hostTd, actionTd, statusTd, exitTd, durationTd, outputTd);
+    runBody.append(row);
+  }
+}
+
+async function runScheduleNow(schedule) {
+  if (!confirm('Run schedule "' + schedule.name + '" now? This runs the configured check or apply immediately.')) return;
+  try {
+    await api('/api/v1/schedules/' + encodeURIComponent(schedule.id) + '/run', { method: 'POST', body: '{}' });
+    toast('Schedule queued: ' + schedule.name, 'ok');
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await loadAll();
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
+async function deleteSchedule(schedule) {
+  if (!confirm('Delete schedule "' + schedule.name + '"? Existing run history is retained.')) return;
+  try {
+    await api('/api/v1/schedules/' + encodeURIComponent(schedule.id), { method: 'DELETE' });
+    toast('Schedule deleted', 'ok');
+    await loadAll();
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
+function showScheduleModal(schedule = null) {
+  const editing = Boolean(schedule);
+  const source = schedule || {};
+  const form = el('form', 'modal-body');
+  form.append(el('p', 'muted', 'Schedules use a standard five-field cron expression in the selected IANA timezone. The host must use key authentication and the restricted NOPASSWD helper; scheduled jobs never prompt for credentials.'));
+  const topRow = el('div', 'form-row');
+  const name = inputField(topRow, 'Name', 'name', 'Nightly patches');
+  const mode = selectField(topRow, 'Mode', 'mode', [['check', 'Check only (dry run)'], ['apply', 'Apply updates']]);
+  form.append(topRow);
+  const enabledWrap = el('label', 'field checkbox-field');
+  const enabled = el('input');
+  enabled.type = 'checkbox';
+  enabled.checked = source.enabled !== false;
+  enabledWrap.append(enabled, document.createTextNode('Enabled'));
+  form.append(enabledWrap);
+  const presetRow = el('div', 'form-row');
+  const preset = selectField(presetRow, 'Cron preset', 'cron_preset', [
+    ['custom', 'Custom expression'],
+    ['0 3 * * *', 'Daily at 03:00'],
+    ['0 3 * * 0', 'Weekly Sunday at 03:00'],
+    ['0 */6 * * *', 'Every 6 hours'],
+    ['0 3 1 * *', 'Monthly, first day at 03:00'],
+  ]);
+  const cron = inputField(presetRow, 'Cron expression', 'cron', '0 3 * * *');
+  form.append(presetRow);
+  const timingRow = el('div', 'form-row three');
+  const timezone = inputField(timingRow, 'Timezone', 'timezone', 'UTC');
+  const windowMinutes = inputField(timingRow, 'Late-start window (min)', 'window_minutes', '120', 'number');
+  const jitter = inputField(timingRow, 'Jitter (seconds)', 'jitter_seconds', '60', 'number');
+  form.append(timingRow);
+  const limitsRow = el('div', 'form-row three');
+  const concurrency = inputField(limitsRow, 'Max concurrency', 'max_concurrency', '3', 'number');
+  const notify = selectField(limitsRow, 'Email', 'notify', [['failures', 'On failures'], ['always', 'Every run'], ['never', 'Never']]);
+  const runIfMissed = el('label', 'field checkbox-field');
+  const missed = el('input');
+  missed.type = 'checkbox';
+  runIfMissed.append(missed, document.createTextNode('Run the latest missed occurrence'));
+  form.append(limitsRow);
+  form.append(runIfMissed);
+  const recipients = inputField(form, 'Alert recipients (optional)', 'recipients', 'ops@example.com');
+  recipients.spellcheck = false;
+  const modeNote = el('p', 'field-note');
+  form.append(modeNote);
+  const syncModeNote = () => {
+    modeNote.textContent = mode.value === 'apply'
+      ? 'Apply mode runs the target package manager as root on every eligible host. Reboots are never automatic. Use a canary schedule first.'
+      : 'Check mode is a dry run using the target package manager. It records the result but does not install updates.';
+  };
+  mode.addEventListener('change', syncModeNote);
+  syncModeNote();
+  preset.addEventListener('change', () => {
+    if (preset.value !== 'custom') cron.value = preset.value;
+  });
+
+  const assignmentCard = el('div', 'detail-card');
+  assignmentCard.append(el('h3', '', 'Assignments'));
+  assignmentCard.append(el('p', 'muted', 'Targets can be the fleet, a group, a tag, or individual hosts. Hosts without key auth or a trusted host key are skipped.'));
+  const assignmentControls = el('div', 'form-row assignment-controls');
+  const scope = selectField(assignmentControls, 'Scope', 'scope', [['fleet', 'Fleet'], ['host', 'Host'], ['group', 'Group'], ['tag', 'Tag']]);
+  const assignmentTargetWrap = el('label', 'field', 'Target');
+  const hostSelect = el('select');
+  for (const hostEntry of state.hosts) {
+    const option = el('option', '', hostEntry.name + ' (' + hostEntry.address + ')');
+    option.value = hostEntry.id;
+    hostSelect.append(option);
+  }
+  const textTarget = el('input');
+  textTarget.type = 'text';
+  textTarget.autocomplete = 'off';
+  const fleetNote = el('div', 'field-static', 'All managed hosts');
+  const groupDatalist = el('datalist');
+  groupDatalist.id = 'schedule-groups-' + Math.random().toString(36).slice(2, 8);
+  for (const value of [...new Set(state.hosts.map((hostEntry) => hostEntry.group_name).filter(Boolean))]) {
+    const option = el('option');
+    option.value = value;
+    groupDatalist.append(option);
+  }
+  const tagDatalist = el('datalist');
+  tagDatalist.id = 'schedule-tags-' + Math.random().toString(36).slice(2, 8);
+  for (const value of [...new Set(state.hosts.flatMap((hostEntry) => String(hostEntry.tags || '').split(',').map((tag) => tag.trim())).filter(Boolean))]) {
+    const option = el('option');
+    option.value = value;
+    tagDatalist.append(option);
+  }
+  assignmentTargetWrap.append(hostSelect, textTarget, fleetNote);
+  assignmentControls.append(assignmentTargetWrap);
+  const addAssignment = el('button', 'btn', 'Add');
+  addAssignment.type = 'button';
+  assignmentControls.append(addAssignment);
+  assignmentCard.append(assignmentControls, groupDatalist, tagDatalist);
+  const chips = el('div', 'assignment-chips');
+  assignmentCard.append(chips);
+  form.append(assignmentCard);
+  const assignments = (source.assignments || []).map((assignment) => ({ scope: assignment.scope, target: assignment.target || '' }));
+
+  const syncAssignmentTarget = () => {
+    const value = scope.value;
+    hostSelect.classList.toggle('hidden', value !== 'host');
+    textTarget.classList.toggle('hidden', value === 'host' || value === 'fleet');
+    fleetNote.classList.toggle('hidden', value !== 'fleet');
+    if (value === 'group') {
+      textTarget.placeholder = 'web-prod';
+      textTarget.setAttribute('list', groupDatalist.id);
+    } else if (value === 'tag') {
+      textTarget.placeholder = 'prod';
+      textTarget.setAttribute('list', tagDatalist.id);
+    } else {
+      textTarget.placeholder = '';
+      textTarget.removeAttribute('list');
+    }
+    addAssignment.disabled = value === 'host' && state.hosts.length === 0;
+  };
+  const renderAssignments = () => {
+    chips.replaceChildren();
+    if (!assignments.length) {
+      chips.append(el('span', 'muted', 'No assignments yet.'));
+      return;
+    }
+    for (const assignment of assignments) {
+      const chip = el('span', 'assignment-chip');
+      chip.append(el('span', '', monitorAssignmentLabel(assignment)));
+      const remove = el('button', 'chip-remove', '×');
+      remove.type = 'button';
+      remove.addEventListener('click', () => {
+        const index = assignments.indexOf(assignment);
+        if (index >= 0) assignments.splice(index, 1);
+        renderAssignments();
+      });
+      chip.append(remove);
+      chips.append(chip);
+    }
+  };
+  addAssignment.addEventListener('click', () => {
+    const selectedScope = scope.value;
+    let value = selectedScope === 'host' ? hostSelect.value : textTarget.value.trim();
+    if (selectedScope === 'fleet') value = '';
+    if (selectedScope !== 'fleet' && !value) {
+      toast('Choose a target for this assignment', 'error');
+      return;
+    }
+    if (assignments.some((entry) => entry.scope === selectedScope && entry.target === value)) {
+      toast('That assignment is already added', 'error');
+      return;
+    }
+    assignments.push({ scope: selectedScope, target: value });
+    textTarget.value = '';
+    renderAssignments();
+  });
+
+  name.value = source.name || '';
+  mode.value = source.mode || 'check';
+  cron.value = source.cron || '0 3 * * *';
+  timezone.value = source.timezone || 'UTC';
+  windowMinutes.value = String(source.window_minutes || 120);
+  jitter.value = String(source.jitter_seconds ?? 60);
+  concurrency.value = String(source.max_concurrency || 3);
+  notify.value = source.notify || 'failures';
+  recipients.value = source.recipients || '';
+  missed.checked = Boolean(source.run_if_missed);
+  preset.value = 'custom';
+  syncModeNote();
+  syncAssignmentTarget();
+  renderAssignments();
+  scope.addEventListener('change', syncAssignmentTarget);
+
+  const actions = el('div', 'modal-actions');
+  const cancel = el('button', 'btn', 'Cancel');
+  cancel.type = 'button';
+  const save = el('button', 'btn primary', editing ? 'Save schedule' : 'Add schedule');
+  save.type = 'submit';
+  actions.append(cancel, save);
+  form.append(actions);
+  const close = openModal(editing ? 'Edit schedule — ' + schedule.name : 'Add patch schedule', form, null, 'wide');
+  cancel.addEventListener('click', close);
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!assignments.length) {
+      toast('Add at least one assignment', 'error');
+      return;
+    }
+    const payload = {
+      name: name.value.trim(), mode: mode.value, enabled: enabled.checked,
+      cron: cron.value.trim(), timezone: timezone.value.trim(),
+      window_minutes: Number(windowMinutes.value || 120),
+      jitter_seconds: Number(jitter.value || 0),
+      max_concurrency: Number(concurrency.value || 3),
+      run_if_missed: missed.checked, notify: notify.value,
+      recipients: recipients.value.trim(), assignments,
+    };
+    try {
+      const url = editing ? '/api/v1/schedules/' + encodeURIComponent(schedule.id) : '/api/v1/schedules';
+      await api(url, { method: editing ? 'PUT' : 'POST', body: JSON.stringify(payload) });
+      close();
+      toast(editing ? 'Schedule updated' : 'Schedule added', 'ok');
+      await loadAll();
+    } catch (error) {
+      toast(error.message, 'error');
     }
   });
 }
@@ -2821,8 +3151,9 @@ function renderImportPreview(container, result) {
 
 function showBackupModal() {
   const body = el('div', 'modal-body');
-  body.append(el('p', 'muted', 'Creates a consistent encrypted copy plus the .meta sidecar. The path must not exist.'));
-  const path = inputField(body, 'Backup path', 'path', '/var/backups/hibp-2026-11-10.hibp');
+  body.append(el('p', 'muted', 'Creates a consistent encrypted copy plus the .meta sidecar. Leave the field blank to use the database directory, enter an existing directory for a timestamped hibp-YYYY-MM-DD-HHMMSS.bac file, or enter a new absolute file path.'));
+  const path = inputField(body, 'Backup directory or file path', 'path', 'Database directory (blank) or /var/lib/hibp');
+  body.append(el('p', 'field-note', 'The .meta sidecar is required to open the backup. A backup in the same directory is not protection against disk loss; copy it off-host according to your policy.'));
   const actions = el('div', 'modal-actions');
   const cancel = el('button', 'btn', 'Cancel');
   cancel.type = 'button';
@@ -2847,7 +3178,7 @@ function showBackupModal() {
 function showRestoreModal() {
   const body = el('div', 'modal-body');
   body.append(el('p', 'muted', 'Copies a backup pair to a new database path and verifies it. Restart the server with --db pointing at the restored file to use it.'));
-  const backupPath = inputField(body, 'Backup path', 'backup_path', '/var/backups/hibp-2026-11-10.hibp');
+  const backupPath = inputField(body, 'Backup path', 'backup_path', '/var/lib/hibp/hibp-2026-11-10-030000.bac');
   const destPath = inputField(body, 'New database path', 'dest_path', '/var/lib/hibp/restored.hibp');
   const actions = el('div', 'modal-actions');
   const cancel = el('button', 'btn', 'Cancel');
@@ -2997,6 +3328,7 @@ function bind() {
   $('open-settings').addEventListener('click', showSettingsModal);
   $('monitor-add').addEventListener('click', () => showMonitorModal());
   $('monitor-notifications').addEventListener('click', showSMTPModal);
+  $('schedule-add').addEventListener('click', () => showScheduleModal());
   $('backup-button').addEventListener('click', showBackupModal);
   $('restore-button').addEventListener('click', showRestoreModal);
   $('verify-audit').addEventListener('click', verifyAudit);

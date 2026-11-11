@@ -12,6 +12,7 @@ are compiled into or used by the application. Their licenses remain in effect.
 | `github.com/shirou/gopsutil/v4` | BSD-3-Clause | Read-only host metrics and system information |
 | `github.com/vmware/govmomi` | Apache-2.0 | Read-only vCenter alarm polling |
 | `github.com/skip2/go-qrcode` | MIT | TOTP enrollment QR |
+| `github.com/robfig/cron/v3` | MIT | Cron expression parsing for patch schedules |
 | `golang.org/x/crypto` | BSD-3-Clause | SSH, Argon2id, BLAKE2b |
 | `golang.org/x/sys` | BSD-3-Clause | Low-level system calls |
 | `golang.org/x/term` | BSD-3-Clause | Terminal passphrase input |

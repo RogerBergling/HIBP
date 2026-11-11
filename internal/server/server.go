@@ -2,6 +2,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -54,6 +55,12 @@ type Server struct {
 	integrationRunning bool
 	integrationWake    chan struct{}
 	integrationRuntime map[string]integrationRuntime
+	schedulerMu        sync.Mutex
+	schedulerScanning  bool
+	schedulerRunning   map[string]bool
+	schedulerCtx       context.Context
+	schedulerWake      chan struct{}
+	schedulerSlots     chan struct{}
 	mux                *http.ServeMux
 }
 
@@ -104,6 +111,9 @@ func New(cfg Config) (*Server, error) {
 		monitorWake:        make(chan struct{}, 1),
 		integrationWake:    make(chan struct{}, 1),
 		integrationRuntime: make(map[string]integrationRuntime),
+		schedulerRunning:   make(map[string]bool),
+		schedulerWake:      make(chan struct{}, 1),
+		schedulerSlots:     make(chan struct{}, 20),
 		mux:                http.NewServeMux(),
 	}
 	s.routes()
@@ -165,6 +175,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/v1/integrations/{source}", s.auth(s.handlePutIntegration))
 	s.mux.HandleFunc("POST /api/v1/integrations/{source}/test", s.auth(s.handleTestIntegration))
 	s.mux.HandleFunc("POST /api/v1/integrations/{source}/check", s.auth(s.handleCheckIntegration))
+	s.mux.HandleFunc("GET /api/v1/schedules", s.auth(s.handleListSchedules))
+	s.mux.HandleFunc("POST /api/v1/schedules", s.auth(s.handleCreateSchedule))
+	s.mux.HandleFunc("PUT /api/v1/schedules/{id}", s.auth(s.handleUpdateSchedule))
+	s.mux.HandleFunc("DELETE /api/v1/schedules/{id}", s.auth(s.handleDeleteSchedule))
+	s.mux.HandleFunc("POST /api/v1/schedules/{id}/run", s.auth(s.handleRunSchedule))
+	s.mux.HandleFunc("GET /api/v1/runs", s.auth(s.handleListRuns))
 	s.mux.HandleFunc("POST /api/v1/import", s.auth(s.handleImport))
 	s.mux.HandleFunc("POST /api/v1/cmdb/import", s.auth(s.handleCMDBImport))
 	s.mux.HandleFunc("GET /api/v1/audit", s.auth(s.handleAudit))

@@ -39,7 +39,8 @@ In scope:
 - sudo helper argument validation and privilege boundaries
 - audit-chain integrity and log redaction
 - import/export parsing, CSV injection, path traversal
-- monitoring probes, SMTP delivery, and vCenter/HAProxy/OPNsense integrations
+- monitoring probes, SMTP delivery, vCenter/HAProxy/OPNsense integrations, and
+  cron patch scheduling
 - CMDB file import and host merge/overwrite behavior
 - release packaging, dependency selection, and build supply chain
 - privilege escalation from the controller or a managed target
@@ -91,8 +92,13 @@ Out of scope:
 - The packaged systemd unit needs path and unlock customization:
   `ProtectHome=true` blocks `~/.ssh`, a passphrase file is required for a
   headless start, and backups outside `ReadWritePaths` are denied.
-- No RBAC, scheduler, job queue, run history, package diff, approved playbooks,
-  or host disabled/maintenance state. Patch and reboot operations are manual.
+- No RBAC, durable job queue, package diff, approval workflow, approved
+  playbooks, or host disabled/maintenance state. The cron scheduler is
+  single-process, has no retry/resume or security-only filter, and runs only
+  while the controller is unlocked and running.
+- Patch schedules accept only key-auth hosts with a trusted host key and the
+  restricted `NOPASSWD` helper. Non-eligible hosts are skipped. Apply jobs never
+  reboot automatically. Per-host output in run history is capped at 16 KiB.
 - Fleet monitors can emit one email per host; there is no aggregation or global
   rate limit. Audit, alert, and integration-event retention is not implemented.
   Integration poll failures are visible on the source card but not emailed.
@@ -110,11 +116,11 @@ Out of scope:
 - Real target, cross-distro, helper-rollout, reboot, and package-update testing
   is still required on disposable VMs before broad production use.
 
-## Docker, monitoring, email, and integration controls
+## Docker, monitoring, email, integration, and scheduling controls
 
 Read-only observability, project-level Docker check/apply, monitoring rules,
-SMTP email alerting, vCenter/HAProxy/OPNsense integrations, and CMDB import are
-implemented.
+SMTP email alerting, vCenter/HAProxy/OPNsense integrations, CMDB import, and
+cron-based patch schedules are implemented.
 
 - Docker socket access is root-equivalent. The controller does not connect to
   Docker directly; the root-owned helper exposes only fixed, read-only or
@@ -149,6 +155,18 @@ implemented.
   not send it to untrusted mailboxes.
 - Monitoring is an alerting and visibility feature, not a remote-control plane.
   A monitoring credential must not be able to change the monitored system.
+- Patch schedules are administrator-only definitions. They run the same fixed
+  `check`/`apply` helper actions as manual patching, use the configured cron
+  timezone and maintenance window, and only target hosts with key auth and a
+  trusted host key. Concurrency is bounded per schedule, and every host attempt
+  is written to run history and the audit log. Apply jobs do not reboot
+  automatically. The scheduler is not a durable job queue: an interrupted run
+  is not resumed, and the process must be unlocked and running. Scheduler and
+  manual patch/reboot actions do not share a per-host operation lock; avoid
+  overlapping operator actions on the same host.
+- SMTP is also used for schedule summaries. A local Postfix relay with no
+  authentication is supported over a reachable TCP socket, but must be
+  restricted to trusted sources; plain SMTP has no transport encryption.
 - External integrations are read-only:
   - vCenter uses a dedicated read-only account over HTTPS, retrieves active
     triggered alarms for all managed entities, and never syncs inventory or
@@ -185,6 +203,10 @@ implemented.
   the backup directory to `ReadWritePaths`.
 - Keep the database, backups, and SSH keys at mode `0600`.
 - Verify host-key fingerprints through an independent channel.
+- Use a check-only schedule on a canary host before any apply schedule; keep
+  schedule concurrency low and review Recent runs and the audit log.
+- If using interactive unlock, keep the server in a persistent console/tmux
+  session. Schedules, collection, and monitoring stop when the process stops.
 - Do not use `NOPASSWD: ALL`; use the narrow helper rule.
 - The reboot action is destructive. HIBP requires explicit confirmation in the
   API and UI and runs only the fixed helper action. It never reboots

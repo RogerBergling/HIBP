@@ -640,16 +640,23 @@ func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	if !filepath.IsAbs(request.Path) {
+	path := strings.TrimSpace(request.Path)
+	if path == "" {
+		path = filepath.Dir(s.store.Path())
+	}
+	if !filepath.IsAbs(path) {
 		writeError(w, http.StatusBadRequest, "backup path must be absolute")
 		return
 	}
-	if err := s.store.Backup(request.Path); err != nil {
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		path = filepath.Join(path, "hibp-"+time.Now().Format("2006-01-02-150405")+".bac")
+	}
+	if err := s.store.Backup(path); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	_ = s.store.AddAudit(s.auditActor(r), "backup", "database", "", request.Path)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": request.Path, "sidecar": request.Path + ".meta"})
+	_ = s.store.AddAudit(s.auditActor(r), "backup", "database", "", path)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": path, "sidecar": path + ".meta"})
 }
 
 type restoreRequest struct {
