@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/RogerBergling/hibp/internal/buildinfo"
 )
 
 func TestParseOSRelease(t *testing.T) {
@@ -296,5 +298,25 @@ func TestDockerCheckAndApply(t *testing.T) {
 	}
 	if _, err := dockerCheck(context.Background(), []string{"bad project"}); err == nil {
 		t.Fatal("invalid project name accepted")
+	}
+}
+
+func TestFactsIncludeHelperBuildIdentity(t *testing.T) {
+	restoreLook := SetLookPathForTest(func(string) (string, error) {
+		return "", errors.New("not found")
+	})
+	defer restoreLook()
+	old := buildinfo.Current
+	buildinfo.Current = buildinfo.Info{
+		Version: "0.6.3", BuildNumber: "42", BuildCommit: "abc123def456",
+		BuildDate: "2026-11-11T12:00:00Z", BuildTarget: "linux/amd64", BuildType: "release",
+	}
+	defer func() { buildinfo.Current = old }()
+	facts, err := collectFacts(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if facts.Agent != buildinfo.Current {
+		t.Fatalf("helper build = %+v, want %+v", facts.Agent, buildinfo.Current)
 	}
 }
