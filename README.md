@@ -36,6 +36,7 @@ and can back up. A CLI and a background service use the same core.
 - [Install prerequisites](#install-prerequisites)
 - [Quick start (source build)](#quick-start-source-build)
 - [Authentication and MFA](#authentication-and-mfa)
+- [Docker and monitoring (planned)](#docker-and-monitoring-planned)
 - [Target sudo setup](#target-sudo-setup)
 - [What HIBP is](#what-hibp-is)
 - [Why it exists](#why-it-exists)
@@ -470,6 +471,92 @@ recovery boundary.
 - **The UI is loopback-only.** Do not expose it directly to a network.
 - **MFA is mandatory after setup.** A stolen password alone cannot reach hosts.
 - **Passkeys need `localhost`; TOTP is the fallback on `127.0.0.1`.**
+
+## Docker and monitoring (planned)
+
+> **Status: design agreed, implementation starting after the remaining operator
+> decisions.** This section is a roadmap, not a claim that the feature exists.
+
+### Docker containers
+
+Docker access is root-equivalent. HIBP will extend the existing root-owned
+helper with fixed actions instead of giving the controller a Docker socket or
+running a second privileged daemon.
+
+- `docker-list` — read-only Compose projects, containers, health, ports, image
+  tags, and project metadata.
+- `docker-check <project>` — `docker compose pull` and image-ID comparison; it
+  does not restart anything.
+- `docker-apply <project>` — `docker compose up -d --pull never` after explicit
+  confirmation.
+
+Project names come from Docker/Compose metadata, never arbitrary controller
+paths. Compose files, `.env` files, and build contexts must be root-owned and
+not group/world-writable. The default scan root is `/opt`; it will be
+configurable. HIBP will not run `down -v`, will not prune volumes, and will not
+update containers automatically. Mutations are serialised per host and audited.
+
+Containers are **child workloads of a host**, not new SSH-managed “servers”.
+They do not inherit SSH keys or the host’s sudo rule. Standalone containers are
+visible read-only in phase 1; project-level Compose updates come first.
+
+### System information
+
+A read-only `system-info` helper action will collect a bounded snapshot:
+
+- CPU model, cores, and load average.
+- Memory and swap.
+- Disk usage per mount.
+- Network interfaces, addresses, default route, and DNS.
+- Kernel, architecture, boot time, uptime, and virtualisation/container hints.
+- systemd version, failed units, and running-service count.
+- Listening ports.
+- Docker Engine and Compose versions, and container counts.
+- Time-sync state and reboot requirement.
+
+Full facts/system information will run twice a day. Lightweight metric samples
+(CPU, memory, disk, load) will feed history graphs. Ten-second polling is not
+recommended: with 2–500 hosts it creates a self-inflicted SSH/CPU load and does
+not improve patch-management decisions. The starting recommendation is 60
+seconds for up/down checks and 1–5 minutes for metrics, configurable per
+monitor. The UI will show time-series graphs in the host detail drawer.
+
+### Monitoring and email
+
+The host detail drawer will have **Overview**, **Containers**, **Services**, and
+**System** tabs. Monitoring is defined once and assigned to hosts, groups, or
+the fleet; assignments are filtered by capability, so Docker checks only apply
+to hosts with Docker.
+
+Planned check types:
+
+- Host thresholds: CPU, memory, disk, load.
+- systemd service up/down.
+- Docker project/container up/down and health.
+- HTTP/HTTPS endpoint status, latency, and optional TCP port.
+- SSL certificate expiry and chain validation.
+- Later: vCenter and child objects, HAProxy, and OPNsense.
+
+Email alerts will use SMTP with TLS and authentication. Credentials will be
+stored only in the SQLCipher database, never logged or returned by the API.
+Alerts will support recipients, cooldowns/deduplication, recovery notices, and
+an audit trail. System information remains read-only in the first release; no
+service start/stop/restart.
+
+### CMDB
+
+CMDB-lite remains the offline inventory authority. HIBP will provide a
+read-only CMDB CSV/JSON import with a preview and an explicit per-record choice
+to **merge** or **overwrite**. It will map `external_id`/`ci_id` to
+`cmdb_ci_id`. HIBP will not write back to the CMDB database.
+
+### Delivery phases
+
+1. Read-only system information, Docker inventory, host detail drawer,
+   twice-daily collection, and metric history.
+2. Monitoring definitions, SMTP email, Docker check/apply, HTTP/TCP/SSL checks.
+3. vCenter, HAProxy, and OPNsense integrations.
+4. CMDB import with preview and merge/overwrite.
 
 ## Target sudo setup
 
@@ -1849,8 +1936,8 @@ Still missing:
 - Run the scheduler on the always-on server; no agent is required.
 - Manual database unlock after a server reboot; show the locked/paused state and
   do not run jobs until unlocked.
-- Notifications via webhook and ntfy for failure, reboot required, and stale
-  hosts.
+- Notifications via email, webhook, and ntfy for failures, reboot required, stale
+  hosts, Docker/service availability, HTTP/TLS checks, and threshold alarms.
 - Next-run and run-history UI.
 - Acceptance: a daily schedule runs with the laptop closed, survives a server
   restart after manual unlock, and reports the result.
@@ -1875,7 +1962,7 @@ Still missing:
   `.deb`/`.rpm` wrappers.
 - Cross-distro CI matrix: Debian, Ubuntu, Kali, Fedora, and SUSE first; Arch and
   Alpine in the second wave.
-- `cmdb-lite` import and optional status write-back.
+- read-only `cmdb-lite` import with explicit merge/overwrite preview; no write-back.
 - Documentation for operators, backup, upgrade, and troubleshooting.
 
 ### M6 - Agent hardening and scale
