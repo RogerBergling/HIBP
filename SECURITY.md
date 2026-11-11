@@ -67,21 +67,26 @@ Out of scope:
 - Account recovery is local-only: `hibp user reset` requires the database
   passphrase and access to the controller. There is no email or remote reset.
 
-## Planned Docker and monitoring controls
+## Docker and monitoring controls
 
-These controls apply to the Docker, system-information, and alerting work that
-is being added next.
+Phase 1 is implemented as read-only observability. The mutating Docker and
+alerting controls below apply to the next phases.
 
-- Docker socket access is root-equivalent. The controller will not connect to
-  Docker directly; the root-owned helper will expose only fixed, read-only or
+- Docker socket access is root-equivalent. The controller does not connect to
+  Docker directly; the root-owned helper exposes only fixed, read-only or
   explicitly confirmed actions.
+- `system-info`, `metrics`, and `docker-list` are read-only. `docker-list`
+  deliberately omits environment variables, command lines, mounts, and secrets.
+- The collector never prompts for credentials. Scheduled collection requires
+  the restricted NOPASSWD helper; password-auth hosts are collected manually.
 - Docker updates will be project-level Compose operations. Project names and
   paths come from Docker metadata, not arbitrary controller input. Compose
   files, `.env` files, and build contexts must be root-owned and not
   group/world-writable. No automatic updates, no `down -v`, and no volume
   pruning.
 - System information remains read-only. No service start/stop/restart is exposed
-  in the first monitoring release.
+  in the first monitoring release. Fleet and per-host collection settings are
+  stored in SQLCipher.
 - SMTP credentials, vCenter credentials, and API tokens are stored only in the
   SQLCipher database and are never returned by the API, logged, or written to
   audit details. Use TLS for SMTP and read-only accounts for vCenter/HAProxy/

@@ -209,7 +209,10 @@ func sudoersContent(username string) string {
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper apply
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper reboot
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper reboot-check
-`, username, username, username, username, username)
+%s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper system-info
+%s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper metrics
+%s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-list
+`, username, username, username, username, username, username, username, username)
 }
 
 func architectureMatches(uname string) bool {

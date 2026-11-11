@@ -678,6 +678,86 @@ func TestRebootRequiresConfirmation(t *testing.T) {
 	}
 }
 
+func TestSettingsEndpoints(t *testing.T) {
+	ts, _ := testServer(t)
+	resp := request(t, http.MethodGet, ts.URL+"/api/v1/settings", "test-token", "")
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("get settings failed: %d %s", resp.StatusCode, data)
+	}
+	resp.Body.Close()
+	resp = request(t, http.MethodPut, ts.URL+"/api/v1/settings", "test-token", `{"scope":"fleet","settings":{"collector.metrics_interval":"1m","metrics.retention_days":"14"}}`)
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("put settings failed: %d %s", resp.StatusCode, data)
+	}
+	var payload struct {
+		Resolved map[string]string `json:"resolved"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if payload.Resolved["collector.metrics_interval"] != "1m" || payload.Resolved["metrics.retention_days"] != "14" {
+		t.Fatalf("unexpected settings: %#v", payload.Resolved)
+	}
+	resp = request(t, http.MethodPut, ts.URL+"/api/v1/settings", "test-token", `{"scope":"fleet","settings":{"collector.metrics_interval":"2s"}}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		resp.Body.Close()
+		t.Fatalf("expected invalid interval rejection, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestHostDetailsEndpoint(t *testing.T) {
+	ts, db := testServer(t)
+	body := `{"name":"web01","address":"10.0.0.10","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519"}`
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/hosts", "test-token", body)
+	if resp.StatusCode != http.StatusCreated {
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("create host failed: %d %s", resp.StatusCode, data)
+	}
+	var host store.Host
+	if err := json.NewDecoder(resp.Body).Decode(&host); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if err := db.SaveSystemInfo(host.ID, "2026-11-11T07:00:00Z", `{"hostname":"web01","cpu":{"usage_percent":12.5}}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveMetrics(host.ID, store.MetricSample{CollectedAt: "2026-11-11T07:00:00Z", CPUPercent: 12.5, MemoryPercent: 30}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveDockerInventory(host.ID,
+		[]store.DockerProject{{Name: "web", Status: "running(1)", ConfigFiles: "/opt/web/compose.yaml"}},
+		[]store.DockerContainer{{ContainerID: "abc", Name: "web-1", Project: "web", Service: "frontend", Image: "nginx", State: "running", Health: "healthy"}}); err != nil {
+		t.Fatal(err)
+	}
+	resp = request(t, http.MethodGet, ts.URL+"/api/v1/hosts/"+host.ID+"/details", "test-token", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("details failed: %d %s", resp.StatusCode, data)
+	}
+	var details struct {
+		SystemInfo map[string]any          `json:"system_info"`
+		Metrics    []store.MetricSample    `json:"metrics"`
+		Projects   []store.DockerProject   `json:"docker_projects"`
+		Containers []store.DockerContainer `json:"docker_containers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&details); err != nil {
+		t.Fatal(err)
+	}
+	if details.SystemInfo["hostname"] != "web01" || len(details.Metrics) != 1 || len(details.Projects) != 1 || len(details.Containers) != 1 {
+		t.Fatalf("unexpected details: %+v", details)
+	}
+}
+
 func TestBootstrapRequiresTrustedHostKey(t *testing.T) {
 	ts, _ := testServer(t)
 	body := `{"name":"web01","address":"10.0.0.10","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519"}`

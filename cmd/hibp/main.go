@@ -85,7 +85,7 @@ func usage() {
 
 Usage:
   hibp server [flags]     Run the local browser UI and API
-  hibp helper <action>    Run a fixed target action (facts|check|apply|reboot|reboot-check)
+  hibp helper <action>    Run a fixed target action (facts|check|apply|reboot|reboot-check|system-info|metrics|docker-list)
   hibp user reset         Reset the local account password, TOTP, and passkeys
   hibp version            Print the version
 
@@ -234,6 +234,7 @@ func runServer(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go app.RunCollector(ctx)
 	errCh := make(chan error, 1)
 	go func() { errCh <- httpServer.Serve(listener) }()
 	select {
@@ -253,7 +254,7 @@ func runServer(args []string) error {
 
 func runHelper(args []string) error {
 	if len(args) != 1 {
-		return fmt.Errorf("usage: hibp helper <facts|check|apply|reboot|reboot-check>")
+		return fmt.Errorf("usage: hibp helper <facts|check|apply|reboot|reboot-check|system-info|metrics|docker-list>")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()

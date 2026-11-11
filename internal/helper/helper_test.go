@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -138,5 +139,78 @@ func TestRebootFallsBackToShutdown(t *testing.T) {
 	}
 	if gotName != "/sbin/shutdown" || strings.Join(gotArgs, " ") != "-r now" {
 		t.Fatalf("unexpected command: %s %v", gotName, gotArgs)
+	}
+}
+
+func TestDockerInventoryParsing(t *testing.T) {
+	restoreLook := SetLookPathForTest(func(name string) (string, error) {
+		if name == "docker" {
+			return "/usr/bin/docker", nil
+		}
+		return "", errors.New("not found")
+	})
+	defer restoreLook()
+	restoreRun := SetRunnerForTest(func(_ context.Context, name string, args ...string) ([]byte, int, error) {
+		if name != "/usr/bin/docker" {
+			t.Fatalf("unexpected binary: %s", name)
+		}
+		switch strings.Join(args, " ") {
+		case "version --format {{.Server.Version}}":
+			return []byte("27.0.0\n"), 0, nil
+		case "compose version --short":
+			return []byte("2.30.0\n"), 0, nil
+		case "compose ls --all --format json":
+			return []byte(`[{"Name":"web","Status":"running(2)","ConfigFiles":"/opt/web/compose.yaml"}]`), 0, nil
+		case "ps -a --no-trunc --format {{json .}}":
+			return []byte(`{"ID":"abc","Names":"web-1","Image":"nginx:1.27","Labels":"com.docker.compose.project=web,com.docker.compose.service=frontend","State":"running","Status":"Up 2 hours (healthy)","Ports":"0.0.0.0:80->80/tcp","CreatedAt":"2026-11-11 06:00:00 +0000 UTC"}` + "\n" +
+				`{"ID":"def","Names":"standalone","Image":"redis:7","Labels":"","State":"exited","Status":"Exited (0) 1 hour ago","Ports":"","CreatedAt":"2026-11-11 06:00:00 +0000 UTC"}` + "\n"), 0, nil
+		default:
+			t.Fatalf("unexpected docker command: %v", args)
+		}
+		return nil, 0, nil
+	})
+	defer restoreRun()
+
+	inventory, err := collectDockerInventory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inventory.Available || inventory.DockerVersion != "27.0.0" || inventory.ComposeVersion != "2.30.0" {
+		t.Fatalf("unexpected Docker metadata: %+v", inventory)
+	}
+	if len(inventory.Projects) != 1 || inventory.Projects[0].Name != "web" {
+		t.Fatalf("unexpected projects: %+v", inventory.Projects)
+	}
+	if len(inventory.Containers) != 2 {
+		t.Fatalf("unexpected containers: %+v", inventory.Containers)
+	}
+	var composeContainer *DockerContainer
+	for index := range inventory.Containers {
+		if inventory.Containers[index].Project == "web" {
+			composeContainer = &inventory.Containers[index]
+		}
+	}
+	if composeContainer == nil || composeContainer.Service != "frontend" || composeContainer.Health != "healthy" {
+		t.Fatalf("unexpected compose container: %+v", inventory.Containers)
+	}
+}
+
+func TestSystemInfoAndMetrics(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux-only collector")
+	}
+	info, err := collectSystemInfo(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Hostname == "" || info.CPU.Cores == 0 || info.Memory.TotalBytes == 0 || len(info.Disks) == 0 {
+		t.Fatalf("incomplete system info: %+v", info)
+	}
+	metrics, err := collectMetrics(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metrics.CollectedAt == "" || metrics.MemoryPercent <= 0 {
+		t.Fatalf("incomplete metrics: %+v", metrics)
 	}
 }

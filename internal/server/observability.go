@@ -1,0 +1,293 @@
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/RogerBergling/hibp/internal/crypto"
+	"github.com/RogerBergling/hibp/internal/helper"
+	"github.com/RogerBergling/hibp/internal/store"
+)
+
+var settingDefaults = map[string]string{
+	"collector.enabled":          "1",
+	"collector.facts_interval":   "12h",
+	"collector.metrics_interval": "5m",
+	"metrics.retention_days":     "30",
+	"docker.scan_roots":          "/opt",
+}
+
+func (s *Server) resolveSettings(hostID string) map[string]string {
+	resolved := make(map[string]string, len(settingDefaults))
+	for key, fallback := range settingDefaults {
+		resolved[key] = s.store.ResolveSetting(hostID, key, fallback)
+	}
+	return resolved
+}
+
+func (s *Server) collectSystemInfo(ctx context.Context, host store.Host, password, sudoPassword string) (helper.SystemInfo, error) {
+	output, code, err := s.runHelper(ctx, host, "system-info", password, sudoPassword, 2*time.Minute)
+	if err != nil {
+		return helper.SystemInfo{}, err
+	}
+	if code != 0 {
+		return helper.SystemInfo{}, errors.New("system-info helper failed: " + strings.TrimSpace(output))
+	}
+	var info helper.SystemInfo
+	if err := json.Unmarshal([]byte(output), &info); err != nil {
+		return helper.SystemInfo{}, err
+	}
+	if err := s.store.SaveSystemInfo(host.ID, info.CollectedAt, output); err != nil {
+		return helper.SystemInfo{}, err
+	}
+	diskPercent := 0.0
+	for _, disk := range info.Disks {
+		if disk.Mount == "/" {
+			diskPercent = disk.UsedPercent
+			break
+		}
+	}
+	if info.CollectedAt == "" {
+		info.CollectedAt = crypto.Now()
+	}
+	_ = s.store.SaveMetrics(host.ID, store.MetricSample{
+		CollectedAt: info.CollectedAt, CPUPercent: info.CPU.UsagePercent,
+		MemoryPercent: info.Memory.UsedPercent, SwapPercent: info.Swap.UsedPercent,
+		DiskPercent: diskPercent, Load1: info.CPU.Load1, Load5: info.CPU.Load5,
+		Load15: info.CPU.Load15, UptimeSeconds: info.UptimeSeconds,
+	})
+	return info, nil
+}
+
+func (s *Server) collectDockerInventory(ctx context.Context, host store.Host, password, sudoPassword string) (helper.DockerInventory, error) {
+	output, code, err := s.runHelper(ctx, host, "docker-list", password, sudoPassword, 2*time.Minute)
+	if err != nil {
+		return helper.DockerInventory{}, err
+	}
+	if code != 0 {
+		return helper.DockerInventory{}, errors.New("docker-list helper failed: " + strings.TrimSpace(output))
+	}
+	var inventory helper.DockerInventory
+	if err := json.Unmarshal([]byte(output), &inventory); err != nil {
+		return helper.DockerInventory{}, err
+	}
+	projects := make([]store.DockerProject, 0, len(inventory.Projects))
+	for _, project := range inventory.Projects {
+		projects = append(projects, store.DockerProject{
+			HostID: host.ID, Name: project.Name, Status: project.Status,
+			ConfigFiles: project.ConfigFiles, WorkingDir: project.WorkingDir,
+		})
+	}
+	containers := make([]store.DockerContainer, 0, len(inventory.Containers))
+	for _, container := range inventory.Containers {
+		containers = append(containers, store.DockerContainer{
+			HostID: host.ID, ContainerID: container.ID, Name: container.Name,
+			Project: container.Project, Service: container.Service, Image: container.Image,
+			State: container.State, Status: container.Status, Health: container.Health,
+			Ports: container.Ports, CreatedAt: container.CreatedAt,
+		})
+	}
+	if err := s.store.SaveDockerInventory(host.ID, projects, containers); err != nil {
+		return helper.DockerInventory{}, err
+	}
+	return inventory, nil
+}
+
+func (s *Server) systemInfoRequest(w http.ResponseWriter, r *http.Request) (store.Host, string, string, bool) {
+	host, err := s.store.GetHost(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "host not found")
+		return store.Host{}, "", "", false
+	}
+	var request passwordRequest
+	if r.ContentLength != 0 {
+		if err := decodeJSON(w, r, &request); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return store.Host{}, "", "", false
+		}
+	}
+	password := ""
+	if host.AuthType == "password" {
+		if request.Password == "" {
+			writeError(w, http.StatusBadRequest, "password is required for password authentication")
+			return store.Host{}, "", "", false
+		}
+		password = request.Password
+	}
+	return host, password, request.SudoPassword, true
+}
+
+func (s *Server) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
+	host, password, sudoPassword, ok := s.systemInfoRequest(w, r)
+	if !ok {
+		return
+	}
+	info, err := s.collectSystemInfo(r.Context(), host, password, sudoPassword)
+	if errors.Is(err, errSudoPasswordInvalid) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "sudo_password_invalid"})
+		return
+	}
+	if errors.Is(err, errSudoPasswordRequired) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "sudo_password_required"})
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	_ = s.store.AddAudit(s.auditActor(r), "system-info", "host", host.ID, info.OSPrettyName)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "system_info": info})
+}
+
+func (s *Server) handleDockerList(w http.ResponseWriter, r *http.Request) {
+	host, password, sudoPassword, ok := s.systemInfoRequest(w, r)
+	if !ok {
+		return
+	}
+	inventory, err := s.collectDockerInventory(r.Context(), host, password, sudoPassword)
+	if errors.Is(err, errSudoPasswordInvalid) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "sudo_password_invalid"})
+		return
+	}
+	if errors.Is(err, errSudoPasswordRequired) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "sudo_password_required"})
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	_ = s.store.AddAudit(s.auditActor(r), "docker-list", "host", host.ID, strconv.Itoa(len(inventory.Containers))+" containers")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "docker": inventory})
+}
+
+func (s *Server) handleHostDetails(w http.ResponseWriter, r *http.Request) {
+	host, err := s.store.GetHost(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "host not found")
+		return
+	}
+	key, _ := s.store.GetHostKey(host.ID)
+	host.TrustedKey = key
+	snapshot, _ := s.store.GetSystemInfo(host.ID)
+	var systemInfo any
+	if snapshot.PayloadJSON != "" {
+		_ = json.Unmarshal([]byte(snapshot.PayloadJSON), &systemInfo)
+	}
+	metrics, _ := s.store.ListMetrics(host.ID, 2880)
+	projects, containers, _ := s.store.GetDockerInventory(host.ID)
+	settings := s.resolveSettings(host.ID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"host":              host,
+		"system_info":       systemInfo,
+		"metrics":           metrics,
+		"docker_projects":   projects,
+		"docker_containers": containers,
+		"settings":          settings,
+		"settings_defaults": settingDefaults,
+	})
+}
+
+type settingsRequest struct {
+	Scope    string            `json:"scope"`
+	HostID   string            `json:"host_id"`
+	Settings map[string]string `json:"settings"`
+}
+
+func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
+	hostID := r.URL.Query().Get("host_id")
+	fleet, err := s.store.ListSettings("fleet")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	hostSettings := map[string]string{}
+	if hostID != "" {
+		hostSettings, err = s.store.ListSettings("host:" + hostID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"fleet":    fleet,
+		"host":     hostSettings,
+		"resolved": s.resolveSettings(hostID),
+		"defaults": settingDefaults,
+	})
+}
+
+func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
+	var request settingsRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	scope := "fleet"
+	if request.Scope == "host" {
+		if strings.TrimSpace(request.HostID) == "" {
+			writeError(w, http.StatusBadRequest, "host_id is required for host settings")
+			return
+		}
+		if _, err := s.store.GetHost(request.HostID); err != nil {
+			writeError(w, http.StatusNotFound, "host not found")
+			return
+		}
+		scope = "host:" + request.HostID
+	} else if request.Scope != "" && request.Scope != "fleet" {
+		writeError(w, http.StatusBadRequest, "scope must be fleet or host")
+		return
+	}
+	for key, value := range request.Settings {
+		if _, ok := settingDefaults[key]; !ok {
+			writeError(w, http.StatusBadRequest, "unknown setting: "+key)
+			return
+		}
+		if value == "" {
+			if err := s.store.DeleteSetting(scope, key); err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			continue
+		}
+		if err := validateSetting(key, value); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := s.store.SetSetting(scope, key, value); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	_ = s.store.AddAudit(s.auditActor(r), "settings-update", "settings", scope, "updated")
+	s.handleGetSettings(w, r)
+}
+
+func validateSetting(key, value string) error {
+	switch key {
+	case "collector.enabled":
+		if value != "0" && value != "1" {
+			return errors.New("collector.enabled must be 0 or 1")
+		}
+	case "collector.facts_interval", "collector.metrics_interval":
+		duration, err := time.ParseDuration(value)
+		if err != nil || duration < 10*time.Second || duration > 7*24*time.Hour {
+			return errors.New(key + " must be a duration between 10s and 168h")
+		}
+	case "metrics.retention_days":
+		days, err := strconv.Atoi(value)
+		if err != nil || days < 1 || days > 3650 {
+			return errors.New("metrics.retention_days must be between 1 and 3650")
+		}
+	case "docker.scan_roots":
+		if strings.TrimSpace(value) == "" {
+			return errors.New("docker.scan_roots must not be empty")
+		}
+	}
+	return nil
+}

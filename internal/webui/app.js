@@ -406,6 +406,17 @@ function hostRow(host) {
   hostIcon.append(icon('host'));
   const hostText = el('div');
   hostText.append(el('div', 'host-name', host.name), el('div', 'host-ip', host.address + ':' + host.port));
+  hostText.classList.add('host-open');
+  hostText.title = 'Open host details';
+  hostText.tabIndex = 0;
+  hostText.setAttribute('role', 'button');
+  hostText.addEventListener('click', () => showHostDetails(host));
+  hostText.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      showHostDetails(host);
+    }
+  });
   hostCell.append(hostIcon, hostText);
   hostTd.append(hostCell);
 
@@ -877,6 +888,434 @@ async function rebootHost(host) {
   }
 }
 
+function detailCard(title, rows) {
+  const card = el('div', 'detail-card');
+  card.append(el('h3', '', title));
+  for (const [label, value] of rows) {
+    const line = el('p');
+    line.append(el('span', '', label + ': '), el('b', '', value === undefined || value === null || value === '' ? '—' : String(value)));
+    card.append(line);
+  }
+  return card;
+}
+
+function detailSection(title, content) {
+  const card = el('div', 'detail-card');
+  card.append(el('h3', '', title), content);
+  return card;
+}
+
+function metricCard(label, samples, key, color) {
+  const card = el('div', 'metric-card');
+  const latest = samples.length ? Number(samples[samples.length - 1][key] || 0) : 0;
+  card.append(el('div', 'muted', label), el('div', 'metric-value', latest.toFixed(1) + '%'));
+  const canvas = document.createElement('canvas');
+  canvas.width = 320;
+  canvas.height = 70;
+  card.append(canvas);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return card;
+  ctx.strokeStyle = 'rgba(139,160,189,.18)';
+  ctx.lineWidth = 1;
+  for (let y = 0; y <= canvas.height; y += canvas.height / 2) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(canvas.width, y);
+    ctx.stroke();
+  }
+  if (samples.length >= 2) {
+    ctx.beginPath();
+    const stepX = canvas.width / (samples.length - 1);
+    samples.forEach((sample, index) => {
+      const value = Math.max(0, Math.min(100, Number(sample[key] || 0)));
+      const y = canvas.height - (value / 100) * (canvas.height - 4) - 2;
+      if (index === 0) ctx.moveTo(0, y);
+      else ctx.lineTo(index * stepX, y);
+    });
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  } else {
+    card.append(el('div', 'hint', 'Waiting for metric samples…'));
+  }
+  return card;
+}
+
+function renderOverviewPanel(panel, data, host) {
+  panel.replaceChildren();
+  const facts = (data.host && data.host.facts) || {};
+  const key = data.host && data.host.trusted_key;
+  const grid = el('div', 'detail-grid');
+  grid.append(
+    detailCard('Connection', [
+      ['Address', host.address + ':' + host.port],
+      ['SSH user', host.username],
+      ['Auth', host.auth_type],
+      ['Status', host.status || 'unknown'],
+    ]),
+    detailCard('Operating system', [
+      ['OS', facts.os_pretty_name],
+      ['Kernel', facts.kernel],
+      ['Package manager', facts.package_manager],
+      ['Uptime', formatUptime(facts.uptime_seconds)],
+    ]),
+    detailCard('Patch state', [
+      ['Pending updates', facts.pending_updates],
+      ['Reboot required', facts.reboot_required ? 'yes' : 'no'],
+      ['Facts collected', facts.collected_at ? new Date(facts.collected_at).toLocaleString() : ''],
+    ]),
+    detailCard('Trust', [
+      ['Host key', key ? key.key_type + ' ' + key.fingerprint : 'not trusted'],
+      ['Group', host.group_name],
+      ['Tags', host.tags],
+      ['CMDB CI ID', host.cmdb_ci_id],
+    ]),
+  );
+  panel.append(grid);
+}
+
+function renderSystemPanel(panel, data, host, reload) {
+  panel.replaceChildren();
+  const metrics = data.metrics || [];
+  const metricGrid = el('div', 'metric-grid');
+  metricGrid.append(
+    metricCard('CPU', metrics, 'cpu_percent', '#5eead4'),
+    metricCard('Memory', metrics, 'memory_percent', '#f4b740'),
+    metricCard('Disk /', metrics, 'disk_percent', '#f26d6d'),
+  );
+  panel.append(metricGrid);
+
+  const info = data.system_info;
+  if (!info) {
+    panel.append(el('p', 'muted', 'No system information has been collected yet.'));
+  } else {
+    const cpu = info.cpu || {};
+    const memory = info.memory || {};
+    const swap = info.swap || {};
+    const systemd = info.systemd || {};
+    const docker = info.docker || {};
+    const grid = el('div', 'detail-grid');
+    grid.append(
+      detailCard('CPU', [
+        ['Model', cpu.model],
+        ['Cores', cpu.cores],
+        ['Usage', (Number(cpu.usage_percent) || 0).toFixed(1) + '%'],
+        ['Load', [cpu.load1, cpu.load5, cpu.load15].map((v) => Number(v || 0).toFixed(2)).join(' / ')],
+      ]),
+      detailCard('Memory', [
+        ['Total', formatBytes(memory.total_bytes)],
+        ['Used', formatBytes(memory.used_bytes)],
+        ['Available', formatBytes(memory.available_bytes)],
+        ['Usage', (Number(memory.used_percent) || 0).toFixed(1) + '%'],
+        ['Swap used', (Number(swap.used_percent) || 0).toFixed(1) + '%'],
+      ]),
+      detailCard('Host', [
+        ['Hostname', info.hostname],
+        ['OS', info.os_pretty_name || info.os],
+        ['Kernel', info.kernel],
+        ['Architecture', info.arch],
+        ['Virtualization', info.virtualization],
+        ['Boot time', info.boot_time ? new Date(info.boot_time).toLocaleString() : ''],
+        ['Processes', info.processes],
+      ]),
+      detailCard('Systemd', [
+        ['Version', systemd.version],
+        ['Running services', systemd.running_services],
+        ['Failed units', (systemd.failed_units || []).join(', ') || 'none'],
+      ]),
+      detailCard('Network', [
+        ['Default route', info.default_route],
+        ['DNS', (info.dns || []).join(', ')],
+      ]),
+      detailCard('Docker', [
+        ['Available', docker.available ? 'yes' : 'no'],
+        ['Engine', docker.version],
+        ['Compose', docker.compose_version],
+      ]),
+    );
+    panel.append(grid);
+
+    const diskWrap = el('div', 'scroll-list');
+    const diskTable = el('table');
+    const diskHead = el('tr');
+    for (const label of ['Mount', 'Filesystem', 'Used', 'Total', 'Use%']) diskHead.append(el('th', '', label));
+    diskTable.append(diskHead);
+    for (const diskInfo of info.disks || []) {
+      const row = el('tr');
+      row.append(el('td', '', diskInfo.mount), el('td', '', diskInfo.filesystem),
+        el('td', '', formatBytes(diskInfo.used_bytes)), el('td', '', formatBytes(diskInfo.total_bytes)),
+        el('td', '', (Number(diskInfo.used_percent) || 0).toFixed(1) + '%'));
+      diskTable.append(row);
+    }
+    diskWrap.append(diskTable);
+    panel.append(detailSection('Disks', diskWrap));
+
+    const networkWrap = el('div', 'scroll-list');
+    for (const iface of info.network || []) {
+      networkWrap.append(el('div', '', iface.name + (iface.mac ? ' · ' + iface.mac : '') + ' · ' + (iface.addresses || []).join(', ')));
+    }
+    panel.append(detailSection('Interfaces', networkWrap));
+
+    const listeningWrap = el('div', 'scroll-list');
+    for (const line of info.listening || []) listeningWrap.append(el('div', '', line));
+    if (!(info.listening || []).length) listeningWrap.append(el('div', '', 'No listening-port data.'));
+    panel.append(detailSection('Listening ports', listeningWrap));
+  }
+
+  const actions = el('div', 'modal-actions');
+  const refreshInfo = el('button', 'btn primary', 'Collect system info');
+  refreshInfo.type = 'button';
+  refreshInfo.addEventListener('click', async () => {
+    try {
+      const password = await passwordFor(host);
+      await requestWithSudo(host, '/api/v1/hosts/' + encodeURIComponent(host.id) + '/system-info',
+        (sudoPassword) => ({ password, sudo_password: sudoPassword }), { method: 'POST' });
+      toast('System information updated', 'ok');
+      await reload();
+    } catch (error) {
+      if (error.message !== 'cancelled') toast(error.message, 'error');
+    }
+  });
+  actions.append(refreshInfo);
+  panel.append(actions);
+  panel.append(renderHostSettings(data, host, reload));
+}
+
+function renderHostSettings(data, host, reload) {
+  const card = el('div', 'detail-card');
+  card.append(el('h3', '', 'Collection settings for this host'));
+  const grid = el('div', 'settings-grid');
+  const enabled = selectField(grid, 'Collector', 'collector_enabled', [['1', 'Enabled'], ['0', 'Disabled']]);
+  const metricsInterval = inputField(grid, 'Metrics interval', 'metrics_interval', '5m');
+  const factsInterval = inputField(grid, 'Facts interval', 'facts_interval', '12h');
+  const retention = inputField(grid, 'Metrics retention (days)', 'retention_days', '30', 'number');
+  const roots = inputField(grid, 'Docker scan roots', 'docker_roots', '/opt');
+  const settings = data.settings || {};
+  enabled.value = settings['collector.enabled'] || '1';
+  metricsInterval.value = settings['collector.metrics_interval'] || '5m';
+  factsInterval.value = settings['collector.facts_interval'] || '12h';
+  retention.value = settings['metrics.retention_days'] || '30';
+  roots.value = settings['docker.scan_roots'] || '/opt';
+  card.append(grid);
+  const actions = el('div', 'modal-actions');
+  const reset = el('button', 'btn', 'Use fleet defaults');
+  reset.type = 'button';
+  const save = el('button', 'btn primary', 'Save host settings');
+  save.type = 'button';
+  actions.append(reset, save);
+  card.append(actions);
+  const payload = () => ({
+    scope: 'host',
+    host_id: host.id,
+    settings: {
+      'collector.enabled': enabled.value,
+      'collector.metrics_interval': metricsInterval.value.trim(),
+      'collector.facts_interval': factsInterval.value.trim(),
+      'metrics.retention_days': retention.value.trim(),
+      'docker.scan_roots': roots.value.trim(),
+    },
+  });
+  save.addEventListener('click', async () => {
+    try {
+      await api('/api/v1/settings', { method: 'PUT', body: JSON.stringify(payload()) });
+      toast('Host settings saved', 'ok');
+      await reload();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  });
+  reset.addEventListener('click', async () => {
+    try {
+      await api('/api/v1/settings', {
+        method: 'PUT',
+        body: JSON.stringify({
+          scope: 'host', host_id: host.id,
+          settings: {
+            'collector.enabled': '', 'collector.metrics_interval': '', 'collector.facts_interval': '',
+            'metrics.retention_days': '', 'docker.scan_roots': '',
+          },
+        }),
+      });
+      toast('Host now inherits fleet defaults', 'ok');
+      await reload();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  });
+  return card;
+}
+
+function renderContainersPanel(panel, data, host, reload) {
+  panel.replaceChildren();
+  const info = (data.system_info && data.system_info.docker) || {};
+  const projects = data.docker_projects || [];
+  const containers = data.docker_containers || [];
+  panel.append(el('p', 'muted', info.available
+    ? 'Docker Engine ' + (info.version || 'unknown') + ' · Compose ' + (info.compose_version || 'unknown')
+    : 'Docker inventory has not been collected or Docker is not installed.'));
+
+  const projectWrap = el('div', 'scroll-list');
+  if (projects.length === 0) {
+    projectWrap.append(el('div', '', 'No Compose projects cached.'));
+  } else {
+    for (const project of projects) {
+      projectWrap.append(el('div', '', project.name + ' · ' + (project.status || 'unknown') + (project.config_files ? ' · ' + project.config_files : '')));
+    }
+  }
+  panel.append(detailSection('Compose projects', projectWrap));
+
+  const containerWrap = el('div', 'scroll-list');
+  const table = el('table');
+  const head = el('tr');
+  for (const label of ['Name', 'Project / service', 'Image', 'State', 'Health', 'Ports']) head.append(el('th', '', label));
+  table.append(head);
+  for (const container of containers) {
+    const row = el('tr');
+    row.append(
+      el('td', '', container.name),
+      el('td', '', (container.project || '—') + (container.service ? ' / ' + container.service : '')),
+      el('td', '', container.image),
+      el('td', '', container.state + (container.status ? ' · ' + container.status : '')),
+      el('td', '', container.health || '—'),
+      el('td', '', container.ports || '—'),
+    );
+    table.append(row);
+  }
+  if (containers.length === 0) {
+    containerWrap.append(el('div', '', 'No containers cached.'));
+  } else {
+    containerWrap.append(table);
+  }
+  panel.append(detailSection('Containers', containerWrap));
+
+  const actions = el('div', 'modal-actions');
+  const refresh = el('button', 'btn primary', 'Collect Docker inventory');
+  refresh.type = 'button';
+  refresh.addEventListener('click', async () => {
+    try {
+      const password = await passwordFor(host);
+      await requestWithSudo(host, '/api/v1/hosts/' + encodeURIComponent(host.id) + '/docker/list',
+        (sudoPassword) => ({ password, sudo_password: sudoPassword }), { method: 'POST' });
+      toast('Docker inventory updated', 'ok');
+      await reload();
+    } catch (error) {
+      if (error.message !== 'cancelled') toast(error.message, 'error');
+    }
+  });
+  actions.append(refresh);
+  panel.append(actions);
+}
+
+async function showHostDetails(host) {
+  const body = el('div', 'modal-body');
+  const tabs = el('div', 'tabs');
+  const panels = el('div');
+  const buttons = new Map();
+  const panelNodes = new Map();
+  let active = 'overview';
+  for (const [id, label] of [['overview', 'Overview'], ['system', 'System'], ['containers', 'Containers']]) {
+    const button = el('button', 'tab', label);
+    button.type = 'button';
+    button.addEventListener('click', () => {
+      active = id;
+      for (const [key, node] of buttons) node.classList.toggle('active', key === id);
+      for (const [key, node] of panelNodes) node.classList.toggle('hidden', key !== id);
+    });
+    tabs.append(button);
+    buttons.set(id, button);
+    const panel = el('div', 'hidden');
+    panels.append(panel);
+    panelNodes.set(id, panel);
+  }
+  body.append(tabs, panels);
+  openModal('Host — ' + host.name, body, null, 'wide');
+  let data = null;
+  const reload = async () => {
+    data = await api('/api/v1/hosts/' + encodeURIComponent(host.id) + '/details');
+    renderOverviewPanel(panelNodes.get('overview'), data, host);
+    renderSystemPanel(panelNodes.get('system'), data, host, reload);
+    renderContainersPanel(panelNodes.get('containers'), data, host, reload);
+    for (const [key, node] of buttons) node.classList.toggle('active', key === active);
+    for (const [key, node] of panelNodes) node.classList.toggle('hidden', key !== active);
+  };
+  try {
+    await reload();
+  } catch (error) {
+    panelNodes.get(active).append(el('p', 'auth-message', error.message));
+    panelNodes.get(active).classList.remove('hidden');
+  }
+}
+
+async function showSettingsModal() {
+  const body = el('div', 'modal-body');
+  body.append(el('p', 'muted', 'Fleet defaults. Every host can override these in its detail view.'));
+  const grid = el('div', 'settings-grid');
+  const enabled = selectField(grid, 'Collector', 'collector_enabled', [['1', 'Enabled'], ['0', 'Disabled']]);
+  const metricsInterval = inputField(grid, 'Metrics interval', 'metrics_interval', '5m');
+  const factsInterval = inputField(grid, 'Facts interval', 'facts_interval', '12h');
+  const retention = inputField(grid, 'Metrics retention (days)', 'retention_days', '30', 'number');
+  const roots = inputField(grid, 'Docker scan roots', 'docker_roots', '/opt');
+  body.append(grid);
+  const actions = el('div', 'modal-actions');
+  const reset = el('button', 'btn', 'Use built-in defaults');
+  reset.type = 'button';
+  const save = el('button', 'btn primary', 'Save fleet settings');
+  save.type = 'button';
+  actions.append(reset, save);
+  body.append(actions);
+  const close = openModal('Settings', body);
+  try {
+    const data = await api('/api/v1/settings');
+    const settings = data.resolved || {};
+    enabled.value = settings['collector.enabled'] || '1';
+    metricsInterval.value = settings['collector.metrics_interval'] || '5m';
+    factsInterval.value = settings['collector.facts_interval'] || '12h';
+    retention.value = settings['metrics.retention_days'] || '30';
+    roots.value = settings['docker.scan_roots'] || '/opt';
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+  save.addEventListener('click', async () => {
+    try {
+      await api('/api/v1/settings', {
+        method: 'PUT',
+        body: JSON.stringify({
+          scope: 'fleet',
+          settings: {
+            'collector.enabled': enabled.value,
+            'collector.metrics_interval': metricsInterval.value.trim(),
+            'collector.facts_interval': factsInterval.value.trim(),
+            'metrics.retention_days': retention.value.trim(),
+            'docker.scan_roots': roots.value.trim(),
+          },
+        }),
+      });
+      close();
+      toast('Fleet settings saved', 'ok');
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  });
+  reset.addEventListener('click', async () => {
+    try {
+      await api('/api/v1/settings', {
+        method: 'PUT',
+        body: JSON.stringify({
+          scope: 'fleet',
+          settings: {
+            'collector.enabled': '', 'collector.metrics_interval': '', 'collector.facts_interval': '',
+            'metrics.retention_days': '', 'docker.scan_roots': '',
+          },
+        }),
+      });
+      close();
+      toast('Fleet settings reset to built-in defaults', 'ok');
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  });
+}
+
 function showOutputModal(title, result) {
   const body = el('div', 'modal-body');
   const meta = el('div', 'status-list');
@@ -901,10 +1340,10 @@ function showOutputModal(title, result) {
   close.addEventListener('click', closeFn);
 }
 
-function openModal(title, content, onClose) {
+function openModal(title, content, onClose, sizeClass = '') {
   const root = $('modal-root');
   const backdrop = el('div', 'modal-backdrop');
-  const modal = el('div', 'modal');
+  const modal = el('div', 'modal' + (sizeClass ? ' ' + sizeClass : ''));
   const head = el('div', 'modal-head');
   const close = el('button', 'modal-close', '×');
   close.type = 'button';
@@ -1407,6 +1846,7 @@ function bind() {
   $('hosts-ssh-config').addEventListener('click', showSSHConfigModal);
   $('table-update-helpers').addEventListener('click', fleetUpdateHelpers);
   $('fleet-update-helpers').addEventListener('click', fleetUpdateHelpers);
+  $('open-settings').addEventListener('click', showSettingsModal);
   $('backup-button').addEventListener('click', showBackupModal);
   $('restore-button').addEventListener('click', showRestoreModal);
   $('verify-audit').addEventListener('click', verifyAudit);

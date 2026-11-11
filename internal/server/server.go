@@ -44,6 +44,8 @@ type Server struct {
 	mfaLimiter        *attemptLimiter
 	ceremonies        *ceremonyStore
 	setupMu           sync.Mutex
+	collectorMu       sync.Mutex
+	collectorState    map[string]*collectorHostState
 	mux               *http.ServeMux
 }
 
@@ -90,6 +92,7 @@ func New(cfg Config) (*Server, error) {
 		loginUserLimiter:  newAttemptLimiter(5, 15*time.Minute),
 		mfaLimiter:        newAttemptLimiter(10, 15*time.Minute),
 		ceremonies:        newCeremonyStore(),
+		collectorState:    make(map[string]*collectorHostState),
 		mux:               http.NewServeMux(),
 	}
 	s.routes()
@@ -130,6 +133,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/bootstrap", s.auth(s.handleBootstrap))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/patch", s.auth(s.handlePatch))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/reboot", s.auth(s.handleReboot))
+	s.mux.HandleFunc("POST /api/v1/hosts/{id}/system-info", s.auth(s.handleSystemInfo))
+	s.mux.HandleFunc("POST /api/v1/hosts/{id}/docker/list", s.auth(s.handleDockerList))
+	s.mux.HandleFunc("GET /api/v1/hosts/{id}/details", s.auth(s.handleHostDetails))
+	s.mux.HandleFunc("GET /api/v1/settings", s.auth(s.handleGetSettings))
+	s.mux.HandleFunc("PUT /api/v1/settings", s.auth(s.handlePutSettings))
 	s.mux.HandleFunc("POST /api/v1/import", s.auth(s.handleImport))
 	s.mux.HandleFunc("GET /api/v1/audit", s.auth(s.handleAudit))
 	s.mux.HandleFunc("GET /api/v1/audit/verify", s.auth(s.handleAuditVerify))

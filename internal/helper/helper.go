@@ -62,6 +62,8 @@ var lookPath = func(name string) (string, error) {
 		"timedatectl":      {"/usr/bin/timedatectl", "/bin/timedatectl"},
 		"systemctl":        {"/usr/bin/systemctl", "/bin/systemctl"},
 		"shutdown":         {"/usr/sbin/shutdown", "/sbin/shutdown", "/usr/bin/shutdown", "/bin/shutdown"},
+		"docker":           {"/usr/bin/docker", "/usr/local/bin/docker", "/bin/docker"},
+		"ss":               {"/usr/bin/ss", "/bin/ss", "/usr/sbin/ss", "/sbin/ss"},
 	}
 	for _, path := range candidates[name] {
 		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
@@ -103,6 +105,24 @@ func Run(ctx context.Context, action string, out io.Writer) error {
 	case "reboot":
 		output, code, err := rebootHost(ctx)
 		return writeResult(out, "reboot", string(output), code, err)
+	case "system-info":
+		info, err := collectSystemInfo(ctx)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(out).Encode(info)
+	case "metrics":
+		metrics, err := collectMetrics(ctx)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(out).Encode(metrics)
+	case "docker-list":
+		inventory, err := collectDockerInventory(ctx)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(out).Encode(inventory)
 	case "reboot-check":
 		required, err := rebootRequired(ctx)
 		result := Result{Action: "reboot-check", OK: err == nil, ExitCode: 0}

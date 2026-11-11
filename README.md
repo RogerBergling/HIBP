@@ -3,8 +3,9 @@
 > **Status: M1 feature set with a production build path.** The repository
 > contains a working Go server, browser UI, SQLCipher storage, host CRUD/import,
 > password + TOTP/passkey authentication, SSH host-key approval, remote helper
-> installation, fact collection, reboot control, SSH config import, audit
-> chain, backup/restore, helper actions, tests, and CI. `make production`
+> installation, fact collection, read-only system information, Docker
+> inventory, metric history, reboot control, SSH config import, audit chain,
+> backup/restore, helper actions, tests, and CI. `make production`
 > builds against current SQLCipher 4.20 in a pinned Alpine/musl image; the
 > development build still uses the 2020 spike driver and prints a warning. SSH
 > password and sudo fallbacks are manual-run only.
@@ -36,7 +37,7 @@ and can back up. A CLI and a background service use the same core.
 - [Install prerequisites](#install-prerequisites)
 - [Quick start (source build)](#quick-start-source-build)
 - [Authentication and MFA](#authentication-and-mfa)
-- [Docker and monitoring (planned)](#docker-and-monitoring-planned)
+- [Docker, system information, and monitoring](#docker-system-information-and-monitoring)
 - [Target sudo setup](#target-sudo-setup)
 - [What HIBP is](#what-hibp-is)
 - [Why it exists](#why-it-exists)
@@ -472,37 +473,67 @@ recovery boundary.
 - **MFA is mandatory after setup.** A stolen password alone cannot reach hosts.
 - **Passkeys need `localhost`; TOTP is the fallback on `127.0.0.1`.**
 
-## Docker and monitoring (planned)
+## Docker, system information, and monitoring
 
-> **Status: design agreed, implementation starting after the remaining operator
-> decisions.** This section is a roadmap, not a claim that the feature exists.
+> **Status: Phase 1 implemented.** Read-only system information, Docker
+> inventory, host details, metric history, and configurable collection are
+> available. Docker check/apply, email alerting, monitoring rules, vCenter,
+> HAProxy, OPNsense, and CMDB import are the next phases.
+
+### Implemented now
+
+- Fixed helper actions `system-info`, `metrics`, and `docker-list`, plus the
+  existing package/reboot actions.
+- Host detail view: click a host name in the dashboard or Hosts table.
+- Tabs: **Overview**, **System**, and **Containers**.
+- System snapshot: CPU, memory, swap, disks, network, DNS, default route,
+  kernel, uptime, systemd failed/running services, listening ports, Docker
+  versions, and container counts.
+- Metric history for CPU, memory, disk, and load with canvas charts.
+- Fleet defaults under **Settings** and per-host overrides in the host detail
+  view.
+- Configurable collection intervals, retention, and Docker scan roots.
+- Background collector: full facts/system information twice a day and
+  lightweight metrics every five minutes by default.
+- Read-only Docker Compose project/container inventory with health, state,
+  image, and ports.
+
+Scheduled collection requires a trusted host key and the restricted
+`NOPASSWD` helper. Password-auth hosts and sudo-password hosts can still be
+collected manually from the host detail view; the scheduler never prompts.
+
+Ten-second polling is allowed as a per-host or fleet setting, but it is not the
+default. With 2–500 hosts it creates a self-inflicted SSH/CPU load. The
+recommended defaults are 60 seconds for availability checks, 5 minutes for
+metrics, and 12 hours for full facts.
 
 ### Docker containers
 
-Docker access is root-equivalent. HIBP will extend the existing root-owned
-helper with fixed actions instead of giving the controller a Docker socket or
-running a second privileged daemon.
+Docker access is root-equivalent. HIBP uses fixed helper actions and never
+gives the controller a Docker socket or runs a second privileged daemon.
 
-- `docker-list` — read-only Compose projects, containers, health, ports, image
-  tags, and project metadata.
-- `docker-check <project>` — `docker compose pull` and image-ID comparison; it
-  does not restart anything.
-- `docker-apply <project>` — `docker compose up -d --pull never` after explicit
-  confirmation.
+- `docker-list` — implemented read-only Compose projects, containers, health,
+  ports, image tags, and project metadata.
+- `docker-check <project>` — planned: `docker compose pull` and image-ID
+  comparison without restarting containers.
+- `docker-apply <project>` — planned: `docker compose up -d --pull never` after
+  explicit confirmation.
 
 Project names come from Docker/Compose metadata, never arbitrary controller
 paths. Compose files, `.env` files, and build contexts must be root-owned and
-not group/world-writable. The default scan root is `/opt`; it will be
-configurable. HIBP will not run `down -v`, will not prune volumes, and will not
-update containers automatically. Mutations are serialised per host and audited.
+not group/world-writable. The default scan root is `/opt`; it is configurable in
+the GUI. HIBP will not run `down -v`, will not prune volumes, and will not
+update containers automatically. Planned mutations will be serialised per host
+and audited.
 
 Containers are **child workloads of a host**, not new SSH-managed “servers”.
 They do not inherit SSH keys or the host’s sudo rule. Standalone containers are
-visible read-only in phase 1; project-level Compose updates come first.
+visible read-only in phase 1; project-level Compose updates come next.
 
 ### System information
 
-A read-only `system-info` helper action will collect a bounded snapshot:
+The implemented read-only `system-info` helper action collects a bounded
+snapshot:
 
 - CPU model, cores, and load average.
 - Memory and swap.
@@ -514,19 +545,19 @@ A read-only `system-info` helper action will collect a bounded snapshot:
 - Docker Engine and Compose versions, and container counts.
 - Time-sync state and reboot requirement.
 
-Full facts/system information will run twice a day. Lightweight metric samples
-(CPU, memory, disk, load) will feed history graphs. Ten-second polling is not
-recommended: with 2–500 hosts it creates a self-inflicted SSH/CPU load and does
-not improve patch-management decisions. The starting recommendation is 60
-seconds for up/down checks and 1–5 minutes for metrics, configurable per
-monitor. The UI will show time-series graphs in the host detail drawer.
+Full facts/system information runs twice a day by default. Lightweight
+`metrics` samples (CPU, memory, disk, load) feed the history graphs. Defaults
+are 5 minutes for metrics, 12 hours for full facts, and 30 days of metric
+retention; all three are configurable per fleet or per host. Ten seconds is
+allowed but discouraged for large fleets. The host detail **System** tab shows
+the current snapshot and the last 10 days of metric history.
 
 ### Monitoring and email
 
-The host detail drawer will have **Overview**, **Containers**, **Services**, and
-**System** tabs. Monitoring is defined once and assigned to hosts, groups, or
-the fleet; assignments are filtered by capability, so Docker checks only apply
-to hosts with Docker.
+The implemented host detail view has **Overview**, **System**, and
+**Containers** tabs. A future **Services** tab and monitoring rules will be
+defined once and assigned to hosts, groups, or the fleet; assignments are
+filtered by capability, so Docker checks only apply to hosts with Docker.
 
 Planned check types:
 
@@ -552,11 +583,27 @@ to **merge** or **overwrite**. It will map `external_id`/`ci_id` to
 
 ### Delivery phases
 
-1. Read-only system information, Docker inventory, host detail drawer,
-   twice-daily collection, and metric history.
-2. Monitoring definitions, SMTP email, Docker check/apply, HTTP/TCP/SSL checks.
+1. **Implemented:** read-only system information, Docker inventory, host detail
+   view, twice-daily collection, metric history, fleet/per-host settings.
+2. **Next:** monitoring definitions, SMTP email, Docker check/apply,
+   HTTP/TCP/SSL checks, services.
 3. vCenter, HAProxy, and OPNsense integrations.
 4. CMDB import with preview and merge/overwrite.
+
+### Collection settings
+
+The **Settings** entry in the sidebar stores fleet defaults. Each host can
+override them in **Host detail → System → Collection settings**:
+
+- `collector.enabled` — enable/disable scheduled collection.
+- `collector.metrics_interval` — default `5m`; minimum `10s`.
+- `collector.facts_interval` — default `12h`.
+- `metrics.retention_days` — default `30`, validated 1–3650.
+- `docker.scan_roots` — default `/opt`, used by the planned Docker update
+  phase.
+
+Host overrides take precedence over fleet defaults; **Use fleet defaults**
+removes the host overrides. The scheduler reloads settings every minute.
 
 ## Target sudo setup
 
@@ -565,7 +612,7 @@ it does not send one in a command line or environment variable. The supported
 unattended automation model is a **root-owned helper with a restricted NOPASSWD
 rule**.
 
-The helper accepts only five fixed actions:
+The helper accepts only this fixed set of actions:
 
 ```text
 facts
@@ -573,6 +620,9 @@ check
 apply
 reboot
 reboot-check
+system-info
+metrics
+docker-list
 ```
 
 It does not accept package names, host names, or arbitrary shell fragments. This
@@ -671,6 +721,9 @@ hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper check
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper apply
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper reboot
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper reboot-check
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper system-info
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper metrics
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-list
 EOF
 sudo chmod 0440 /etc/sudoers.d/hibp-helper
 sudo visudo -cf /etc/sudoers.d/hibp-helper
@@ -1354,8 +1407,9 @@ That authority must be narrow and auditable.
 - Use a dedicated account for HIBP where possible, not a personal admin account.
 - Prefer a root-owned helper installed on the target, invoked through a
   restricted sudoers rule. The helper accepts a small allowlist of actions
-  (`facts`, `check`, `apply`, `reboot`, `reboot-check`, `custom:<approved-id>`) and
-  validates its arguments.
+  (`facts`, `check`, `apply`, `reboot`, `reboot-check`, `system-info`,
+  `metrics`, `docker-list`, `custom:<approved-id>`) and validates its
+  arguments.
 - Example sudoers shape (illustrative, not a complete hardening guide):
 
   ```sudoers
@@ -1364,6 +1418,9 @@ That authority must be narrow and auditable.
   hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper apply
   hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper reboot
   hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper reboot-check
+  hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper system-info
+  hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper metrics
+  hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-list
   ```
 
 - Do not recommend `ALL=(ALL) NOPASSWD: ALL`. If an operator insists, warn
@@ -1487,10 +1544,11 @@ Agent mode is optional and later; v1 uses SSH from the always-on server.
 - SSH host-key TOFU with explicit fingerprint approval and changed-key failure.
 - Manual SSH and sudo password fallbacks with per-run prompts; no password storage.
 - SSH key browser limited to configured directories; it never returns key contents.
-- Fixed helper actions (`facts`, `check`, `apply`, `reboot`, `reboot-check`) with absolute
+- Fixed helper actions (`facts`, `check`, `apply`, `reboot`, `reboot-check`, `system-info`, `metrics`, `docker-list`) with absolute
   binary paths, a sanitized environment, no shell, and output limits.
 - Explicit-confirmation reboot action through the fixed helper.
 - Per-host and fleet-wide helper installation/update with per-host results.
+- Read-only system information, Docker inventory, metric history, host detail view, and configurable fleet/per-host collection settings.
 - Local SSH config reader for prefilling hosts, with simple `Include` support,
   wildcard/`Match` filtering, and no private-key reads.
 - Remote helper installation from the UI with `visudo` validation, a restricted
@@ -1761,12 +1819,12 @@ M1 is implemented in Go:
 - `internal/crypto` Argon2id key derivation and `.meta` sidecar
 - `internal/auth` password hashing, session tokens, TOTP, and username validation
 - `internal/store` SQLCipher database, migrations, hosts, facts, host keys,
-  backup, and hash-chained audit
+  observability snapshots, settings, backup, and hash-chained audit
 - `internal/remote` SSH transport and host-key policy
-- `internal/helper` fixed target actions
+- `internal/helper` fixed target actions, system information, and Docker inventory
 - `internal/sshconfig` local OpenSSH client config reader
-- `internal/server` browser UI/API, session/password/MFA auth, Host/Origin checks, and security
-  headers
+- `internal/server` browser UI/API, session/password/MFA auth, collector,
+  Host/Origin checks, and security headers
 - `internal/webui` embedded HTML/CSS/JS
 - tests, `Makefile`, and GitHub Actions CI
 
