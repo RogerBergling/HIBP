@@ -76,8 +76,9 @@ Out of scope:
   clears all MFA.
 - Authenticated host mutations and imports record the username as the audit
   actor; internal collection records `collector`, and scheduled work records
-  `scheduler`. The audit chain is hash-chained but not keyed or externally
-  anchored; a database writer can rewrite it consistently.
+  `scheduler`. Failed manual patch, reboot, helper-install, and host-key
+  approval attempts are also audited. The audit chain is hash-chained but not
+  keyed or externally anchored; a database writer can rewrite it consistently.
 - The API and import paths accept an absolute `key_path` outside the configured
   key-browser roots. Filesystem permissions on the service account are the real
   boundary; give it only the intended key directory.

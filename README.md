@@ -2346,7 +2346,9 @@ Current status:
   account recovery, Host/Origin checks, CSP, and security headers.
 - Post-enrollment **Account security**: add/remove passkeys, replace or remove
   TOTP, last-factor protection, and audited MFA changes.
-- SSH host-key TOFU with explicit fingerprint approval and changed-key failure.
+- SSH host-key TOFU with explicit fingerprint approval, changed-key failure, and
+  a replacement dialog showing the previously trusted and newly presented
+  fingerprints.
 - Manual SSH and sudo password fallbacks with per-run prompts; no password
   storage.
 - SSH key browser limited to configured directories; it never returns key
@@ -2370,7 +2372,8 @@ Current status:
   helper bootstrap, and scheduled patch operations.
 - Authenticated usernames recorded as audit actors for host and import
   mutations; internal collection and scheduler work use explicit service
-  actors.
+  actors. Failed manual patch, reboot, helper-install, and host-key approval
+  attempts are also audited.
 - Automatic verified pre-migration backups, configurable backup directory and
   retention count, full audit-chain verification of backups, and hard refusal
   of databases written by a newer schema version.
@@ -3325,18 +3328,17 @@ Current validation status:
 - `go vet ./...` passes.
 - `go test -race ./...` passes.
 - `make static` produces a development ELF with no dynamic dependencies.
-- The current-SQLCipher production Docker build and release pipeline was
-  verified through `v0.5.1`; `v0.6.2` artifacts are built by the same workflow.
-  Published archive checksums, installed binaries, and the SQLCipher production
-  driver were verified for the prior release.
+- The current-SQLCipher production Docker build and release pipeline passed for
+  `v0.6.2`; the published archive checksum, installed binary, and SQLCipher
+  production driver were verified.
 - The store/server suite passes against the production driver with current
-  system `libsqlcipher`, including backup, restore, and audit-chain
-  verification.
+  system `libsqlcipher`, including backup, restore, audit-chain verification,
+  configurable retention, and failed-action audit tests.
 - README validator and Python validator tests pass.
 - Release validation used out-of-tree headless browser checks for monitoring,
-  SMTP settings, CMDB import, schedules, external integration screens, and
-  Account security/MFA management. Those browser scripts are not part of this
-  repository or CI.
+  SMTP settings, CMDB import, schedules, external integration screens, Account
+  security/MFA management, and backup directory/retention configuration. Those
+  browser scripts are not part of this repository or CI.
 - An upgrade from a `v0.5.1` database was manually verified, including the
   automatic pre-migration backup and migration to the current schema. CI does
   not run an old-release migration fixture.
