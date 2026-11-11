@@ -127,3 +127,30 @@ func TestUnsupportedAuthTypesAreRejected(t *testing.T) {
 		}
 	}
 }
+
+func TestFailedManualPatchIsAudited(t *testing.T) {
+	ts, db := testServer(t)
+	host, err := db.CreateHost(store.Host{
+		Name: "web01", Address: "10.0.0.10", Port: 22, Username: "ubuntu",
+		AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/hosts/"+host.ID+"/patch", "test-token", `{"dry_run":true}`)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("expected patch to fail without a trusted key, got %d %s", resp.StatusCode, body)
+	}
+	entries, err := db.ListAudit(20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Action == "patch-check-failed" && entry.EntityID == host.ID && entry.Actor == "test" {
+			return
+		}
+	}
+	t.Fatalf("failed patch attempt was not audited: %+v", entries)
+}

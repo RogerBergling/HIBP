@@ -1040,7 +1040,7 @@ async function showSMTPModal() {
   recipients.spellcheck = false;
   const timeout = inputField(body, 'SMTP timeout (seconds)', 'timeout_seconds', '15', 'number');
   const testTo = inputField(body, 'Test recipient (optional)', 'test_to', 'Defaults to the recipient list');
-  body.append(el('p', 'field-note', 'STARTTLS upgrades a plaintext connection before AUTH. Username and password are rejected over unencrypted SMTP. A test message is sent using the saved settings.'));
+  body.append(el('p', 'field-note', 'STARTTLS upgrades a plaintext connection before AUTH. Username and password are rejected over unencrypted SMTP. For a local Postfix relay, use its IP address, port 25, Plain text (no auth), and blank username/password. A test message is sent using the saved settings.'));
   const actions = el('div', 'modal-actions');
   const cancel = el('button', 'btn', 'Cancel');
   cancel.type = 'button';
@@ -1844,18 +1844,25 @@ async function testHost(host) {
 }
 
 function showTrustModal(host, key, password) {
+  const changed = key.kind === 'changed';
   const body = el('div', 'modal-body');
-  body.append(el('p', 'muted', 'Verify this fingerprint through an independent channel before trusting it.'));
-  const box = el('div', 'key-box', key.key_type + ' ' + key.fingerprint);
+  body.append(el('p', 'muted', changed
+    ? 'The host presented a different key than the one currently trusted. This can indicate a rebuild or a man-in-the-middle attack. Verify the new fingerprint through an independent channel before replacing the trusted key.'
+    : 'Verify this fingerprint through an independent channel before trusting it.'));
+  const box = el('div', 'key-box');
+  box.append(el('div', '', 'Presented: ' + key.key_type + ' ' + key.fingerprint));
+  if (changed) {
+    box.append(el('div', '', 'Previously trusted: ' + (key.expected_type || '—') + ' ' + (key.expected_fingerprint || '—')));
+  }
   body.append(box);
   const actions = el('div', 'modal-actions');
   const cancel = el('button', 'btn', 'Cancel');
   cancel.type = 'button';
-  const trust = el('button', 'btn primary', 'Trust this key');
+  const trust = el('button', 'btn primary', changed ? 'Replace trusted key' : 'Trust this key');
   trust.type = 'button';
   actions.append(cancel, trust);
   body.append(actions);
-  const close = openModal('Unknown host key — ' + host.name, body);
+  const close = openModal((changed ? 'Host key changed — ' : 'Unknown host key — ') + host.name, body);
   cancel.addEventListener('click', close);
   trust.addEventListener('click', async () => {
     try {
@@ -1864,7 +1871,7 @@ function showTrustModal(host, key, password) {
         body: JSON.stringify({ key_type: key.key_type, fingerprint: key.fingerprint, password }),
       });
       close();
-      toast('Host key trusted. Testing connection…', 'ok');
+      toast(changed ? 'Trusted the replacement host key. Testing connection…' : 'Host key trusted. Testing connection…', 'ok');
       await testHost(host);
     } catch (error) {
       toast(error.message, 'error');

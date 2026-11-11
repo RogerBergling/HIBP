@@ -174,6 +174,8 @@ func (s *Server) handleTestHost(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var keyErr *remote.KeyError
 		if errors.As(err, &keyErr) {
+			_ = s.store.AddAudit(s.auditActor(r), "host-key-"+keyErr.Kind, "host", host.ID,
+				fmt.Sprintf("presented=%s %s expected=%s %s", keyErr.KeyType, keyErr.Fingerprint, keyErr.ExpectedType, keyErr.ExpectedFingerprint))
 			writeJSON(w, http.StatusConflict, map[string]any{"error": keyErr.Error(), "key": keyErr})
 			return
 		}
@@ -220,10 +222,13 @@ func (s *Server) handleTrustKey(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	actual, err := remote.Probe(ctx, s.hostTarget(host, password))
 	if err != nil {
+		s.auditHostActionFailure(r, "trust-key", host.ID, err)
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	if actual.KeyType != request.KeyType || actual.Fingerprint != request.Fingerprint {
+		_ = s.store.AddAudit(s.auditActor(r), "trust-key-failed", "host", host.ID,
+			fmt.Sprintf("presented=%s %s approved=%s %s", actual.KeyType, actual.Fingerprint, request.KeyType, request.Fingerprint))
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "presented host key does not match the approval", "key": actual})
 		return
 	}
@@ -312,6 +317,16 @@ func (s *Server) runHelper(ctx context.Context, host store.Host, action, sshPass
 		return output, code, errSudoPasswordRequired
 	}
 	return output, code, nil
+}
+
+// auditHostActionFailure records manual privileged failures that happen before
+// a helper result is available. Secrets are never included in the detail.
+func (s *Server) auditHostActionFailure(r *http.Request, action, hostID string, err error) {
+	detail := "unknown failure"
+	if err != nil {
+		detail = shortRunSummary(err.Error())
+	}
+	_ = s.store.AddAudit(s.auditActor(r), action+"-failed", "host", hostID, detail)
 }
 
 func (s *Server) handleFacts(w http.ResponseWriter, r *http.Request) {
@@ -407,14 +422,17 @@ func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
 	defer s.unlockHost(host.ID)
 	output, code, err := s.runHelper(r.Context(), host, action, password, request.SudoPassword, timeout)
 	if errors.Is(err, errSudoPasswordInvalid) {
+		s.auditHostActionFailure(r, "patch-"+action, host.ID, err)
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "sudo_password_invalid"})
 		return
 	}
 	if errors.Is(err, errSudoPasswordRequired) {
+		s.auditHostActionFailure(r, "patch-"+action, host.ID, err)
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "sudo_password_required"})
 		return
 	}
 	if err != nil {
+		s.auditHostActionFailure(r, "patch-"+action, host.ID, err)
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -461,14 +479,17 @@ func (s *Server) handleReboot(w http.ResponseWriter, r *http.Request) {
 	defer s.unlockHost(host.ID)
 	output, code, err := s.runHelper(r.Context(), host, "reboot", password, request.SudoPassword, 2*time.Minute)
 	if errors.Is(err, errSudoPasswordInvalid) {
+		s.auditHostActionFailure(r, "reboot", host.ID, err)
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "sudo_password_invalid"})
 		return
 	}
 	if errors.Is(err, errSudoPasswordRequired) {
+		s.auditHostActionFailure(r, "reboot", host.ID, err)
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "sudo_password_required"})
 		return
 	}
 	if err != nil {
+		s.auditHostActionFailure(r, "reboot", host.ID, err)
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -555,14 +576,17 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	defer s.unlockHost(host.ID)
 	output, err := remote.InstallHelper(r.Context(), s.hostTarget(host, password), remoteHostKey(key), binary, request.SudoPassword)
 	if errors.Is(err, remote.ErrSudoPasswordInvalid) {
+		s.auditHostActionFailure(r, "bootstrap-helper", host.ID, err)
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "sudo_password_invalid"})
 		return
 	}
 	if errors.Is(err, remote.ErrSudoPasswordRequired) {
+		s.auditHostActionFailure(r, "bootstrap-helper", host.ID, err)
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "sudo_password_required"})
 		return
 	}
 	if err != nil {
+		s.auditHostActionFailure(r, "bootstrap-helper", host.ID, err)
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}

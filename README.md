@@ -1,6 +1,6 @@
 # HIBP - Have I Been Patched
 
-> **Status: v0.6.1 production-hardening feature set with a production build path.**
+> **Status: v0.6.2 production-hardening feature set with a production build path.**
 > The repository contains a working Go server, browser UI, SQLCipher storage,
 > host CRUD/import, password + TOTP/passkey authentication with post-enrollment
 > MFA management, SSH host-key approval, remote helper installation, fact
@@ -118,7 +118,7 @@ End users should not need Go or a compiler.
 
    ```bash
    # Install a specific version
-   sh install.sh --version v0.6.1
+   sh install.sh --version v0.6.2
 
    # Install system-wide (run as a user with write access to /usr/local/bin)
    sudo HIBP_PREFIX=/usr/local/bin sh install.sh
@@ -449,7 +449,7 @@ names, or shell fragments.
 Important constraints:
 
 - The server requires the database passphrase before it starts. There is no
-  locked/paused browser UI in v0.6.1. If the process stops, the UI, collector,
+  locked/paused browser UI in v0.6.2. If the process stops, the UI, collector,
   scheduler, and monitoring stop with it.
 - `-create` is not an upgrade or reset flag. It refuses an existing database.
 - `-demo` writes sample hosts and is not a production mode.
@@ -639,7 +639,7 @@ This profile still requires the canary and restore tests below.
 ## Production deployment checklist
 
 This is the minimum operational and security review before using HIBP against
-real hosts. It reflects the current v0.6.1 implementation; treat it as a
+real hosts. It reflects the current v0.6.2 implementation; treat it as a
 gate, not as a suggestion.
 
 ### 1. Confirm the deployment model
@@ -1018,7 +1018,7 @@ and sessions.
 
 ## Docker, system information, and monitoring
 
-> **Status: v0.6.1 adds production hardening on top of cron schedules.**
+> **Status: v0.6.2 adds production hardening on top of cron schedules.**
 > Read-only system information, Docker inventory, host details, metric history,
 > configurable collection, explicit Docker check/apply, monitoring definitions,
 > SMTP email alerts, vCenter alarms, HAProxy stats, OPNsense gateways,
@@ -1656,7 +1656,7 @@ as core features rather than afterthoughts.
 ## Product requirements
 
 > These are product requirements and design targets, not a claim that every item
-> is implemented. See [Implemented in v0.6.1](#implemented-in-v061) and
+> is implemented. See [Implemented in v0.6.2](#implemented-in-v062) and
 > [Known limitations before production](#known-limitations-before-production)
 > for the current status.
 
@@ -1771,7 +1771,7 @@ as core features rather than afterthoughts.
 - The server requires the database passphrase before it starts. After a reboot,
   an operator must start the process and unlock the database; until then there
   is no UI, collector, or scheduler. There is no locked/paused browser state in
-  v0.6.1, and no database key is persisted.
+  v0.6.2, and no database key is persisted.
 
 ### History and drill-down
 
@@ -1958,7 +1958,7 @@ hibp agent (systemd timer) ── outbound mTLS ──► hibp server
 
 ### Execution flow
 
-> This is the design target. v0.6.1 implements collection, check/apply through
+> This is the design target. v0.6.2 implements collection, check/apply through
 > the fixed helper, per-host locking, retries, run history, and audit, but not
 > package plans/diffs, approval gates, cancellation, post-reboot verification,
 > or retention.
@@ -2089,7 +2089,7 @@ The current release derives the SQLCipher key directly from the database
 passphrase with Argon2id and keeps SMTP/integration secrets inside the encrypted
 database. It does **not** implement a separate credential vault, envelope/DEK
 wrapping, or passphrase rotation. The following is a future design goal, not a
-claim about v0.6.1:
+claim about v0.6.2:
 
 - Generate a random data encryption key (DEK) for a credential vault.
 - Derive a key-encryption key (KEK) from the database passphrase with Argon2id,
@@ -2176,10 +2176,11 @@ Rules:
   seen, last seen, and trusted/revoked state.
 - On first connection, show the presented fingerprint and require explicit
   approval. Do not silently trust `ssh-keyscan` output.
-- On a changed key, fail the connection. The current UI re-opens the same trust
-  modal for the new key but does not prominently show the previous expected
-  fingerprint; verify the change through an independent channel before clicking
-  **Trust**. A dedicated key-rotation workflow is not implemented.
+- On a changed key, fail the connection. The trust modal shows both the
+  previously trusted key and the newly presented key, and the replacement button
+  is labeled explicitly. Verify the new fingerprint through an independent
+  channel before replacing the trusted key. A dedicated automated key-rotation
+  workflow is not implemented.
 - Multiple host keys per host during a rotation window is a design target, not
   current behavior.
 - Never set `StrictHostKeyChecking=no` or `UserKnownHostsFile=/dev/null` as a
@@ -2337,7 +2338,7 @@ Current status:
   remote-code-execution feature.
 - Consider reproducible builds for the server and agent binaries.
 
-### Implemented in v0.6.1
+### Implemented in v0.6.2
 
 - SQLCipher database with Argon2id-derived keys and a validated `.meta` sidecar.
 - `0600` database, sidecar, key, and backup files; wrong-passphrase test.
@@ -2430,10 +2431,9 @@ Current status:
 - Host `address` values are not syntax-validated as IPv4, IPv6, or DNS names.
   A typo is stored successfully and fails later during SSH or scheduled runs.
   Validate hostnames and addresses in your import source.
-- A changed host key fails the connection, but the current trust modal shows the
-  newly presented key without prominently comparing it to the previous expected
-  key. Verify the change out-of-band before re-approving. There is no multi-key
-  rotation window or key-rotation workflow.
+- A changed host key fails the connection. The trust modal displays the previous
+  and presented fingerprints and requires an explicit replacement action. There
+  is no multi-key rotation window or automated key-rotation workflow.
 - The packaged systemd unit expects `/etc/hibp/ssh`,
   `/etc/hibp/ssh/config`, and `/etc/hibp/db.passphrase`. Create them with the
   documented ownership/modes or edit the unit. `ProtectHome=true` blocks
@@ -2496,10 +2496,10 @@ Current status:
   `dnf-plugins-core`/`dnf-utils`. Alpine has no systemd/timedatectl, and its
   reboot-required detection is heuristic and may not detect kernel changes.
   Verify reboot state independently on those distributions.
-- Manual patch, reboot, and helper-install failures that occur before a helper
-  result is recorded may return an HTTP error without a corresponding audit
-  entry. The audit log is not a complete failed-attempt log; ship controller
-  stderr/journald to a persistent external sink if you need that evidence.
+- Manual patch, reboot, helper-install, and host-key approval failures now write
+  audit entries before returning the error. The audit log is still local only
+  and has no external anchor; ship controller stderr/journald to a persistent
+  sink if you need independent evidence.
 - If the controller crashes or is stopped during a scheduled run, run history
   can contain rows left in `running` state. There is no startup recovery or
   durable queue; reconcile those rows manually against host package state.
@@ -2601,7 +2601,7 @@ Schema rules:
 
 ## Scheduling and job semantics
 
-> This section is the target semantics. v0.6.1 implements five-field cron,
+> This section is the target semantics. v0.6.2 implements five-field cron,
 > per-schedule time zones, jitter, a late-start window, skip/latest-missed
 > catch-up, per-schedule concurrency, a controller-wide cap, bounded retries,
 > run history, and email summaries. It does not implement systemd `OnCalendar`,
@@ -3326,7 +3326,7 @@ Current validation status:
 - `go test -race ./...` passes.
 - `make static` produces a development ELF with no dynamic dependencies.
 - The current-SQLCipher production Docker build and release pipeline was
-  verified through `v0.5.1`; `v0.6.1` artifacts are built by the same workflow.
+  verified through `v0.5.1`; `v0.6.2` artifacts are built by the same workflow.
   Published archive checksums, installed binaries, and the SQLCipher production
   driver were verified for the prior release.
 - The store/server suite passes against the production driver with current
