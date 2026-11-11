@@ -11,7 +11,16 @@ const state = {
   totpSetup: null,
 };
 
-let activeModalClose = null;
+let fleetUpdateRunning = false;
+
+const modalStack = [];
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && modalStack.length) {
+    event.preventDefault();
+    modalStack[modalStack.length - 1].close();
+  }
+});
 
 const $ = (id) => document.getElementById(id);
 
@@ -40,12 +49,14 @@ function showApp() {
   $('app').classList.remove('hidden');
 }
 
-function closeActiveModal() {
-  if (activeModalClose) activeModalClose();
+function closeAllModals() {
+  while (modalStack.length) {
+    modalStack[modalStack.length - 1].close();
+  }
 }
 
 function showAuthScreenShell() {
-  closeActiveModal();
+  closeAllModals();
   $('app').classList.add('hidden');
   $('auth-screen').classList.remove('hidden');
 }
@@ -667,6 +678,118 @@ async function bootstrapHost(host) {
   }
 }
 
+async function fleetUpdateHelpers() {
+  if (fleetUpdateRunning) {
+    toast('A fleet helper update is already running', 'error');
+    return;
+  }
+  const hosts = state.hosts.slice();
+  if (hosts.length === 0) {
+    toast('No hosts to update', 'error');
+    return;
+  }
+  if (!confirm('Update the HIBP helper on all ' + hosts.length + ' hosts?\n\nThis uploads the running controller binary, rewrites the sudoers rule, and may prompt for credentials. Hosts with untrusted keys are skipped.')) {
+    return;
+  }
+
+  fleetUpdateRunning = true;
+  let cancelled = false;
+  const body = el('div', 'modal-body');
+  body.append(el('p', 'muted', 'Updating sequentially. Keep this tab open. Setup installs the version of the HIBP server that is currently running.'));
+  const summary = el('div', 'muted', 'Preparing…');
+  const wrap = el('div', 'fleet-update-list');
+  const table = el('table');
+  const head = el('tr');
+  for (const label of ['Host', 'Status', 'Detail']) head.append(el('th', '', label));
+  table.append(head);
+  wrap.append(table);
+  body.append(summary, wrap);
+  const actions = el('div', 'modal-actions');
+  const stop = el('button', 'btn danger', 'Stop after current host');
+  stop.type = 'button';
+  actions.append(stop);
+  body.append(actions);
+  const close = openModal('Fleet helper update', body, () => { cancelled = true; });
+  const rows = new Map();
+  const rowFor = (host) => {
+    let row = rows.get(host.id);
+    if (row) return row;
+    const status = el('span', 'pill unknown', 'pending');
+    const statusCell = el('td');
+    statusCell.append(status);
+    const detail = el('td', 'muted', '—');
+    row = el('tr');
+    row.append(el('td', '', host.name), statusCell, detail);
+    table.append(row);
+    row.status = status;
+    row.detail = detail;
+    rows.set(host.id, row);
+    return row;
+  };
+  const setStatus = (host, label, cls, detail) => {
+    const row = rowFor(host);
+    row.status.textContent = label;
+    row.status.className = 'pill ' + cls;
+    row.detail.textContent = detail || '—';
+  };
+  let stopping = false;
+  stop.addEventListener('click', () => {
+    if (fleetUpdateRunning) {
+      stopping = true;
+      cancelled = true;
+      stop.disabled = true;
+      stop.textContent = 'Stopping…';
+      summary.textContent = 'Stopping after the current host…';
+      return;
+    }
+    close();
+  });
+
+  let ok = 0;
+  let failed = 0;
+  let skipped = 0;
+  try {
+    for (let index = 0; index < hosts.length; index++) {
+      if (cancelled) break;
+      const host = hosts[index];
+      setStatus(host, 'running', 'unknown', 'connecting…');
+      summary.textContent = 'Updating ' + (index + 1) + ' of ' + hosts.length + '…';
+      try {
+        const password = await passwordFor(host);
+        if (cancelled) break;
+        await requestWithSudo(
+          host,
+          '/api/v1/hosts/' + encodeURIComponent(host.id) + '/bootstrap',
+          (sudoPassword) => ({ password, sudo_password: sudoPassword }),
+          { method: 'POST' },
+        );
+        setStatus(host, 'ok', 'reachable', 'helper updated');
+        ok++;
+      } catch (error) {
+        if (error.message === 'cancelled') {
+          setStatus(host, 'skipped', 'review', 'credential prompt cancelled');
+          skipped++;
+        } else if (error.status === 409 && error.data && error.data.code === 'host_key_untrusted') {
+          setStatus(host, 'failed', 'unreachable', 'trust the host key first');
+          failed++;
+        } else {
+          setStatus(host, 'failed', 'unreachable', error.message);
+          failed++;
+        }
+      }
+    }
+  } finally {
+    fleetUpdateRunning = false;
+    stop.disabled = false;
+    stop.textContent = 'Close';
+    stop.classList.remove('danger');
+    summary.textContent = (cancelled || stopping)
+      ? 'Stopped. Updated ' + ok + ', failed ' + failed + ', skipped ' + skipped + '.'
+      : 'Finished. Updated ' + ok + ', failed ' + failed + ', skipped ' + skipped + '.';
+    await loadAll();
+  }
+}
+
 async function collectFacts(host) {
   toast('Collecting facts from ' + host.name + '…');
   try {
@@ -780,7 +903,6 @@ function showOutputModal(title, result) {
 
 function openModal(title, content, onClose) {
   const root = $('modal-root');
-  root.replaceChildren();
   const backdrop = el('div', 'modal-backdrop');
   const modal = el('div', 'modal');
   const head = el('div', 'modal-head');
@@ -791,20 +913,17 @@ function openModal(title, content, onClose) {
   backdrop.append(modal);
   root.append(backdrop);
   let closed = false;
-  let closeFn;
-  const onKey = (event) => { if (event.key === 'Escape') closeFn(); };
-  closeFn = () => {
+  const closeFn = () => {
     if (closed) return;
     closed = true;
-    document.removeEventListener('keydown', onKey);
-    root.replaceChildren();
-    if (activeModalClose === closeFn) activeModalClose = null;
+    backdrop.remove();
+    const index = modalStack.findIndex((entry) => entry.close === closeFn);
+    if (index >= 0) modalStack.splice(index, 1);
     if (onClose) onClose();
   };
-  activeModalClose = closeFn;
+  modalStack.push({ close: closeFn });
   close.addEventListener('click', closeFn);
   backdrop.addEventListener('click', (event) => { if (event.target === backdrop) closeFn(); });
-  document.addEventListener('keydown', onKey);
   return closeFn;
 }
 
@@ -1286,6 +1405,8 @@ function bind() {
   $('hosts-import').addEventListener('click', showImportModal);
   $('table-ssh-config').addEventListener('click', showSSHConfigModal);
   $('hosts-ssh-config').addEventListener('click', showSSHConfigModal);
+  $('table-update-helpers').addEventListener('click', fleetUpdateHelpers);
+  $('fleet-update-helpers').addEventListener('click', fleetUpdateHelpers);
   $('backup-button').addEventListener('click', showBackupModal);
   $('restore-button').addEventListener('click', showRestoreModal);
   $('verify-audit').addEventListener('click', verifyAudit);

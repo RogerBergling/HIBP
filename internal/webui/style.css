@@ -290,6 +290,10 @@ label.field .password-field input:focus { border-color: transparent; box-shadow:
 .file-row:last-child { border-bottom: none; }
 .ssh-config-entry { flex: 1; min-width: 0; }
 .ssh-config-entry .file-meta { overflow: hidden; text-overflow: ellipsis; }
+.fleet-update-list { max-height: 320px; overflow: auto; border: 1px solid var(--border-soft); border-radius: 8px; background: #08101d; }
+.fleet-update-list table { font-size: 10.5px; }
+.fleet-update-list td { padding: 6px 8px; }
+.fleet-update-list td:last-child { word-break: break-word; }
 .file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: none; background: none; color: #dbe8f9; text-align: left; padding: 0; font-size: 11px; }
 .file-name:hover { color: #5eead4; }
 .file-meta { color: var(--muted); font-size: 9.5px; white-space: nowrap; }

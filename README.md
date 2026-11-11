@@ -616,6 +616,41 @@ Security notes:
 - The helper is installed root-owned and mode `0755`; the sudoers file is
   root-owned and mode `0440`.
 
+### Update helpers across the fleet
+
+The **Hosts** page has an **Update helpers** action (also linked from the
+dashboard host card). It runs the setup flow sequentially for every host in the
+inventory and shows a per-host progress and result table.
+
+- It installs the helper version of the **currently running HIBP server**.
+  Restart the server after upgrading the controller, otherwise the old running
+  process uploads its old binary.
+- Hosts with untrusted host keys are skipped with a clear result. Run **Test**
+  and trust the key first.
+- Password-auth hosts and sudo prompts may ask per host. A working restricted
+  `NOPASSWD` rule makes fleet updates unattended.
+- The operation is foreground: keep the tab open. **Stop after current host**
+  cancels the remaining queue; the host currently being updated finishes.
+- Each successful host is recorded as `bootstrap-helper` in the audit log.
+- The fleet action never trusts host keys automatically and never stores
+  passwords.
+- Use the per-host **Setup** action when only one target needs an update.
+
+### Configuration model
+
+Configuration is fleet-first with per-host overrides where it makes sense:
+
+- Fleet-level defaults: collection intervals, alert thresholds, recipients,
+  monitoring enablement.
+- Group/tag overrides and explicit host overrides.
+- Capability-aware assignments: Docker monitoring only applies to hosts with
+  Docker; systemd monitoring only to systemd hosts; HTTP/SSL/TCP monitors can
+  apply anywhere.
+- SMTP is a global integration; recipients can be set per monitor or fleet.
+- Helper lifecycle: per-host **Setup** and fleet-wide **Update helpers**.
+- Secrets (SMTP, vCenter, API tokens) live only in SQLCipher and are never
+  returned by the API.
+
 ### Install the helper manually
 
 Copy the same `hibp` binary to the fixed helper path:
@@ -1455,6 +1490,7 @@ Agent mode is optional and later; v1 uses SSH from the always-on server.
 - Fixed helper actions (`facts`, `check`, `apply`, `reboot`, `reboot-check`) with absolute
   binary paths, a sanitized environment, no shell, and output limits.
 - Explicit-confirmation reboot action through the fixed helper.
+- Per-host and fleet-wide helper installation/update with per-host results.
 - Local SSH config reader for prefilling hosts, with simple `Include` support,
   wildcard/`Match` filtering, and no private-key reads.
 - Remote helper installation from the UI with `visudo` validation, a restricted

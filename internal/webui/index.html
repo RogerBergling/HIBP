@@ -174,7 +174,7 @@
             <div class="card-head">
               <div class="card-title">Hosts</div>
               <div class="card-sub" id="hosts-sub">0 hosts</div>
-              <div class="card-actions"><button class="link-button" id="table-ssh-config">SSH config</button><button class="link-button" id="table-import">Import CSV</button></div>
+              <div class="card-actions"><button class="link-button" id="table-update-helpers">Update helpers</button><button class="link-button" id="table-ssh-config">SSH config</button><button class="link-button" id="table-import">Import CSV</button></div>
             </div>
             <div class="table-wrap">
               <table>
@@ -215,7 +215,7 @@
                 <div><span>UI authentication</span><b class="ok">password + MFA</b></div>
                 <div><span>Second factor</span><b class="ok">TOTP + passkey</b></div>
                 <div><span>Host key policy</span><b class="ok">TOFU + approval</b></div>
-                <div><span>Target helper</span><b class="ok">fixed actions + remote install</b></div>
+                <div><span>Target helper</span><b class="ok">fixed actions + fleet install</b></div>
                 <div><span>Password SSH</span><b class="ok">manual prompt only</b></div>
                 <div><span>Sudo</span><b class="ok">NOPASSWD or manual prompt</b></div>
               </div>
@@ -237,6 +237,7 @@
             <div class="page-title">Hosts</div>
             <div class="page-sub" id="hosts-page-sub">All managed hosts</div>
           </div>
+          <div class="head-actions"><button class="btn" id="fleet-update-helpers" type="button">Update helpers</button></div>
         </div>
         <section class="card table-card">
           <div class="card-head">
