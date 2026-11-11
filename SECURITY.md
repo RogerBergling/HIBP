@@ -67,11 +67,11 @@ Out of scope:
 - Account recovery is local-only: `hibp user reset` requires the database
   passphrase and access to the controller. There is no email or remote reset.
 
-## Docker and monitoring controls
+## Docker, monitoring, and email controls
 
-Read-only observability and project-level Docker check/apply are implemented.
-The email/monitoring and external-platform controls below apply to the next
-phases.
+Read-only observability, project-level Docker check/apply, monitoring rules, and
+SMTP email alerting are implemented. The external-platform controls below still
+apply to future vCenter, HAProxy, OPNsense, and CMDB phases.
 
 - Docker socket access is root-equivalent. The controller does not connect to
   Docker directly; the root-owned helper exposes only fixed, read-only or
@@ -88,15 +88,28 @@ phases.
   group/world-writable. `.env` files and build contexts must be protected by the
   operator. No automatic updates, no `down -v`, and no volume pruning. Check
   and apply are serialised with a host-wide lock and audited.
-- System information remains read-only. No service start/stop/restart is exposed
-  in the first monitoring release. Fleet and per-host collection settings are
-  stored in SQLCipher.
+- System information remains read-only. No service start/stop/restart is exposed.
+  Fleet and per-host collection settings are stored in SQLCipher.
+- Monitoring definitions are administrator-only application data. Checks use
+  cached host snapshots or outbound HTTP/TCP/TLS probes; they do not construct
+  shell commands, open interactive SSH sessions, or change the monitored
+  service. HTTP monitor URLs reject embedded credentials.
+- Service monitors depend on `host_services` snapshots from the current helper.
+  The controller does not clear service state when an older helper cannot report
+  unit names, which avoids false outages during a rolling helper update.
+- SMTP settings are stored in the encrypted `settings` scope. The password is
+  never returned by the API, logged, or written to audit details. Authentication
+  is allowed only over STARTTLS or implicit TLS. The test-email endpoint works
+  before alerts are enabled and uses the same TLS rules.
+- Alert email can contain host names, monitor names, URLs, metric values, and
+  state messages. Treat the recipient list as sensitive operational data and do
+  not send it to untrusted mailboxes.
+- Monitoring is an alerting and visibility feature, not a remote-control plane.
+  A monitoring credential must not be able to change the monitored system.
 - SMTP credentials, vCenter credentials, and API tokens are stored only in the
   SQLCipher database and are never returned by the API, logged, or written to
   audit details. Use TLS for SMTP and read-only accounts for vCenter/HAProxy/
   OPNsense.
-- Monitoring is an alerting and visibility feature, not a remote-control plane.
-  A monitoring credential must not be able to change the monitored system.
 
 ## Operational guidance
 

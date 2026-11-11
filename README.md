@@ -4,12 +4,13 @@
 > contains a working Go server, browser UI, SQLCipher storage, host CRUD/import,
 > password + TOTP/passkey authentication, SSH host-key approval, remote helper
 > installation, fact collection, read-only system information, Docker
-> inventory, metric history, reboot control, SSH config import, audit chain,
-> backup/restore, helper actions, tests, and CI. `make production`
-> builds against current SQLCipher 4.20 in a pinned Alpine/musl image; the
-> development build still uses the 2020 spike driver and prints a warning. SSH
-> password and sudo fallbacks are manual-run only.
-> Scheduler, playbooks, agent mode, and notifications are not implemented yet.
+> inventory, metric history, monitoring, SMTP email alerts, reboot control, SSH
+> config import, audit chain, backup/restore, helper actions, tests, and CI.
+> `make production` builds against current SQLCipher 4.20 in a pinned
+> Alpine/musl image; the development build still uses the 2020 spike driver and
+> prints a warning. SSH password and sudo fallbacks are manual-run only.
+> Scheduler, playbooks, agent mode, vCenter, HAProxy, OPNsense, and CMDB import
+> are not implemented yet.
 >
 > **Name:** HIBP stands for **Have I Been Patched**. It is not affiliated with
 > Have I Been Pwned (haveibeenpwned.com).
@@ -24,11 +25,17 @@ and can back up. A CLI and a background service use the same core.
 
 ## Screenshots
 
-> Screenshot of the M1 build running with demo data. The browser UI, encrypted
-> database, host list, facts, and audit chain are real. Real patch execution
-> requires the root-owned helper and SSH access to targets.
+> Screenshots of the current build running with demo data. The browser UI,
+> encrypted database, host list, facts, monitoring state, and audit chain are
+> real. Real patch execution requires the root-owned helper and SSH access to
+> targets.
 
 ![HIBP fleet overview](docs/screenshots/dashboard.png)
+
+![HIBP monitoring and alert history](docs/screenshots/monitoring.png)
+
+Monitoring checks use collected host snapshots and read-only network probes.
+Alert history is recorded even when email delivery is disabled or fails.
 
 ## Contents
 
@@ -94,7 +101,7 @@ End users should not need Go or a compiler.
 
    ```bash
    # Install a specific version
-   sh install.sh --version v0.2.0
+   sh install.sh --version v0.3.0
 
    # Install system-wide (run as a user with write access to /usr/local/bin)
    sudo HIBP_PREFIX=/usr/local/bin sh install.sh
@@ -475,10 +482,10 @@ recovery boundary.
 
 ## Docker, system information, and monitoring
 
-> **Status: Docker inventory and project-level check/apply implemented.**
-> Read-only system information, Docker inventory, host details, metric history,
-> configurable collection, and explicit Docker check/apply are available. Email
-> alerting, monitoring rules, vCenter, HAProxy, OPNsense, and CMDB import are
+> **Status: v0.3.0 adds monitoring and email alerting.** Read-only system
+> information, Docker inventory, host details, metric history, configurable
+> collection, explicit Docker check/apply, monitoring definitions, and SMTP
+> email alerts are available. vCenter, HAProxy, OPNsense, and CMDB import are
 > the next phases.
 
 ### Implemented now
@@ -500,6 +507,13 @@ recovery boundary.
   image, and ports.
 - Project-level **Check updates** (pull and compare, no restart) and
   **Apply update** (`docker compose up -d --pull never`, typed confirmation).
+- Monitoring definitions assigned to the fleet, a group, a tag, or individual
+  hosts, covering CPU, memory, disk, load, Docker project/container health,
+  systemd services, HTTP/HTTPS, TCP, and TLS expiry.
+- SMTP email alerts with STARTTLS/implicit TLS, per-monitor recipients,
+  repeat/cooldown behaviour, recovery notices, and a persistent alert history.
+- Live **Monitoring** view plus a read-only alert event table; no service
+  start/stop/restart or automatic remediation.
 
 Scheduled collection requires a trusted host key and the restricted
 `NOPASSWD` helper. Password-auth hosts and sudo-password hosts can still be
@@ -534,7 +548,8 @@ is not arbitrary shell access.
 
 Containers are **child workloads of a host**, not new SSH-managed “servers”.
 They do not inherit SSH keys or the host’s sudo rule. Standalone containers are
-visible read-only in phase 1; project-level Compose updates come next.
+visible read-only; project-level Compose check/apply is implemented and
+standalone container updates are not.
 
 ### Host and Docker screenshots
 
@@ -585,25 +600,51 @@ the current snapshot and the last 10 days of metric history.
 
 ### Monitoring and email
 
-The implemented host detail view has **Overview**, **System**, and
-**Containers** tabs. A future **Services** tab and monitoring rules will be
-defined once and assigned to hosts, groups, or the fleet; assignments are
-filtered by capability, so Docker checks only apply to hosts with Docker.
+The **Monitoring** view defines checks once and assigns each check to the
+fleet, a group, a tag, or one or more hosts. Assignments are additive and
+deduplicated. Host-based checks use the controller's cached snapshots, so a
+five-minute metrics interval does not create a new SSH connection per monitor.
 
-Planned check types:
+Implemented check types:
 
-- Host thresholds: CPU, memory, disk, load.
-- systemd service up/down.
-- Docker project/container up/down and health.
-- HTTP/HTTPS endpoint status, latency, and optional TCP port.
-- SSL certificate expiry and chain validation.
-- Later: vCenter and child objects, HAProxy, and OPNsense.
+- `host.cpu`, `host.memory`, `host.disk`, and `host.load` — warning and critical
+  thresholds from the latest metrics sample. Disk monitors name a mount path
+  and use the collected system information.
+- `docker.project` and `docker.container` — missing, stopped, or unhealthy
+  workloads. The collector refreshes Docker inventory on each metrics tick.
+- `service.systemd` — unit state from the systemd snapshot collected with
+  metrics. Missing or failed units are critical; stale snapshots are unknown.
+- `http` — HTTP/HTTPS status (2xx/3xx healthy) and optional latency thresholds.
+- `tcp` — TCP connect and optional latency thresholds.
+- `ssl` — TLS handshake plus certificate expiry in days.
 
-Email alerts will use SMTP with TLS and authentication. Credentials will be
-stored only in the SQLCipher database, never logged or returned by the API.
-Alerts will support recipients, cooldowns/deduplication, recovery notices, and
-an audit trail. System information remains read-only in the first release; no
-service start/stop/restart.
+Each monitor has an interval (minimum 30 seconds), a repeat interval for
+reminders while an alert remains active, and a cooldown that suppresses repeated
+reminders of the same state. **Check** queues an immediate evaluation; otherwise
+the engine evaluates due monitors on its 30-second wake cycle. A first successful
+check is silent. A transition from warning/critical back to healthy sends a
+recovery notice, and severity transitions are not suppressed by the cooldown.
+Unknown data is shown in the table but is not emailed, which avoids false alarms
+for hosts that do not have a capability. Every notification attempt is written
+to **Alert events** whether SMTP is disabled, delivery fails, or the message is
+sent. No check starts, stops, restarts, or updates the monitored service.
+
+Email settings are global; each monitor may override recipients. STARTTLS and
+implicit TLS are supported, and SMTP authentication is only allowed over TLS.
+Plain SMTP is available for local relays without authentication. The password
+is stored only in the encrypted database and is never returned by the API or
+written to logs or audit details. A test email can be sent before alerts are
+enabled. Email subjects are sanitized, and HTTP monitor URLs may not contain
+credentials.
+
+Monitoring is an alerting and visibility feature, not a remote-control plane.
+The controller makes outbound HTTP/TCP/TLS probes, so run it from a network
+position where those checks are expected. Hosts installed with an older helper
+must use **Update helpers** before service monitoring has unit-level state.
+
+| Monitoring and alert history | Email notification settings |
+| --- | --- |
+| ![Monitoring and alert history](docs/screenshots/monitoring.png) | ![Email notification settings](docs/screenshots/smtp-settings.png) |
 
 ### CMDB
 
@@ -618,9 +659,10 @@ to **merge** or **overwrite**. It will map `external_id`/`ci_id` to
    view, twice-daily collection, metric history, fleet/per-host settings.
 2. **Implemented:** Docker project-level check/apply with trust checks and
    explicit confirmation.
-3. **Next:** monitoring definitions, SMTP email, HTTP/TCP/SSL checks, services.
-4. vCenter, HAProxy, and OPNsense integrations.
-5. CMDB import with preview and merge/overwrite.
+3. **Implemented:** monitoring definitions, SMTP email, HTTP/TCP/SSL checks,
+   Docker/systemd health, alert history, repeat/cooldown/recovery behaviour.
+4. **Next:** vCenter, HAProxy, and OPNsense integrations.
+5. **Next:** CMDB import with preview and merge/overwrite.
 
 ### Collection settings
 
@@ -631,8 +673,8 @@ override them in **Host detail → System → Collection settings**:
 - `collector.metrics_interval` — default `5m`; minimum `10s`.
 - `collector.facts_interval` — default `12h`.
 - `metrics.retention_days` — default `30`, validated 1–3650.
-- `docker.scan_roots` — default `/opt`, used by the planned Docker update
-  phase.
+- `docker.scan_roots` — default `/opt`, used by Docker inventory and project
+  update checks.
 
 Host overrides take precedence over fleet defaults; **Use fleet defaults**
 removes the host overrides. The scheduler reloads settings every minute.
@@ -724,12 +766,12 @@ inventory and shows a per-host progress and result table.
 
 Configuration is fleet-first with per-host overrides where it makes sense:
 
-- Fleet-level defaults: collection intervals, alert thresholds, recipients,
-  monitoring enablement.
-- Group/tag overrides and explicit host overrides.
-- Capability-aware assignments: Docker monitoring only applies to hosts with
-  Docker; systemd monitoring only to systemd hosts; HTTP/SSL/TCP monitors can
-  apply anywhere.
+- Fleet-level defaults: collection intervals, metric retention, Docker scan
+  roots, SMTP transport, and default recipients.
+- Group/tag overrides and explicit host overrides for collection settings.
+- Monitoring definitions with additive fleet, group, tag, and host assignments.
+  Hosts that lack Docker or a systemd unit snapshot are excluded from that
+  monitor's host state rather than silently marked healthy.
 - SMTP is a global integration; recipients can be set per monitor or fleet.
 - Helper lifecycle: per-host **Setup** and fleet-wide **Update helpers**.
 - Secrets (SMTP, vCenter, API tokens) live only in SQLCipher and are never
@@ -1615,14 +1657,16 @@ Agent mode is optional and later; v1 uses SSH from the always-on server.
 
 ## Data model
 
-The M1 schema is implemented in `internal/store/migrations/001_init.sql` and `002_auth.sql`. The
-remaining tables below are the planned design for later milestones. Domain
-objects use UUIDs, timestamps are UTC ISO 8601, and durations are stored in
-seconds.
+The current schema is implemented in `internal/store/migrations/001_init.sql`
+through `004_monitoring.sql`. Domain objects use UUIDs, timestamps are UTC
+ISO 8601, and durations are stored in seconds.
 
-> **M1 implementation:** `schema_migrations`, `app_meta`, `hosts`,
-> `host_facts`, `host_keys`, `runs` (table only), `users`, `user_passkeys`,
-> `sessions`, and `audit_log` exist. The remaining tables are planned.
+> **Implemented:** `schema_migrations`, `app_meta`, `hosts`, `host_facts`,
+> `host_keys`, `runs` (table only), `users`, `user_passkeys`, `sessions`,
+> `audit_log`, `host_system_info`, `host_metrics`, `docker_projects`,
+> `docker_containers`, `settings`, `monitors`, `monitor_assignments`,
+> `monitor_state`, `alert_events`, and `host_services`. The remaining tables
+> below are planned.
 
 | Table | Purpose | Key fields |
 |---|---|---|
@@ -1633,6 +1677,14 @@ seconds.
 | `sessions` | Hashed browser sessions. | `id`, `user_id`, `token_hash`, `created_at`, `expires_at`, `last_seen_at`, `mfa_verified` |
 | `hosts` | Managed hosts. | `id`, `name`, `address`, `port`, `os_family`, `os_version`, `enabled`, `group_id`, `cmdb_ci_id`, `created_at`, `updated_at`, `deleted_at` |
 | `host_facts` | Latest collected facts. | `host_id`, `collected_at`, `uptime_seconds`, `boot_time`, `kernel`, `os_pretty_name`, `package_manager`, `reboot_required`, `disk_free_bytes`, `time_sync_ok` |
+| `host_system_info` | Latest read-only system snapshot. | `host_id`, `collected_at`, `payload_json` |
+| `host_metrics` | Metric history. | `host_id`, `collected_at`, `cpu_percent`, `memory_percent`, `swap_percent`, `disk_percent`, `load1`, `load5`, `load15`, `uptime_seconds` |
+| `docker_projects`, `docker_containers` | Cached Docker inventory. | `host_id`, `name`/`id`, `project`, `state`, `health`, `image`, `ports`, `last_seen` |
+| `settings` | Fleet/host preferences and SMTP configuration. | `scope`, `key`, `value`, `updated_at` |
+| `monitors`, `monitor_assignments` | Monitoring definitions and fleet/group/tag/host assignments. | `id`, `name`, `type`, `target`, thresholds, intervals, `recipients`, `scope`, `target` |
+| `monitor_state` | Last status per monitor/host. | `monitor_id`, `host_id`, `status`, `message`, `checked_at`, `changed_at`, `last_notified` |
+| `alert_events` | Alert history independent of email delivery. | `id`, `monitor_id`, `host_id`, `status`, `subject`, `detail`, `created_at`, `emailed`, `error` |
+| `host_services` | systemd unit snapshot from metrics. | `host_id`, `unit`, `state`, `last_seen` |
 | `credentials` | Encrypted credential metadata and secrets. | `id`, `name`, `auth_type`, `username`, `key_path`, `secret_ref`, `wrapped_dek`, `encrypted_secret`, `sudo_mode`, `created_at`, `rotated_at` |
 | `host_credentials` | Credential assignment and precedence. | `host_id`, `credential_id`, `priority` |
 | `host_keys` | Known host keys. | `host_id`, `key_type`, `fingerprint`, `first_seen`, `last_seen`, `trusted`, `revoked_at` |
@@ -1648,7 +1700,6 @@ seconds.
 | `approvals` | Four-eyes or policy approvals. | `id`, `job_id`, `requested_by`, `approved_by`, `approved_at`, `reason`, `plan_hash` |
 | `audit_log` | Hash-chained audit trail. | `id`, `ts`, `actor`, `action`, `entity_type`, `entity_id`, `detail`, `prev_hash`, `hash` |
 | `notifications` | Notification channels. | `id`, `name`, `type`, `encrypted_config`, `enabled` |
-| `settings` | Non-secret preferences. | `key`, `value` |
 
 Schema rules:
 
@@ -2045,7 +2096,7 @@ Implemented:
 Not yet:
 
 - Real target matrix and sudo helper install test.
-- Scheduler, playbooks, notifications, and agent.
+- Scheduler, playbooks, scheduler-driven notifications, and agent.
 
 ### M2 - Patch execution (partial)
 
@@ -2070,6 +2121,8 @@ Still missing:
   do not run jobs until unlocked.
 - Notifications via email, webhook, and ntfy for failures, reboot required, stale
   hosts, Docker/service availability, HTTP/TLS checks, and threshold alarms.
+  Email monitoring alerts are implemented; scheduler-driven notifications and
+  webhook/ntfy channels remain.
 - Next-run and run-history UI.
 - Acceptance: a daily schedule runs with the laptop closed, survives a server
   restart after manual unlock, and reports the result.
@@ -2261,7 +2314,8 @@ No architecture-blocking decisions remain. These are intentionally deferred:
 - **Scheduled password authentication** through an external vault.
 - **CVE correlation** through Trivy, Grype, OSV, or distro security feeds.
 - **RBAC/SSO** and per-user audit actors.
-- **Email, Slack, and Teams** notifications.
+- **Slack and Teams** notification channels; SMTP email alerting is
+  implemented.
 - **Arch and Alpine** profiles in the second wave.
 - **Native desktop client** — not planned; the browser UI is the chosen path.
 - **Windows/macOS targets** — not planned for v1.

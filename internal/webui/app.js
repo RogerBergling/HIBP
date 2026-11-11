@@ -3,6 +3,8 @@
 const state = {
   hosts: [],
   audit: [],
+  monitors: [],
+  alerts: [],
   status: {},
   view: 'dashboard',
   passwords: new Map(),
@@ -90,13 +92,16 @@ function updateUserDisplay() {
 
 function setView(view) {
   state.view = view;
-  for (const section of ['dashboard', 'hosts', 'audit']) {
+  const sections = ['dashboard', 'hosts', 'audit', 'monitoring'];
+  const labels = { dashboard: 'Overview', hosts: 'Hosts', audit: 'Audit log', monitoring: 'Monitoring' };
+  for (const section of sections) {
     $('view-' + section).classList.toggle('hidden', section !== view);
   }
   for (const button of document.querySelectorAll('.nav-item[data-view]')) {
     button.classList.toggle('active', button.dataset.view === view);
   }
-  $('crumb-view').textContent = view === 'dashboard' ? 'Overview' : view === 'hosts' ? 'Hosts' : 'Audit log';
+  $('crumb-view').textContent = labels[view] || 'Overview';
+  if (view === 'monitoring') renderMonitoring();
 }
 
 async function api(path, options = {}) {
@@ -323,14 +328,18 @@ async function signOut() {
 
 async function loadAll() {
   try {
-    const [status, hosts, audit] = await Promise.all([
+    const [status, hosts, audit, monitors, alerts] = await Promise.all([
       api('/api/v1/status'),
       api('/api/v1/hosts'),
       api('/api/v1/audit?limit=200'),
+      api('/api/v1/monitors'),
+      api('/api/v1/alerts?limit=200'),
     ]);
     state.status = status;
     state.hosts = hosts.hosts || [];
     state.audit = audit.entries || [];
+    state.monitors = monitors.monitors || [];
+    state.alerts = alerts.alerts || [];
     renderAll();
     $('last-refresh').textContent = 'updated ' + new Date().toLocaleTimeString();
   } catch (error) {
@@ -343,6 +352,7 @@ function renderAll() {
   renderStats();
   renderHosts();
   renderAudit();
+  renderMonitoring();
 }
 
 function renderStatus() {
@@ -497,6 +507,632 @@ function renderAudit() {
     );
     body.append(tr);
   }
+}
+
+const MONITOR_TYPES = {
+  'host.cpu': {
+    label: 'CPU usage', target: 'none', threshold: 'percent',
+    warningLabel: 'Warning %', criticalLabel: 'Critical %', warning: 80, critical: 90,
+    note: 'Uses the latest collected metric sample. Warning and critical are percentages.',
+  },
+  'host.memory': {
+    label: 'Memory usage', target: 'none', threshold: 'percent',
+    warningLabel: 'Warning %', criticalLabel: 'Critical %', warning: 85, critical: 95,
+    note: 'Uses the latest collected metric sample. Warning and critical are percentages.',
+  },
+  'host.disk': {
+    label: 'Disk usage', target: 'mount', targetLabel: 'Mount path', placeholder: '/',
+    defaultTarget: '/', threshold: 'percent',
+    warningLabel: 'Warning %', criticalLabel: 'Critical %', warning: 80, critical: 90,
+    note: 'Uses the collected system information for the exact mount path.',
+  },
+  'host.load': {
+    label: 'Load average', target: 'none', threshold: 'number',
+    warningLabel: 'Warning load', criticalLabel: 'Critical load', warning: 4, critical: 8,
+    note: 'Compares 1-minute load average. Set thresholds relative to the host CPU count.',
+  },
+  'docker.project': {
+    label: 'Compose project', target: 'project', targetLabel: 'Compose project',
+    placeholder: 'app', threshold: 'none',
+    note: 'Critical when no container in the Compose project is running or any container is unhealthy.',
+  },
+  'docker.container': {
+    label: 'Container', target: 'container', targetLabel: 'Container name',
+    placeholder: 'app-web-1', threshold: 'none',
+    note: 'Critical when the container is missing, stopped, or unhealthy.',
+  },
+  'service.systemd': {
+    label: 'systemd service', target: 'service', targetLabel: 'Unit name',
+    placeholder: 'nginx.service', threshold: 'none',
+    note: 'Uses the systemd snapshot collected with host metrics. Add the .service suffix.',
+  },
+  'http': {
+    label: 'HTTP endpoint', target: 'url', targetLabel: 'URL',
+    placeholder: 'https://example.com/health', threshold: 'latency',
+    warningLabel: 'Warning latency (ms)', criticalLabel: 'Critical latency (ms)', warning: 0, critical: 0,
+    note: '2xx and 3xx responses are healthy. Latency thresholds are optional; 0 disables them.',
+  },
+  'tcp': {
+    label: 'TCP port', target: 'address', targetLabel: 'host:port',
+    placeholder: '10.0.0.10:443', threshold: 'latency',
+    warningLabel: 'Warning latency (ms)', criticalLabel: 'Critical latency (ms)', warning: 0, critical: 0,
+    note: 'A successful TCP connect is healthy. Latency thresholds are optional; 0 disables them.',
+  },
+  'ssl': {
+    label: 'TLS certificate', target: 'address', targetLabel: 'host:port',
+    placeholder: 'example.com:443', threshold: 'days',
+    warningLabel: 'Warning days left', criticalLabel: 'Critical days left', warning: 30, critical: 14,
+    note: 'Connects with TLS and checks certificate expiry. Warning must be larger than critical.',
+  },
+};
+
+const MONITOR_STATUS_RANK = { ok: 0, unknown: 1, warning: 2, critical: 3 };
+
+function monitorTypeLabel(type) {
+  return (MONITOR_TYPES[type] && MONITOR_TYPES[type].label) || type;
+}
+
+function monitorHostName(hostID) {
+  if (!hostID) return 'network target';
+  const host = state.hosts.find((entry) => entry.id === hostID);
+  return host ? host.name : hostID.slice(0, 8);
+}
+
+function monitorAssignmentLabel(assignment) {
+  if (assignment.scope === 'fleet') return 'Fleet';
+  if (assignment.scope === 'host') return 'Host: ' + monitorHostName(assignment.target);
+  if (assignment.scope === 'group') return 'Group: ' + assignment.target;
+  if (assignment.scope === 'tag') return 'Tag: ' + assignment.target;
+  return assignment.scope + ': ' + assignment.target;
+}
+
+function formatMonitorInterval(seconds) {
+  const value = Number(seconds) || 0;
+  if (value < 60) return value + 's';
+  if (value < 3600) return Math.round(value / 60) + 'm';
+  if (value % 3600 === 0) return (value / 3600) + 'h';
+  return (value / 3600).toFixed(1) + 'h';
+}
+
+function monitorAggregate(monitor) {
+  const states = monitor.states || [];
+  if (!states.length) {
+    return { status: 'unknown', summary: 'not checked', title: 'No checks recorded yet.' };
+  }
+  const counts = { critical: 0, warning: 0, unknown: 0, ok: 0 };
+  let worst = 'ok';
+  for (const state of states) {
+    const status = Object.prototype.hasOwnProperty.call(counts, state.status) ? state.status : 'unknown';
+    counts[status]++;
+    if (MONITOR_STATUS_RANK[status] > MONITOR_STATUS_RANK[worst]) worst = status;
+  }
+  const parts = [];
+  if (counts.critical) parts.push(counts.critical + ' critical');
+  if (counts.warning) parts.push(counts.warning + ' warning');
+  if (counts.unknown) parts.push(counts.unknown + ' unknown');
+  if (counts.ok) parts.push(counts.ok + ' ok');
+  const title = states
+    .map((entry) => monitorHostName(entry.host_id) + ': ' + entry.status + ' — ' + (entry.message || 'no detail'))
+    .join('\n');
+  return { status: worst, summary: parts.join(' · '), title };
+}
+
+function monitorStatusPill(status, label = '') {
+  const cls = status === 'ok' ? 'reachable' : status === 'warning' ? 'review' : status === 'critical' ? 'unreachable' : 'unknown';
+  return el('span', 'pill ' + cls, '● ' + (label || status));
+}
+
+function emptyTableRow(columns, message) {
+  const row = el('tr');
+  const cell = el('td', 'empty-state', message);
+  cell.colSpan = columns;
+  row.append(cell);
+  return row;
+}
+
+function renderMonitoring() {
+  const body = $('monitor-body');
+  if (!body) return;
+  const monitors = state.monitors || [];
+  const alerts = state.alerts || [];
+  const enabled = monitors.filter((monitor) => monitor.enabled).length;
+  let critical = 0;
+  let warning = 0;
+  for (const monitor of monitors) {
+    const status = monitorAggregate(monitor).status;
+    if (status === 'critical') critical++;
+    else if (status === 'warning') warning++;
+  }
+  const summary = [];
+  summary.push(monitors.length + ' monitor' + (monitors.length === 1 ? '' : 's'));
+  summary.push(enabled + ' enabled');
+  if (critical) summary.push(critical + ' critical');
+  if (warning) summary.push(warning + ' warning');
+  $('monitor-summary').textContent = summary.join(' · ');
+
+  body.replaceChildren();
+  if (!monitors.length) {
+    body.append(emptyTableRow(8, 'No monitors configured. Add a monitor to watch host metrics, Docker, services, or network endpoints.'));
+  }
+  const monitorNames = new Map(monitors.map((monitor) => [monitor.id, monitor.name]));
+  for (const monitor of monitors) {
+    const aggregate = monitorAggregate(monitor);
+    const row = el('tr');
+
+    const nameTd = el('td');
+    nameTd.append(el('div', 'host-name', monitor.name));
+    nameTd.append(el('div', 'host-ip', monitor.enabled ? 'enabled' : 'disabled'));
+
+    const typeTd = el('td', '', monitorTypeLabel(monitor.type));
+
+    const targetTd = el('td');
+    const targetText = monitor.target || '—';
+    const target = el('span', 'monitor-target', targetText);
+    target.title = targetText;
+    targetTd.append(target);
+
+    const assignmentTd = el('td');
+    const assignmentWrap = el('div', 'assignment-pills');
+    for (const assignment of monitor.assignments || []) {
+      assignmentWrap.append(el('span', 'assignment-pill', monitorAssignmentLabel(assignment)));
+    }
+    assignmentTd.append(assignmentWrap);
+
+    const intervalTd = el('td', '', formatMonitorInterval(monitor.interval_seconds));
+
+    const statusTd = el('td');
+    const statusPill = monitorStatusPill(aggregate.status);
+    statusPill.title = aggregate.title;
+    statusTd.append(statusPill);
+    const statusSummary = el('div', 'muted monitor-status-summary', aggregate.summary);
+    statusSummary.title = aggregate.title;
+    statusTd.append(statusSummary);
+
+    const checkedTd = el('td');
+    const checked = el('span', 'nowrap', relativeTime(monitor.last_checked_at));
+    if (monitor.last_checked_at) checked.title = new Date(monitor.last_checked_at).toLocaleString();
+    checkedTd.append(checked);
+
+    const actionsTd = el('td');
+    const actions = el('div', 'actions');
+    actions.append(actionButton('Edit', () => showMonitorModal(monitor)));
+    const check = actionButton('Check', () => checkMonitorNow(monitor));
+    check.disabled = !monitor.enabled;
+    if (!monitor.enabled) check.title = 'Enable the monitor first';
+    actions.append(check);
+    actions.append(actionButton('Delete', () => deleteMonitor(monitor), 'danger'));
+    actionsTd.append(actions);
+
+    row.append(nameTd, typeTd, targetTd, assignmentTd, intervalTd, statusTd, checkedTd, actionsTd);
+    body.append(row);
+  }
+
+  const alertBody = $('alert-body');
+  alertBody.replaceChildren();
+  if (!alerts.length) {
+    alertBody.append(emptyTableRow(6, 'No alert events yet. Alerts appear here even when email is disabled or delivery fails.'));
+  }
+  for (const event of alerts) {
+    const row = el('tr');
+    const timeTd = el('td');
+    const time = el('span', 'nowrap', relativeTime(event.created_at));
+    time.title = new Date(event.created_at).toLocaleString();
+    timeTd.append(time);
+    const monitorTd = el('td', '', monitorNames.get(event.monitor_id) || event.monitor_id.slice(0, 8));
+    const hostTd = el('td', '', event.host_id ? monitorHostName(event.host_id) : 'network target');
+    const statusTd = el('td');
+    statusTd.append(monitorStatusPill(event.status, event.status === 'ok' ? 'recovered' : ''));
+    const detailTd = el('td', 'alert-detail', event.detail || '');
+    detailTd.title = event.detail || '';
+    const emailTd = el('td');
+    if (event.emailed) {
+      emailTd.append(el('span', 'badge green', 'sent'));
+    } else if (event.error) {
+      const failed = el('span', 'badge red', 'failed');
+      failed.title = event.error;
+      emailTd.append(failed);
+    } else {
+      emailTd.append(el('span', 'badge amber', 'not sent'));
+    }
+    row.append(timeTd, monitorTd, hostTd, statusTd, detailTd, emailTd);
+    alertBody.append(row);
+  }
+}
+
+async function deleteMonitor(monitor) {
+  if (!confirm('Delete monitor "' + monitor.name + '"? Its alert history is deleted too.')) return;
+  try {
+    await api('/api/v1/monitors/' + encodeURIComponent(monitor.id), { method: 'DELETE' });
+    toast('Monitor deleted', 'ok');
+    await loadAll();
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
+async function checkMonitorNow(monitor) {
+  try {
+    await api('/api/v1/monitors/' + encodeURIComponent(monitor.id) + '/check', { method: 'POST', body: '{}' });
+    toast('Check requested for ' + monitor.name, 'ok');
+    // The engine normally finishes cached checks quickly. Network probes may
+    // take longer, so refresh once and let the user refresh again if needed.
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await loadAll();
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
+function setFieldLabel(control, text) {
+  const wrapper = control.closest('label.field');
+  if (!wrapper) return;
+  for (const node of wrapper.childNodes) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      node.nodeValue = text;
+      return;
+    }
+  }
+}
+
+function showMonitorModal(monitor = null, preset = null) {
+  const editing = Boolean(monitor);
+  const source = monitor || preset || {};
+  const assignments = (source.assignments || []).map((assignment) => ({ scope: assignment.scope, target: assignment.target || '' }));
+  const form = el('form', 'modal-body');
+  form.append(el('p', 'muted', 'Monitors are evaluated by the controller. Host metrics and service state come from the collector; network checks are read-only probes.'));
+
+  const topRow = el('div', 'form-row');
+  const name = inputField(topRow, 'Name', 'name', 'Web servers — CPU');
+  const type = selectField(topRow, 'Type', 'type', Object.entries(MONITOR_TYPES).map(([value, info]) => [value, info.label]));
+  form.append(topRow);
+
+  const targetWrap = el('label', 'field', 'Target');
+  const target = el('input');
+  target.name = 'target';
+  target.type = 'text';
+  target.autocomplete = 'off';
+  target.spellcheck = false;
+  targetWrap.append(target);
+  form.append(targetWrap);
+
+  const enabledWrap = el('label', 'field checkbox-field');
+  const enabled = el('input');
+  enabled.type = 'checkbox';
+  enabled.checked = source.enabled !== false;
+  enabledWrap.append(enabled, document.createTextNode('Enabled'));
+  form.append(enabledWrap);
+
+  const thresholdRow = el('div', 'form-row');
+  const warning = inputField(thresholdRow, 'Warning', 'warning', '80', 'number');
+  const critical = inputField(thresholdRow, 'Critical', 'critical', '90', 'number');
+  warning.step = 'any';
+  critical.step = 'any';
+  form.append(thresholdRow);
+  const thresholdNote = el('p', 'field-note');
+  form.append(thresholdNote);
+
+  const scheduleRow = el('div', 'form-row three');
+  const interval = inputField(scheduleRow, 'Interval (seconds)', 'interval_seconds', '300', 'number');
+  const repeat = inputField(scheduleRow, 'Repeat (minutes)', 'repeat_minutes', '60', 'number');
+  const cooldown = inputField(scheduleRow, 'Cooldown (minutes)', 'cooldown_minutes', '15', 'number');
+  form.append(scheduleRow);
+
+  const recipients = inputField(form, 'Alert recipients (optional)', 'recipients', 'ops@example.com, oncall@example.com');
+  recipients.spellcheck = false;
+  form.append(el('p', 'field-note', 'Leave recipients blank to use the SMTP defaults. Repeat is the reminder interval while an alert stays active; cooldown suppresses repeat emails.'));
+
+  const assignmentCard = el('div', 'detail-card');
+  assignmentCard.append(el('h3', '', 'Assignments'));
+  assignmentCard.append(el('p', 'muted', 'A monitor can target the whole fleet, a group, a tag, or one host. Add one or more assignments.'));
+  const assignmentControls = el('div', 'form-row assignment-controls');
+  const scope = selectField(assignmentControls, 'Scope', 'scope', [['fleet', 'Fleet'], ['host', 'Host'], ['group', 'Group'], ['tag', 'Tag']]);
+  const assignmentTargetWrap = el('label', 'field', 'Target');
+  const hostSelect = el('select');
+  hostSelect.name = 'assignment_host';
+  for (const hostEntry of state.hosts) {
+    const option = el('option', '', hostEntry.name + ' (' + hostEntry.address + ')');
+    option.value = hostEntry.id;
+    hostSelect.append(option);
+  }
+  const textTarget = el('input');
+  textTarget.name = 'assignment_target';
+  textTarget.type = 'text';
+  textTarget.autocomplete = 'off';
+  textTarget.spellcheck = false;
+  const fleetNote = el('div', 'field-static', 'All managed hosts');
+  fleetNote.classList.add('hidden');
+  const groupDatalist = el('datalist');
+  groupDatalist.id = 'monitor-groups-' + Math.random().toString(36).slice(2, 8);
+  for (const value of [...new Set(state.hosts.map((hostEntry) => hostEntry.group_name).filter(Boolean))]) {
+    const option = el('option');
+    option.value = value;
+    groupDatalist.append(option);
+  }
+  const tagDatalist = el('datalist');
+  tagDatalist.id = 'monitor-tags-' + Math.random().toString(36).slice(2, 8);
+  for (const value of [...new Set(state.hosts.flatMap((hostEntry) => String(hostEntry.tags || '').split(',').map((tag) => tag.trim())).filter(Boolean))]) {
+    const option = el('option');
+    option.value = value;
+    tagDatalist.append(option);
+  }
+  assignmentTargetWrap.append(hostSelect, textTarget, fleetNote);
+  assignmentControls.append(assignmentTargetWrap);
+  const addAssignment = el('button', 'btn', 'Add');
+  addAssignment.type = 'button';
+  assignmentControls.append(addAssignment);
+  assignmentCard.append(assignmentControls, groupDatalist, tagDatalist);
+  const chips = el('div', 'assignment-chips');
+  assignmentCard.append(chips);
+  form.append(assignmentCard);
+
+  const syncAssignmentTarget = () => {
+    const value = scope.value;
+    hostSelect.classList.toggle('hidden', value !== 'host');
+    textTarget.classList.toggle('hidden', value === 'host' || value === 'fleet');
+    fleetNote.classList.toggle('hidden', value !== 'fleet');
+    if (value === 'group') {
+      textTarget.placeholder = 'web-prod';
+      textTarget.setAttribute('list', groupDatalist.id);
+    } else if (value === 'tag') {
+      textTarget.placeholder = 'prod';
+      textTarget.setAttribute('list', tagDatalist.id);
+    } else {
+      textTarget.placeholder = '';
+      textTarget.removeAttribute('list');
+    }
+    addAssignment.disabled = value === 'host' && state.hosts.length === 0;
+  };
+  const renderAssignments = () => {
+    chips.replaceChildren();
+    if (!assignments.length) {
+      chips.append(el('span', 'muted', 'No assignments yet.'));
+      return;
+    }
+    for (const assignment of assignments) {
+      const chip = el('span', 'assignment-chip');
+      chip.append(el('span', '', monitorAssignmentLabel(assignment)));
+      const remove = el('button', 'chip-remove', '×');
+      remove.type = 'button';
+      remove.title = 'Remove assignment';
+      remove.addEventListener('click', () => {
+        const index = assignments.indexOf(assignment);
+        if (index >= 0) assignments.splice(index, 1);
+        renderAssignments();
+      });
+      chip.append(remove);
+      chips.append(chip);
+    }
+  };
+  addAssignment.addEventListener('click', () => {
+    const selectedScope = scope.value;
+    let value = selectedScope === 'host' ? hostSelect.value : textTarget.value.trim();
+    if (selectedScope === 'fleet') value = '';
+    if (selectedScope !== 'fleet' && !value) {
+      toast('Choose a target for this assignment', 'error');
+      return;
+    }
+    if (assignments.some((entry) => entry.scope === selectedScope && entry.target === value)) {
+      toast('That assignment is already added', 'error');
+      return;
+    }
+    assignments.push({ scope: selectedScope, target: value });
+    textTarget.value = '';
+    renderAssignments();
+  });
+
+  const applyMonitorType = (setDefaults) => {
+    const info = MONITOR_TYPES[type.value] || {};
+    targetWrap.classList.toggle('hidden', info.target === 'none');
+    if (info.targetLabel) setFieldLabel(target, info.targetLabel);
+    target.placeholder = info.placeholder || '';
+    thresholdRow.classList.toggle('hidden', info.threshold === 'none');
+    thresholdNote.textContent = info.note || '';
+    if (info.threshold && info.threshold !== 'none') {
+      setFieldLabel(warning, info.warningLabel || 'Warning');
+      setFieldLabel(critical, info.criticalLabel || 'Critical');
+    }
+    if (setDefaults) {
+      if (info.threshold && info.threshold !== 'none') {
+        warning.value = String(info.warning ?? 0);
+        critical.value = String(info.critical ?? 0);
+      } else {
+        warning.value = '0';
+        critical.value = '0';
+      }
+      target.value = info.defaultTarget || '';
+    }
+  };
+
+  name.value = source.name || '';
+  type.value = source.type || 'host.cpu';
+  target.value = source.target || '';
+  const initialType = MONITOR_TYPES[type.value] || {};
+  warning.value = source.warning !== undefined ? String(source.warning) : String(initialType.warning ?? 0);
+  critical.value = source.critical !== undefined ? String(source.critical) : String(initialType.critical ?? 0);
+  interval.value = String(source.interval_seconds || 300);
+  repeat.value = String(source.repeat_minutes ?? 60);
+  cooldown.value = String(source.cooldown_minutes ?? 15);
+  recipients.value = source.recipients || '';
+  applyMonitorType(false);
+  syncAssignmentTarget();
+  renderAssignments();
+  type.addEventListener('change', () => applyMonitorType(true));
+  scope.addEventListener('change', syncAssignmentTarget);
+
+  const actions = el('div', 'modal-actions');
+  const cancel = el('button', 'btn', 'Cancel');
+  cancel.type = 'button';
+  const save = el('button', 'btn primary', editing ? 'Save monitor' : 'Add monitor');
+  save.type = 'submit';
+  actions.append(cancel, save);
+  form.append(actions);
+  const close = openModal(editing ? 'Edit monitor — ' + monitor.name : 'Add monitor', form, null, 'wide');
+  cancel.addEventListener('click', close);
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!assignments.length) {
+      toast('Add at least one assignment', 'error');
+      return;
+    }
+    const payload = {
+      name: name.value.trim(),
+      type: type.value,
+      target: target.value.trim(),
+      warning: Number(warning.value || 0),
+      critical: Number(critical.value || 0),
+      interval_seconds: Number(interval.value || 300),
+      repeat_minutes: Number(repeat.value || 0),
+      cooldown_minutes: Number(cooldown.value || 0),
+      recipients: recipients.value.trim(),
+      enabled: enabled.checked,
+      assignments,
+    };
+    try {
+      const url = editing ? '/api/v1/monitors/' + encodeURIComponent(monitor.id) : '/api/v1/monitors';
+      await api(url, { method: editing ? 'PUT' : 'POST', body: JSON.stringify(payload) });
+      close();
+      toast(editing ? 'Monitor updated' : 'Monitor added', 'ok');
+      await loadAll();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  });
+}
+
+async function showSMTPModal() {
+  const body = el('div', 'modal-body');
+  body.append(el('p', 'muted', 'Alert email uses SMTP with TLS when authentication is configured. The password is stored only in the encrypted database and is never returned by the API.'));
+  const enabledWrap = el('label', 'field checkbox-field');
+  const enabled = el('input');
+  enabled.type = 'checkbox';
+  enabledWrap.append(enabled, document.createTextNode('Enable email alerts'));
+  body.append(enabledWrap);
+  const grid = el('div', 'settings-grid');
+  const host = inputField(grid, 'SMTP host', 'host', 'smtp.example.com');
+  const port = inputField(grid, 'Port', 'port', '587', 'number');
+  const mode = selectField(grid, 'Security', 'mode', [['starttls', 'STARTTLS (recommended)'], ['tls', 'Implicit TLS'], ['none', 'Plain text (no auth)']]);
+  const username = inputField(grid, 'Username (optional)', 'username', 'alerts@example.com');
+  body.append(grid);
+  const password = inputField(body, 'SMTP password', 'password', 'Stored password — leave blank to keep', 'password');
+  password.autocomplete = 'new-password';
+  const clearWrap = el('label', 'field checkbox-field');
+  const clearPassword = el('input');
+  clearPassword.type = 'checkbox';
+  clearWrap.append(clearPassword, document.createTextNode('Clear the stored password (also disables SMTP auth)'));
+  body.append(clearWrap);
+  const from = inputField(body, 'From address', 'from', 'hibp@example.com');
+  const recipients = inputField(body, 'Default recipients', 'recipients', 'ops@example.com, oncall@example.com');
+  recipients.spellcheck = false;
+  const timeout = inputField(body, 'SMTP timeout (seconds)', 'timeout_seconds', '15', 'number');
+  const testTo = inputField(body, 'Test recipient (optional)', 'test_to', 'Defaults to the recipient list');
+  body.append(el('p', 'field-note', 'STARTTLS upgrades a plaintext connection before AUTH. Username and password are rejected over unencrypted SMTP. A test message is sent using the saved settings.'));
+  const actions = el('div', 'modal-actions');
+  const cancel = el('button', 'btn', 'Cancel');
+  cancel.type = 'button';
+  const test = el('button', 'btn', 'Save and send test');
+  test.type = 'button';
+  const save = el('button', 'btn primary', 'Save');
+  save.type = 'button';
+  actions.append(cancel, test, save);
+  body.append(actions);
+  const close = openModal('Email notifications', body);
+  cancel.addEventListener('click', close);
+
+  const payload = () => ({
+    enabled: enabled.checked,
+    host: host.value.trim(),
+    port: Number(port.value || 587),
+    mode: mode.value,
+    username: username.value.trim(),
+    password: password.value,
+    clear_password: clearPassword.checked,
+    from: from.value.trim(),
+    recipients: recipients.value.trim(),
+    timeout_seconds: Number(timeout.value || 15),
+  });
+  const persist = async () => {
+    const result = await api('/api/v1/notifications/smtp', { method: 'PUT', body: JSON.stringify(payload()) });
+    password.value = '';
+    clearPassword.checked = false;
+    return result.smtp;
+  };
+
+  try {
+    const data = await api('/api/v1/notifications/smtp');
+    const smtp = data.smtp || {};
+    enabled.checked = Boolean(smtp.enabled);
+    host.value = smtp.host || '';
+    port.value = String(smtp.port || 587);
+    mode.value = smtp.mode || 'starttls';
+    username.value = smtp.username || '';
+    from.value = smtp.from || '';
+    recipients.value = smtp.recipients || '';
+    timeout.value = String(smtp.timeout_seconds || 15);
+    if (smtp.password_set) {
+      password.placeholder = 'Stored password — leave blank to keep';
+      clearWrap.classList.remove('hidden');
+    } else {
+      clearWrap.classList.add('hidden');
+    }
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+
+  let clearedUsername = '';
+  clearPassword.addEventListener('change', () => {
+    if (clearPassword.checked) {
+      clearedUsername = username.value;
+      username.value = '';
+      password.value = '';
+      username.disabled = true;
+      password.disabled = true;
+    } else {
+      if (!username.value) username.value = clearedUsername;
+      username.disabled = false;
+      password.disabled = false;
+    }
+  });
+
+  save.addEventListener('click', async () => {
+    try {
+      await persist();
+      close();
+      toast('Email settings saved', 'ok');
+      await loadAll();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  });
+  test.addEventListener('click', async () => {
+    test.disabled = true;
+    test.textContent = 'Sending…';
+    try {
+      await persist();
+      const result = await api('/api/v1/notifications/smtp/test', {
+        method: 'POST',
+        body: JSON.stringify({ to: testTo.value.trim() }),
+      });
+      toast('Test email sent to ' + (result.recipients || []).join(', '), 'ok');
+    } catch (error) {
+      toast(error.message, 'error');
+    } finally {
+      test.disabled = false;
+      test.textContent = 'Save and send test';
+    }
+  });
+}
+
+function showMonitorPreset(preset) {
+  const target = String(preset.target || '');
+  const assignment = (preset.assignments || []).find((entry) => entry.scope === 'host');
+  const duplicate = state.monitors.some((monitor) => monitor.type === preset.type
+    && String(monitor.target || '') === target
+    && (!assignment || (monitor.assignments || []).some((entry) => entry.scope === 'host' && entry.target === assignment.target)));
+  if (duplicate) {
+    toast('A monitor already exists for this target', 'error');
+    return;
+  }
+  showMonitorModal(null, preset);
 }
 
 function relativeTime(value) {
@@ -1035,6 +1671,30 @@ function renderSystemPanel(panel, data, host, reload) {
     );
     panel.append(grid);
 
+    const failedUnits = systemd.failed_units || [];
+    if (failedUnits.length) {
+      const failedWrap = el('div', 'file-list');
+      for (const unit of failedUnits) {
+        const row = el('div', 'file-row');
+        row.append(el('span', 'file-name', unit));
+        const monitor = el('button', 'btn small', 'Monitor');
+        monitor.type = 'button';
+        monitor.addEventListener('click', () => showMonitorPreset({
+          name: unit + ' — failed service',
+          type: 'service.systemd',
+          target: unit,
+          interval_seconds: 300,
+          repeat_minutes: 60,
+          cooldown_minutes: 15,
+          enabled: true,
+          assignments: [{ scope: 'host', target: host.id }],
+        }));
+        row.append(monitor);
+        failedWrap.append(row);
+      }
+      panel.append(detailSection('Monitor a failed unit', failedWrap));
+    }
+
     const diskWrap = el('div', 'scroll-list');
     const diskTable = el('table');
     const diskHead = el('tr');
@@ -1243,10 +1903,22 @@ function renderContainersPanel(panel, data, host, reload) {
       const check = el('button', 'btn small', 'Check updates');
       check.type = 'button';
       check.addEventListener('click', () => checkDockerProject(host, project.name, reload));
+      const monitor = el('button', 'btn small', 'Monitor');
+      monitor.type = 'button';
+      monitor.addEventListener('click', () => showMonitorPreset({
+        name: project.name + ' — Compose project',
+        type: 'docker.project',
+        target: project.name,
+        interval_seconds: 300,
+        repeat_minutes: 60,
+        cooldown_minutes: 15,
+        enabled: true,
+        assignments: [{ scope: 'host', target: host.id }],
+      }));
       const apply = el('button', 'btn small danger', 'Apply update');
       apply.type = 'button';
       apply.addEventListener('click', () => applyDockerProject(host, project.name, reload));
-      projectActions.append(check, apply);
+      projectActions.append(check, monitor, apply);
       card.append(projectActions);
       projectWrap.append(card);
     }
@@ -1256,10 +1928,22 @@ function renderContainersPanel(panel, data, host, reload) {
   const containerWrap = el('div', 'scroll-list');
   const table = el('table');
   const head = el('tr');
-  for (const label of ['Name', 'Project / service', 'Image', 'State', 'Health', 'Ports']) head.append(el('th', '', label));
+  for (const label of ['Name', 'Project / service', 'Image', 'State', 'Health', 'Ports', '']) head.append(el('th', '', label));
   table.append(head);
   for (const container of containers) {
     const row = el('tr');
+    const actionsTd = el('td');
+    const monitor = actionButton('Monitor', () => showMonitorPreset({
+      name: container.name + ' — container',
+      type: 'docker.container',
+      target: container.name,
+      interval_seconds: 300,
+      repeat_minutes: 60,
+      cooldown_minutes: 15,
+      enabled: true,
+      assignments: [{ scope: 'host', target: host.id }],
+    }));
+    actionsTd.append(monitor);
     row.append(
       el('td', '', container.name),
       el('td', '', (container.project || '—') + (container.service ? ' / ' + container.service : '')),
@@ -1267,6 +1951,7 @@ function renderContainersPanel(panel, data, host, reload) {
       el('td', '', container.state + (container.status ? ' · ' + container.status : '')),
       el('td', '', container.health || '—'),
       el('td', '', container.ports || '—'),
+      actionsTd,
     );
     table.append(row);
   }
@@ -1936,6 +2621,8 @@ function bind() {
   $('table-update-helpers').addEventListener('click', fleetUpdateHelpers);
   $('fleet-update-helpers').addEventListener('click', fleetUpdateHelpers);
   $('open-settings').addEventListener('click', showSettingsModal);
+  $('monitor-add').addEventListener('click', () => showMonitorModal());
+  $('monitor-notifications').addEventListener('click', showSMTPModal);
   $('backup-button').addEventListener('click', showBackupModal);
   $('restore-button').addEventListener('click', showRestoreModal);
   $('verify-audit').addEventListener('click', verifyAudit);

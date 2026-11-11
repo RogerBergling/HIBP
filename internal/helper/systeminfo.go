@@ -80,6 +80,8 @@ type SystemdInfo struct {
 	Version         string   `json:"version"`
 	FailedUnits     []string `json:"failed_units"`
 	RunningServices int      `json:"running_services"`
+	RunningUnits    []string `json:"running_units,omitempty"`
+	UnitsCollected  bool     `json:"units_collected,omitempty"`
 }
 
 type DockerInfo struct {
@@ -91,15 +93,21 @@ type DockerInfo struct {
 
 // Metrics is the lightweight sample used for time-series graphs.
 type Metrics struct {
-	CollectedAt   string  `json:"collected_at"`
-	CPUPercent    float64 `json:"cpu_percent"`
-	MemoryPercent float64 `json:"memory_percent"`
-	SwapPercent   float64 `json:"swap_percent"`
-	DiskPercent   float64 `json:"disk_percent"`
-	Load1         float64 `json:"load1"`
-	Load5         float64 `json:"load5"`
-	Load15        float64 `json:"load15"`
-	UptimeSeconds uint64  `json:"uptime_seconds"`
+	CollectedAt   string   `json:"collected_at"`
+	CPUPercent    float64  `json:"cpu_percent"`
+	MemoryPercent float64  `json:"memory_percent"`
+	SwapPercent   float64  `json:"swap_percent"`
+	DiskPercent   float64  `json:"disk_percent"`
+	Load1         float64  `json:"load1"`
+	Load5         float64  `json:"load5"`
+	Load15        float64  `json:"load15"`
+	UptimeSeconds uint64   `json:"uptime_seconds"`
+	FailedUnits   []string `json:"failed_units,omitempty"`
+	RunningUnits  []string `json:"running_units,omitempty"`
+	// ServicesCollected distinguishes an empty service list from an older
+	// helper that cannot report unit names. The controller must not clear
+	// cached service state when an old helper is still installed.
+	ServicesCollected bool `json:"services_collected,omitempty"`
 }
 
 func collectSystemInfo(ctx context.Context) (SystemInfo, error) {
@@ -166,6 +174,10 @@ func collectMetrics(ctx context.Context) (Metrics, error) {
 	if hostInfo, err := host.InfoWithContext(ctx); err == nil {
 		metrics.UptimeSeconds = hostInfo.Uptime
 	}
+	systemd := collectSystemd(ctx)
+	metrics.FailedUnits = systemd.FailedUnits
+	metrics.RunningUnits = systemd.RunningUnits
+	metrics.ServicesCollected = systemd.UnitsCollected
 	return metrics, nil
 }
 
@@ -331,9 +343,15 @@ func collectSystemd(ctx context.Context) SystemdInfo {
 		}
 	}
 	if output, code, err := runBinary(ctx, "systemctl", "list-units", "--type=service", "--state=running", "--no-legend", "--plain", "--no-pager"); err == nil && code == 0 {
+		result.UnitsCollected = true
 		for _, line := range strings.Split(string(output), "\n") {
-			if strings.TrimSpace(line) != "" {
-				result.RunningServices++
+			fields := strings.Fields(line)
+			if len(fields) == 0 {
+				continue
+			}
+			result.RunningServices++
+			if len(result.RunningUnits) < 500 {
+				result.RunningUnits = append(result.RunningUnits, fields[0])
 			}
 		}
 	}

@@ -150,6 +150,15 @@ func (s *Server) scheduledMetrics(ctx context.Context, host store.Host) {
 	}); err != nil {
 		slog.Warn("collector: save metrics", "host", host.Name, "error", err)
 	}
+	if metrics.ServicesCollected {
+		if err := s.store.SaveServiceState(host.ID, metrics.FailedUnits, metrics.RunningUnits); err != nil {
+			slog.Warn("collector: save service state", "host", host.Name, "error", err)
+		}
+	}
+	// Keep Docker state fresh enough for container monitoring.
+	if _, err := s.collectDockerInventory(ctx, host, "", ""); err != nil {
+		logCollectorError(host, "docker-list", err)
+	}
 }
 
 func (s *Server) scheduledFacts(ctx context.Context, host store.Host) {

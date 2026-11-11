@@ -235,6 +235,7 @@ func runServer(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go app.RunCollector(ctx)
+	go app.RunMonitor(ctx)
 	errCh := make(chan error, 1)
 	go func() { errCh <- httpServer.Serve(listener) }()
 	select {

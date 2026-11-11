@@ -46,6 +46,10 @@ type Server struct {
 	setupMu           sync.Mutex
 	collectorMu       sync.Mutex
 	collectorState    map[string]*collectorHostState
+	mailMu            sync.Mutex
+	monitorMu         sync.Mutex
+	monitorRunning    bool
+	monitorWake       chan struct{}
 	mux               *http.ServeMux
 }
 
@@ -93,6 +97,7 @@ func New(cfg Config) (*Server, error) {
 		mfaLimiter:        newAttemptLimiter(10, 15*time.Minute),
 		ceremonies:        newCeremonyStore(),
 		collectorState:    make(map[string]*collectorHostState),
+		monitorWake:       make(chan struct{}, 1),
 		mux:               http.NewServeMux(),
 	}
 	s.routes()
@@ -140,6 +145,15 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/hosts/{id}/details", s.auth(s.handleHostDetails))
 	s.mux.HandleFunc("GET /api/v1/settings", s.auth(s.handleGetSettings))
 	s.mux.HandleFunc("PUT /api/v1/settings", s.auth(s.handlePutSettings))
+	s.mux.HandleFunc("GET /api/v1/notifications/smtp", s.auth(s.handleGetSMTP))
+	s.mux.HandleFunc("PUT /api/v1/notifications/smtp", s.auth(s.handlePutSMTP))
+	s.mux.HandleFunc("POST /api/v1/notifications/smtp/test", s.auth(s.handleTestSMTP))
+	s.mux.HandleFunc("GET /api/v1/monitors", s.auth(s.handleListMonitors))
+	s.mux.HandleFunc("POST /api/v1/monitors", s.auth(s.handleCreateMonitor))
+	s.mux.HandleFunc("PUT /api/v1/monitors/{id}", s.auth(s.handleUpdateMonitor))
+	s.mux.HandleFunc("DELETE /api/v1/monitors/{id}", s.auth(s.handleDeleteMonitor))
+	s.mux.HandleFunc("POST /api/v1/monitors/{id}/check", s.auth(s.handleCheckMonitor))
+	s.mux.HandleFunc("GET /api/v1/alerts", s.auth(s.handleAlerts))
 	s.mux.HandleFunc("POST /api/v1/import", s.auth(s.handleImport))
 	s.mux.HandleFunc("GET /api/v1/audit", s.auth(s.handleAudit))
 	s.mux.HandleFunc("GET /api/v1/audit/verify", s.auth(s.handleAuditVerify))

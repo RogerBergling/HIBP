@@ -48,6 +48,11 @@ func (s *Server) collectSystemInfo(ctx context.Context, host store.Host, passwor
 	if err := s.store.SaveSystemInfo(host.ID, info.CollectedAt, output); err != nil {
 		return helper.SystemInfo{}, err
 	}
+	if info.Systemd.UnitsCollected {
+		if err := s.store.SaveServiceState(host.ID, info.Systemd.FailedUnits, info.Systemd.RunningUnits); err != nil {
+			return helper.SystemInfo{}, err
+		}
+	}
 	diskPercent := 0.0
 	for _, disk := range info.Disks {
 		if disk.Mount == "/" {
