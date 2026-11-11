@@ -657,14 +657,23 @@ func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	path := strings.TrimSpace(request.Path)
 	if path == "" {
-		path = filepath.Dir(s.store.Path())
+		configured, _ := s.store.BackupConfig()
+		if configured == "" {
+			configured = filepath.Dir(s.store.Path())
+		}
+		path = filepath.Join(configured, "hibp-"+time.Now().Format("2006-01-02-150405")+".bac")
+	} else {
+		if !filepath.IsAbs(path) {
+			writeError(w, http.StatusBadRequest, "backup path must be absolute")
+			return
+		}
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			path = filepath.Join(path, "hibp-"+time.Now().Format("2006-01-02-150405")+".bac")
+		}
 	}
 	if !filepath.IsAbs(path) {
 		writeError(w, http.StatusBadRequest, "backup path must be absolute")
 		return
-	}
-	if info, err := os.Stat(path); err == nil && info.IsDir() {
-		path = filepath.Join(path, "hibp-"+time.Now().Format("2006-01-02-150405")+".bac")
 	}
 	if err := s.store.Backup(path); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())

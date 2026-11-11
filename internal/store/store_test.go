@@ -2,10 +2,13 @@ package store
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func testOptions() Options {
@@ -233,5 +236,117 @@ func TestPendingMigrationCreatesAutomaticBackup(t *testing.T) {
 	}
 	if _, err := os.Stat(matches[0] + ".meta"); err != nil {
 		t.Fatalf("pre-migration backup sidecar missing: %v", err)
+	}
+}
+
+func TestBackupConfigAndManagedRetention(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "inventory.hibp")
+	pass := []byte("correct horse battery staple")
+	s, err := Open(dbPath, pass, testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	backupDir := filepath.Join(dir, "backups")
+	if err := os.MkdirAll(backupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSetting("fleet", "backup.directory", backupDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSetting("fleet", "backup.retention_count", "3"); err != nil {
+		t.Fatal(err)
+	}
+	gotDir, gotRetention := s.BackupConfig()
+	if gotDir != backupDir || gotRetention != 3 {
+		t.Fatalf("BackupConfig = %q, %d; want %q, 3", gotDir, gotRetention, backupDir)
+	}
+
+	base := time.Now().Add(-10 * time.Minute)
+	for index := 0; index < 5; index++ {
+		name := fmt.Sprintf("hibp-2026-01-%02d-030000.bac", index+1)
+		path := filepath.Join(backupDir, name)
+		if err := os.WriteFile(path, []byte("backup"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path+".meta", []byte("sidecar"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		stamp := base.Add(time.Duration(index) * time.Minute)
+		if err := os.Chtimes(path, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path+".meta", stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unmanaged := filepath.Join(backupDir, "manual.bac")
+	if err := os.WriteFile(unmanaged, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := pruneManagedBackups(backupDir, 3); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var managed int
+	for _, entry := range entries {
+		if managedBackupPattern.MatchString(entry.Name()) {
+			managed++
+		}
+	}
+	if managed != 3 {
+		t.Fatalf("managed backups = %d, want 3", managed)
+	}
+	for _, name := range []string{"hibp-2026-01-01-030000.bac", "hibp-2026-01-02-030000.bac"} {
+		if _, err := os.Stat(filepath.Join(backupDir, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("expected %s to be pruned, got %v", name, err)
+		}
+		if _, err := os.Stat(filepath.Join(backupDir, name+".meta")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("expected %s.meta to be pruned, got %v", name, err)
+		}
+	}
+	if _, err := os.Stat(unmanaged); err != nil {
+		t.Fatalf("unmanaged backup was removed: %v", err)
+	}
+}
+
+func TestBackupRetentionAppliesToManagedFiles(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "inventory.hibp")
+	pass := []byte("correct horse battery staple")
+	s, err := Open(dbPath, pass, testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	backupDir := filepath.Join(dir, "backups")
+	if err := os.MkdirAll(backupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSetting("fleet", "backup.retention_count", "2"); err != nil {
+		t.Fatal(err)
+	}
+	for index := 1; index <= 3; index++ {
+		path := filepath.Join(backupDir, fmt.Sprintf("hibp-2026-01-%02d-030000.bac", index))
+		if err := s.Backup(path); err != nil {
+			t.Fatalf("backup %d: %v", index, err)
+		}
+	}
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var managed int
+	for _, entry := range entries {
+		if managedBackupPattern.MatchString(entry.Name()) {
+			managed++
+		}
+	}
+	if managed != 2 {
+		t.Fatalf("managed backups = %d, want 2", managed)
 	}
 }

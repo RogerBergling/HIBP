@@ -82,12 +82,14 @@ Out of scope:
   key-browser roots. Filesystem permissions on the service account are the real
   boundary; give it only the intended key directory.
 - Schema upgrades create and verify an automatic timestamped pre-migration
-  backup next to the database and hard-refuse a database whose schema version
-  is newer than the running binary. There is no passphrase-rekey or
-  envelope/DEK-wrapping workflow.
+  backup in the configured backup directory, or next to the database when none
+  is configured, and hard-refuse a database whose schema version is newer than
+  the running binary. There is no passphrase-rekey or envelope/DEK-wrapping
+  workflow.
 - Backup verification opens the copy, checks migrations, and recomputes the
-  full audit chain. There is no backup-without-secrets mode and no built-in
-  backup retention.
+  full audit chain. There is no backup-without-secrets mode. Timestamped backups
+  created by HIBP are pruned to the configured retention count; custom-named
+  files are not.
 - A fresh database is claimed through the loopback UI. Until the first account
   and MFA exist, any local user who can reach the port could claim it.
 - The packaged systemd unit needs path and unlock customization:

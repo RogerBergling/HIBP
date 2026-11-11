@@ -40,7 +40,8 @@ These files are examples, not a complete distribution package.
    There is no TPM-sealed unlock or passphrase-rotation command in this release.
    The service account can read the passphrase while the host is running under
    the headless option; treat that as an explicit availability/security
-   trade-off.
+   trade-off. For a scheduled fleet, the headless systemd path is the reliable
+   choice; use interactive tmux/screen for first-run setup or recovery.
 
 4. Create/open the database once, then complete first-run setup immediately.
    Headless/service example:
@@ -97,9 +98,11 @@ These files are examples, not a complete distribution package.
 
 6. For upgrades, stop the service, take and verify a backup of the database and
    `.meta` sidecar, install the new binary, start the service, and check the
-   audit chain and host data. On open, HIBP also creates and verifies an
-   automatic `<database>-pre-migration-YYYY-MM-DD-HHMMSS.bac` backup before
-   applying pending migrations, and aborts the upgrade if that backup fails.
+   audit chain and host data. Set the backup directory and retention count in
+   **Settings**; HIBP prunes only timestamped backups it created. On open, HIBP
+   also creates and verifies an automatic
+   `<database>-pre-migration-YYYY-MM-DD-HHMMSS.bac` backup before applying
+   pending migrations, and aborts the upgrade if that backup fails.
 
 The included `hibp.service` is a hardening baseline, not a universal unit.
 Adjust `SystemCallFilter`, `ProtectSystem`, key paths, and backup paths if your
@@ -150,5 +153,5 @@ controller.
 
 The development build uses the `mutecomm/go-sqlcipher` spike driver. Production
 deployments must use the `make production` artifact, which builds current
-SQLCipher 4.20 with the patched `third_party/go-sqlite3` driver in a pinned
-Alpine/musl image.
+SQLCipher 4.20 with the patched `third_party/go-sqlite3` driver in an Alpine/musl
+build image.

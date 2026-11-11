@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -23,6 +24,8 @@ var settingDefaults = map[string]string{
 	"collector.metrics_interval": "5m",
 	"metrics.retention_days":     "30",
 	"docker.scan_roots":          "/opt",
+	"backup.directory":           "",
+	"backup.retention_count":     "3",
 }
 
 func (s *Server) resolveSettings(hostID string) map[string]string {
@@ -354,6 +357,10 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "unknown setting: "+key)
 			return
 		}
+		if scope != "fleet" && (key == "backup.directory" || key == "backup.retention_count") {
+			writeError(w, http.StatusBadRequest, key+" is a fleet-level backup setting")
+			return
+		}
 		if value == "" {
 			if err := s.store.DeleteSetting(scope, key); err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
@@ -393,6 +400,15 @@ func validateSetting(key, value string) error {
 	case "docker.scan_roots":
 		if strings.TrimSpace(value) == "" {
 			return errors.New("docker.scan_roots must not be empty")
+		}
+	case "backup.directory":
+		if value != "" && !filepath.IsAbs(value) {
+			return errors.New("backup.directory must be an absolute path")
+		}
+	case "backup.retention_count":
+		count, err := strconv.Atoi(value)
+		if err != nil || count < 1 || count > 100 {
+			return errors.New("backup.retention_count must be between 1 and 100")
 		}
 	}
 	return nil

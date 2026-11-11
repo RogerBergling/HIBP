@@ -2617,7 +2617,7 @@ async function showHostDetails(host) {
 
 async function showSettingsModal() {
   const body = el('div', 'modal-body');
-  body.append(el('p', 'muted', 'Fleet defaults. Every host can override these in its detail view.'));
+  body.append(el('p', 'muted', 'Fleet defaults. Host-level overrides apply to collection settings only; backup settings are fleet-wide.'));
   const grid = el('div', 'settings-grid');
   const enabled = selectField(grid, 'Collector', 'collector_enabled', [['1', 'Enabled'], ['0', 'Disabled']]);
   const metricsInterval = inputField(grid, 'Metrics interval', 'metrics_interval', '5m');
@@ -2625,6 +2625,11 @@ async function showSettingsModal() {
   const retention = inputField(grid, 'Metrics retention (days)', 'retention_days', '30', 'number');
   const roots = inputField(grid, 'Docker scan roots', 'docker_roots', '/opt');
   body.append(grid);
+  body.append(el('p', 'muted', 'Backups are fleet-wide. Leave the directory blank to use the database directory. Only timestamped backups created by HIBP are pruned; lowering the count deletes older HIBP-created backups on the next backup.'));
+  const backupGrid = el('div', 'settings-grid');
+  const backupDir = inputField(backupGrid, 'Backup directory', 'backup_directory', '/var/lib/hibp/backups');
+  const backupRetention = inputField(backupGrid, 'Backups to keep', 'backup_retention_count', '3', 'number');
+  body.append(backupGrid);
   const actions = el('div', 'modal-actions');
   const reset = el('button', 'btn', 'Use built-in defaults');
   reset.type = 'button';
@@ -2641,6 +2646,8 @@ async function showSettingsModal() {
     factsInterval.value = settings['collector.facts_interval'] || '12h';
     retention.value = settings['metrics.retention_days'] || '30';
     roots.value = settings['docker.scan_roots'] || '/opt';
+    backupDir.value = settings['backup.directory'] || '';
+    backupRetention.value = settings['backup.retention_count'] || '3';
   } catch (error) {
     toast(error.message, 'error');
   }
@@ -2656,6 +2663,8 @@ async function showSettingsModal() {
             'collector.facts_interval': factsInterval.value.trim(),
             'metrics.retention_days': retention.value.trim(),
             'docker.scan_roots': roots.value.trim(),
+            'backup.directory': backupDir.value.trim(),
+            'backup.retention_count': backupRetention.value.trim(),
           },
         }),
       });
@@ -2674,6 +2683,7 @@ async function showSettingsModal() {
           settings: {
             'collector.enabled': '', 'collector.metrics_interval': '', 'collector.facts_interval': '',
             'metrics.retention_days': '', 'docker.scan_roots': '',
+            'backup.directory': '', 'backup.retention_count': '',
           },
         }),
       });
@@ -3328,9 +3338,9 @@ async function showAccountSecurityModal() {
 
 function showBackupModal() {
   const body = el('div', 'modal-body');
-  body.append(el('p', 'muted', 'Creates a consistent encrypted copy plus the .meta sidecar. Leave the field blank to use the database directory, enter an existing directory for a timestamped hibp-YYYY-MM-DD-HHMMSS.bac file, or enter a new absolute file path.'));
-  const path = inputField(body, 'Backup directory or file path', 'path', 'Database directory (blank) or /var/lib/hibp');
-  body.append(el('p', 'field-note', 'The .meta sidecar is required to open the backup. A backup in the same directory is not protection against disk loss; copy it off-host according to your policy.'));
+  body.append(el('p', 'muted', 'Creates a consistent encrypted copy plus the .meta sidecar. Leave the field blank to use the configured backup directory (Settings), which defaults to the database directory. Enter an existing directory for a timestamped hibp-YYYY-MM-DD-HHMMSS.bac file, or enter a new absolute file path.'));
+  const path = inputField(body, 'Backup directory or file path', 'path', 'Configured directory (blank) or /var/lib/hibp');
+  body.append(el('p', 'field-note', 'The configured retention count is applied to timestamped HIBP backups in the destination directory. The .meta sidecar is required to open the backup. A backup in the same directory is not protection against disk loss; copy it off-host according to your policy.'));
   const actions = el('div', 'modal-actions');
   const cancel = el('button', 'btn', 'Cancel');
   cancel.type = 'button';

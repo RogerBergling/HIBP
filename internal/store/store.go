@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -362,6 +363,83 @@ func (s *Store) pendingMigrations() ([]migrationFile, error) {
 	return pending, nil
 }
 
+// managedBackupPattern matches files created by HIBP's timestamped backup
+// paths. It deliberately excludes arbitrary *.bac files so retention cannot
+// delete an operator-owned file.
+var managedBackupPattern = regexp.MustCompile(`^hibp-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}\.bac$|^[A-Za-z0-9._ -]+-pre-migration-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}(-[0-9]+)?\.bac$`)
+
+// BackupConfig returns the configured backup directory and retention count.
+// An empty directory means the database directory. Invalid or missing settings
+// fall back to the safe defaults.
+func (s *Store) BackupConfig() (string, int) {
+	directory := ""
+	retention := 3
+	var value string
+	if err := s.db.QueryRow("SELECT value FROM settings WHERE scope='fleet' AND key='backup.directory'").Scan(&value); err == nil {
+		directory = strings.TrimSpace(value)
+		if directory != "" && !filepath.IsAbs(directory) {
+			directory = ""
+		}
+	}
+	if err := s.db.QueryRow("SELECT value FROM settings WHERE scope='fleet' AND key='backup.retention_count'").Scan(&value); err == nil {
+		if parsed, err := strconv.Atoi(strings.TrimSpace(value)); err == nil && parsed >= 1 && parsed <= 100 {
+			retention = parsed
+		}
+	}
+	return directory, retention
+}
+
+// pruneManagedBackups keeps the newest retained timestamped backups in dir.
+// Only names HIBP generates are considered; arbitrary *.bac files are left
+// alone. A sidecar is removed with its database file.
+func pruneManagedBackups(dir string, retention int) error {
+	if retention < 1 {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	type candidate struct {
+		path    string
+		modTime time.Time
+	}
+	candidates := make([]candidate, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		name := entry.Name()
+		if !managedBackupPattern.MatchString(name) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		candidates = append(candidates, candidate{path: filepath.Join(dir, name), modTime: info.ModTime()})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].modTime.Equal(candidates[j].modTime) {
+			return candidates[i].path > candidates[j].path
+		}
+		return candidates[i].modTime.After(candidates[j].modTime)
+	})
+	if len(candidates) <= retention {
+		return nil
+	}
+	for _, old := range candidates[retention:] {
+		if err := os.Remove(old.path); err != nil {
+			slog.Warn("prune backup", "path", old.path, "error", err)
+			continue
+		}
+		if err := os.Remove(crypto.SidecarPath(old.path)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			slog.Warn("prune backup sidecar", "path", crypto.SidecarPath(old.path), "error", err)
+		}
+	}
+	return nil
+}
+
 // preMigrationBackup writes and verifies a timestamped encrypted backup before
 // any pending schema migration is applied. A failed backup aborts the upgrade.
 func (s *Store) preMigrationBackup() (string, error) {
@@ -369,19 +447,23 @@ func (s *Store) preMigrationBackup() (string, error) {
 	if err != nil || len(pending) == 0 {
 		return "", err
 	}
+	directory, retention := s.BackupConfig()
+	if directory == "" {
+		directory = filepath.Dir(s.path)
+	}
 	base := strings.TrimSuffix(filepath.Base(s.path), filepath.Ext(s.path))
 	if base == "" {
 		base = "hibp"
 	}
 	stamp := time.Now().UTC().Format("2006-01-02-150405")
-	path := filepath.Join(filepath.Dir(s.path), base+"-pre-migration-"+stamp+".bac")
+	path := filepath.Join(directory, base+"-pre-migration-"+stamp+".bac")
 	for suffix := 1; ; suffix++ {
 		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 			break
 		} else if err != nil {
 			return "", err
 		}
-		path = filepath.Join(filepath.Dir(s.path), fmt.Sprintf("%s-pre-migration-%s-%d.bac", base, stamp, suffix))
+		path = filepath.Join(directory, fmt.Sprintf("%s-pre-migration-%s-%d.bac", base, stamp, suffix))
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", err
@@ -403,6 +485,9 @@ func (s *Store) preMigrationBackup() (string, error) {
 		_ = os.Remove(path)
 		_ = os.Remove(crypto.SidecarPath(path))
 		return "", err
+	}
+	if err := pruneManagedBackups(directory, retention); err != nil {
+		slog.Warn("pre-migration backup retention", "directory", directory, "error", err)
 	}
 	slog.Info("created automatic pre-migration backup", "path", path, "pending_migrations", len(pending))
 	return path, nil
@@ -910,6 +995,10 @@ func (s *Store) Backup(dest string) error {
 		_ = os.Remove(abs)
 		_ = os.Remove(crypto.SidecarPath(abs))
 		return err
+	}
+	_, retention := s.BackupConfig()
+	if err := pruneManagedBackups(filepath.Dir(abs), retention); err != nil {
+		slog.Warn("backup retention", "directory", filepath.Dir(abs), "error", err)
 	}
 	return nil
 }
