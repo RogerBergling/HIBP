@@ -67,11 +67,11 @@ Out of scope:
 - Account recovery is local-only: `hibp user reset` requires the database
   passphrase and access to the controller. There is no email or remote reset.
 
-## Docker, monitoring, and email controls
+## Docker, monitoring, email, and integration controls
 
-Read-only observability, project-level Docker check/apply, monitoring rules, and
-SMTP email alerting are implemented. The external-platform controls below still
-apply to future vCenter, HAProxy, OPNsense, and CMDB phases.
+Read-only observability, project-level Docker check/apply, monitoring rules,
+SMTP email alerting, vCenter/HAProxy/OPNsense integrations, and CMDB import are
+implemented.
 
 - Docker socket access is root-equivalent. The controller does not connect to
   Docker directly; the root-owned helper exposes only fixed, read-only or
@@ -106,6 +106,25 @@ apply to future vCenter, HAProxy, OPNsense, and CMDB phases.
   not send it to untrusted mailboxes.
 - Monitoring is an alerting and visibility feature, not a remote-control plane.
   A monitoring credential must not be able to change the monitored system.
+- External integrations are read-only:
+  - vCenter uses a dedicated read-only account over HTTPS, retrieves active
+    triggered alarms for all managed entities, and never syncs inventory or
+    acknowledges, clears, or changes vCenter objects. TLS verification is on by
+    default; the opt-out is intentionally explicit for self-signed labs.
+  - HAProxy reads the stats HTTP CSV endpoint with optional Basic auth. It never
+    uses the admin socket and never changes runtime state.
+  - OPNsense reads the gateway status endpoint with an API key/secret for a
+    least-privilege user.
+- Integration credentials are stored only in the SQLCipher `settings` scopes and
+  are never returned by the API, logged, or written to audit details. Each
+  integration can use SMTP default recipients or its own recipient list.
+- Integration polling originates from the controller and can reach internal
+  addresses by design. Only administrators can define endpoints; deploy the
+  controller on an appropriately restricted network.
+- CMDB import is read-only and file-based. HIBP never opens the CMDB database and
+  never writes back. Imports are bounded (10 MiB, 5,000 records), validated, and
+  previewed before commit. Imported data cannot contain HIBP secrets, and host
+  keys are still approved only after an independent fingerprint check.
 - SMTP credentials, vCenter credentials, and API tokens are stored only in the
   SQLCipher database and are never returned by the API, logged, or written to
   audit details. Use TLS for SMTP and read-only accounts for vCenter/HAProxy/

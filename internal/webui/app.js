@@ -5,6 +5,8 @@ const state = {
   audit: [],
   monitors: [],
   alerts: [],
+  integrations: [],
+  integrationEvents: [],
   status: {},
   view: 'dashboard',
   passwords: new Map(),
@@ -92,8 +94,8 @@ function updateUserDisplay() {
 
 function setView(view) {
   state.view = view;
-  const sections = ['dashboard', 'hosts', 'audit', 'monitoring'];
-  const labels = { dashboard: 'Overview', hosts: 'Hosts', audit: 'Audit log', monitoring: 'Monitoring' };
+  const sections = ['dashboard', 'hosts', 'audit', 'monitoring', 'integrations'];
+  const labels = { dashboard: 'Overview', hosts: 'Hosts', audit: 'Audit log', monitoring: 'Monitoring', integrations: 'Integrations' };
   for (const section of sections) {
     $('view-' + section).classList.toggle('hidden', section !== view);
   }
@@ -102,6 +104,7 @@ function setView(view) {
   }
   $('crumb-view').textContent = labels[view] || 'Overview';
   if (view === 'monitoring') renderMonitoring();
+  if (view === 'integrations') renderIntegrations();
 }
 
 async function api(path, options = {}) {
@@ -328,18 +331,21 @@ async function signOut() {
 
 async function loadAll() {
   try {
-    const [status, hosts, audit, monitors, alerts] = await Promise.all([
+    const [status, hosts, audit, monitors, alerts, integrations] = await Promise.all([
       api('/api/v1/status'),
       api('/api/v1/hosts'),
       api('/api/v1/audit?limit=200'),
       api('/api/v1/monitors'),
       api('/api/v1/alerts?limit=200'),
+      api('/api/v1/integrations'),
     ]);
     state.status = status;
     state.hosts = hosts.hosts || [];
     state.audit = audit.entries || [];
     state.monitors = monitors.monitors || [];
     state.alerts = alerts.alerts || [];
+    state.integrations = integrations.integrations || [];
+    state.integrationEvents = integrations.events || [];
     renderAll();
     $('last-refresh').textContent = 'updated ' + new Date().toLocaleTimeString();
   } catch (error) {
@@ -353,6 +359,7 @@ function renderAll() {
   renderHosts();
   renderAudit();
   renderMonitoring();
+  renderIntegrations();
 }
 
 function renderStatus() {
@@ -1122,6 +1129,241 @@ async function showSMTPModal() {
   });
 }
 
+function integrationSourceLabel(source) {
+  const view = state.integrations.find((entry) => entry.source === source);
+  return view ? view.label : source;
+}
+
+function renderIntegrations() {
+  const grid = $('integration-grid');
+  if (!grid) return;
+  grid.replaceChildren();
+  for (const integration of state.integrations) {
+    const card = el('div', 'integration-card');
+    const top = el('div', 'integration-top');
+    top.append(el('div', 'integration-title', integration.label));
+    const enabled = el('span', 'badge ' + (integration.enabled ? 'green' : 'amber'), integration.enabled ? 'enabled' : 'disabled');
+    top.append(enabled);
+    card.append(top);
+    const meta = el('div', 'integration-meta');
+    const addMeta = (label, value, cls = '') => {
+      const line = el('div', 'integration-meta-row');
+      const valueNode = el('b', cls, value || '—');
+      valueNode.title = value || '';
+      line.append(el('span', '', label), valueNode);
+      meta.append(line);
+    };
+    addMeta('Polling', formatMonitorInterval(integration.poll_seconds));
+    addMeta('Endpoint', integration.url || 'not configured');
+    addMeta('Last poll', relativeTime(integration.last_polled_at));
+    addMeta('Last result', integration.last_summary || 'not polled');
+    if (integration.last_error) addMeta('Last error', integration.last_error, 'integration-error');
+    card.append(meta);
+    const actions = el('div', 'modal-actions');
+    const configure = el('button', 'btn small', 'Configure');
+    configure.type = 'button';
+    configure.addEventListener('click', () => showIntegrationModal(integration.source));
+    const check = el('button', 'btn small', 'Check now');
+    check.type = 'button';
+    check.disabled = !integration.enabled;
+    if (!integration.enabled) check.title = 'Enable the integration first';
+    check.addEventListener('click', () => checkIntegration(integration));
+    actions.append(configure, check);
+    card.append(actions);
+    grid.append(card);
+  }
+
+  const body = $('integration-events-body');
+  body.replaceChildren();
+  if (!state.integrationEvents.length) {
+    body.append(emptyTableRow(6, 'No external alerts yet. vCenter alarms, HAProxy failures, and OPNsense gateway problems appear here.'));
+  }
+  for (const event of state.integrationEvents) {
+    const row = el('tr');
+    const timeTd = el('td');
+    const time = el('span', 'nowrap', relativeTime(event.created_at));
+    time.title = new Date(event.created_at).toLocaleString();
+    timeTd.append(time);
+    const sourceTd = el('td', '', integrationSourceLabel(event.source));
+    const statusTd = el('td');
+    statusTd.append(monitorStatusPill(event.status, event.status === 'ok' ? 'recovered' : ''));
+    const subjectTd = el('td', 'alert-detail', event.subject || '');
+    subjectTd.title = event.subject || '';
+    const detailTd = el('td', 'alert-detail', event.detail || '');
+    detailTd.title = event.detail || '';
+    const emailTd = el('td');
+    if (event.emailed) {
+      emailTd.append(el('span', 'badge green', 'sent'));
+    } else if (event.error) {
+      const failed = el('span', 'badge red', 'failed');
+      failed.title = event.error;
+      emailTd.append(failed);
+    } else {
+      emailTd.append(el('span', 'badge amber', 'not sent'));
+    }
+    row.append(timeTd, sourceTd, statusTd, subjectTd, detailTd, emailTd);
+    body.append(row);
+  }
+}
+
+async function checkIntegration(integration) {
+  try {
+    await api('/api/v1/integrations/' + encodeURIComponent(integration.source) + '/check', { method: 'POST', body: '{}' });
+    toast('Check requested for ' + integration.label, 'ok');
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await loadAll();
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
+async function showIntegrationModal(source) {
+  const descriptions = {
+    vcenter: 'Read-only vCenter alarm polling. Use a dedicated read-only account. HIBP retrieves active alarms for all managed entities; it never synchronizes or changes vCenter objects.',
+    haproxy: 'Read-only HAProxy statistics. The stats URL should point at the CSV view (HIBP also tries appending ;csv). HAProxy runtime state is never changed.',
+    opnsense: 'Read-only OPNsense gateway status from /api/routes/gateway/status. Create an API key/secret for a least-privilege user.',
+  };
+  const body = el('div', 'modal-body');
+  body.append(el('p', 'muted', descriptions[source] || 'Read-only external integration.'));
+  const enabledWrap = el('label', 'field checkbox-field');
+  const enabled = el('input');
+  enabled.type = 'checkbox';
+  enabledWrap.append(enabled, document.createTextNode('Enable this integration'));
+  body.append(enabledWrap);
+  const grid = el('div', 'settings-grid');
+  const url = inputField(grid, source === 'haproxy' ? 'Stats URL' : source === 'vcenter' ? 'vCenter SDK URL' : 'OPNsense URL', 'url',
+    source === 'haproxy' ? 'http://haproxy.example.com:8404/stats' : source === 'vcenter' ? 'https://vcenter.example.com/sdk' : 'https://firewall.example.com');
+  const pollSeconds = inputField(grid, 'Poll interval (seconds)', 'poll_seconds', source === 'vcenter' ? '30' : '60', 'number');
+  if (source === 'opnsense') {
+    const apiKey = inputField(grid, 'API key', 'api_key', 'API key', 'password');
+    apiKey.autocomplete = 'new-password';
+    const apiSecret = inputField(grid, 'API secret', 'api_secret', 'API secret', 'password');
+    apiSecret.autocomplete = 'new-password';
+    apiKey.dataset.secret = 'api_key';
+    apiSecret.dataset.secret = 'api_secret';
+  } else {
+    const username = inputField(grid, source === 'vcenter' ? 'Read-only username' : 'Stats username (optional)', 'username',
+      source === 'vcenter' ? 'readonly@vsphere.local' : 'stats');
+    username.dataset.credential = 'username';
+    const password = inputField(grid, 'Password', 'password', 'Password', 'password');
+    password.autocomplete = 'new-password';
+    password.dataset.secret = 'password';
+  }
+  body.append(grid);
+  const options = el('div', 'form-row');
+  const recipients = inputField(options, 'Alert recipients (optional)', 'recipients', 'ops@example.com');
+  recipients.spellcheck = false;
+  const insecureWrap = el('label', 'field checkbox-field');
+  const insecure = el('input');
+  insecure.type = 'checkbox';
+  insecureWrap.append(insecure, document.createTextNode('Skip TLS verification (self-signed/lab only)'));
+  options.append(insecureWrap);
+  body.append(options);
+  const clearWrap = el('label', 'field checkbox-field hidden');
+  const clearCredentials = el('input');
+  clearCredentials.type = 'checkbox';
+  clearWrap.append(clearCredentials, document.createTextNode(source === 'opnsense' ? 'Clear stored API key and secret' : 'Clear stored username and password'));
+  body.append(clearWrap);
+  body.append(el('p', 'field-note', 'Secrets are stored only in the encrypted database and are never returned by the API. Leave a password or secret blank to keep the stored value.'));
+  const actions = el('div', 'modal-actions');
+  const cancel = el('button', 'btn', 'Cancel');
+  cancel.type = 'button';
+  const test = el('button', 'btn', 'Save and test');
+  test.type = 'button';
+  const save = el('button', 'btn primary', 'Save');
+  save.type = 'button';
+  actions.append(cancel, test, save);
+  body.append(actions);
+  const close = openModal('Integration — ' + integrationSourceLabel(source), body);
+  cancel.addEventListener('click', close);
+
+  const credentialInputs = [...grid.querySelectorAll('[data-credential], [data-secret]')];
+  let previousCredentials = null;
+  clearCredentials.addEventListener('change', () => {
+    if (clearCredentials.checked) {
+      previousCredentials = credentialInputs.map((input) => input.value);
+      for (const input of credentialInputs) {
+        input.value = '';
+        input.disabled = true;
+      }
+    } else {
+      for (const [index, input] of credentialInputs.entries()) {
+        input.disabled = false;
+        if (previousCredentials && previousCredentials[index]) input.value = previousCredentials[index];
+      }
+    }
+  });
+
+  const payload = () => ({
+    enabled: enabled.checked,
+    url: url.value.trim(),
+    username: (grid.querySelector('[name="username"]') || {}).value || '',
+    password: (grid.querySelector('[name="password"]') || {}).value || '',
+    api_key: (grid.querySelector('[name="api_key"]') || {}).value || '',
+    api_secret: (grid.querySelector('[name="api_secret"]') || {}).value || '',
+    clear_credentials: clearCredentials.checked,
+    insecure_skip_verify: insecure.checked,
+    poll_seconds: Number(pollSeconds.value || 60),
+    recipients: recipients.value.trim(),
+  });
+  const persist = async () => {
+    const result = await api('/api/v1/integrations/' + encodeURIComponent(source), { method: 'PUT', body: JSON.stringify(payload()) });
+    const secretInputs = grid.querySelectorAll('[type="password"]');
+    for (const input of secretInputs) input.value = '';
+    clearCredentials.checked = false;
+    previousCredentials = null;
+    for (const input of credentialInputs) input.disabled = false;
+    return result.integration;
+  };
+
+  try {
+    const data = await api('/api/v1/integrations/' + encodeURIComponent(source));
+    const integration = data.integration || {};
+    enabled.checked = Boolean(integration.enabled);
+    url.value = integration.url || '';
+    pollSeconds.value = String(integration.poll_seconds || (source === 'vcenter' ? 30 : 60));
+    recipients.value = integration.recipients || '';
+    insecure.checked = Boolean(integration.insecure_skip_verify);
+    const username = grid.querySelector('[name="username"]');
+    if (username) username.value = integration.username || '';
+    const password = grid.querySelector('[name="password"]');
+    if (password) password.placeholder = integration.password_set ? 'Stored password — leave blank to keep' : 'Password';
+    const apiKey = grid.querySelector('[name="api_key"]');
+    if (apiKey) apiKey.placeholder = integration.api_key_set ? 'Stored API key — leave blank to keep' : 'API key';
+    const apiSecret = grid.querySelector('[name="api_secret"]');
+    if (apiSecret) apiSecret.placeholder = integration.api_secret_set ? 'Stored API secret — leave blank to keep' : 'API secret';
+    if (integration.password_set || integration.api_key_set || integration.api_secret_set) clearWrap.classList.remove('hidden');
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+
+  save.addEventListener('click', async () => {
+    try {
+      await persist();
+      close();
+      toast('Integration settings saved', 'ok');
+      await loadAll();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  });
+  test.addEventListener('click', async () => {
+    test.disabled = true;
+    test.textContent = 'Testing…';
+    try {
+      await persist();
+      const result = await api('/api/v1/integrations/' + encodeURIComponent(source) + '/test', { method: 'POST', body: '{}' });
+      toast('Integration test passed: ' + (result.summary || 'read-only connection OK'), 'ok');
+      await loadAll();
+    } catch (error) {
+      toast(error.message, 'error');
+    } finally {
+      test.disabled = false;
+      test.textContent = 'Save and test';
+    }
+  });
+}
+
 function showMonitorPreset(preset) {
   const target = String(preset.target || '');
   const assignment = (preset.assignments || []).find((entry) => entry.scope === 'host');
@@ -1672,17 +1914,33 @@ function renderSystemPanel(panel, data, host, reload) {
     panel.append(grid);
 
     const failedUnits = systemd.failed_units || [];
-    if (failedUnits.length) {
-      const failedWrap = el('div', 'file-list');
+    const runningUnits = systemd.running_units || [];
+    if (failedUnits.length || runningUnits.length) {
+      const serviceWrap = el('div', 'file-list');
+      const serviceSeen = new Set();
+      const serviceRows = [];
       for (const unit of failedUnits) {
+        if (!serviceSeen.has(unit)) {
+          serviceSeen.add(unit);
+          serviceRows.push({ unit, state: 'failed' });
+        }
+      }
+      for (const unit of runningUnits) {
+        if (!serviceSeen.has(unit)) {
+          serviceSeen.add(unit);
+          serviceRows.push({ unit, state: 'running' });
+        }
+      }
+      for (const service of serviceRows) {
         const row = el('div', 'file-row');
-        row.append(el('span', 'file-name', unit));
+        row.append(el('span', 'file-name', service.unit));
+        row.append(el('span', 'badge ' + (service.state === 'failed' ? 'red' : 'green'), service.state));
         const monitor = el('button', 'btn small', 'Monitor');
         monitor.type = 'button';
         monitor.addEventListener('click', () => showMonitorPreset({
-          name: unit + ' — failed service',
+          name: service.unit + ' — ' + service.state,
           type: 'service.systemd',
-          target: unit,
+          target: service.unit,
           interval_seconds: 300,
           repeat_minutes: 60,
           cooldown_minutes: 15,
@@ -1690,9 +1948,13 @@ function renderSystemPanel(panel, data, host, reload) {
           assignments: [{ scope: 'host', target: host.id }],
         }));
         row.append(monitor);
-        failedWrap.append(row);
+        serviceWrap.append(row);
       }
-      panel.append(detailSection('Monitor a failed unit', failedWrap));
+      panel.append(detailSection('Services · ' + failedUnits.length + ' failed · ' + runningUnits.length + ' running', serviceWrap));
+    } else if (systemd.available) {
+      panel.append(detailSection('Services', el('p', 'muted', systemd.units_collected
+        ? 'No running or failed units were reported.'
+        : 'Unit-level service state is not available from this helper. Run Update helpers on the host to enable service monitoring.')));
     }
 
     const diskWrap = el('div', 'scroll-list');
@@ -2367,6 +2629,116 @@ function selectField(parent, label, name, options) {
   return select;
 }
 
+function showCMDBImportModal() {
+  const body = el('div', 'modal-body');
+  body.append(el('p', 'muted', 'Read-only import from a cmdb-lite export or any CSV/JSON host inventory. Preview is always shown before commit. HIBP never writes back to the CMDB.'));
+  const file = el('input');
+  file.type = 'file';
+  file.accept = '.csv,.json,.txt,text/csv,application/json,text/plain';
+  body.append(file);
+  const textarea = el('textarea');
+  textarea.placeholder = 'name,address,port,username,auth_type,key_path,group,tags,cmdb_ci_id\nweb01,10.0.0.10,22,ubuntu,agent,,prod,"web,prod",CI-123';
+  body.append(textarea);
+  const options = el('div', 'form-row');
+  const format = selectField(options, 'Format', 'format', [['auto', 'Auto detect'], ['csv', 'CSV'], ['json', 'JSON']]);
+  const mode = selectField(options, 'Existing hosts', 'mode', [['merge', 'Merge non-empty fields'], ['overwrite', 'Overwrite supplied fields']]);
+  body.append(options);
+  const defaults = el('div', 'form-row');
+  const defaultUsername = inputField(defaults, 'Default SSH username (optional)', 'default_username', 'ubuntu');
+  const defaultKeyPath = inputField(defaults, 'Default key path (optional)', 'default_key_path', '/home/ops/.ssh/id_ed25519');
+  body.append(defaults);
+  const modeNote = el('p', 'field-note');
+  body.append(modeNote);
+  const syncModeNote = () => {
+    modeNote.textContent = mode.value === 'overwrite'
+      ? 'Overwrite updates identity and inventory fields. Empty supplied group, tags, OS family, or OS version clears those fields. SSH auth fields are preserved unless the import supplies them.'
+      : 'Merge updates only non-empty inventory fields. Existing SSH auth, facts, host keys, and optional fields are preserved when the import omits them.';
+  };
+  mode.addEventListener('change', syncModeNote);
+  syncModeNote();
+  const preview = el('div', 'import-preview hidden');
+  body.append(preview);
+  const actions = el('div', 'modal-actions');
+  const cancel = el('button', 'btn', 'Cancel');
+  cancel.type = 'button';
+  const previewButton = el('button', 'btn', 'Preview');
+  previewButton.type = 'button';
+  const commitButton = el('button', 'btn primary', 'Commit');
+  commitButton.type = 'button';
+  commitButton.disabled = true;
+  actions.append(cancel, previewButton, commitButton);
+  body.append(actions);
+  const close = openModal('Import CMDB inventory', body, null, 'wide');
+  cancel.addEventListener('click', close);
+  file.addEventListener('change', async () => {
+    const selected = file.files && file.files[0];
+    if (selected) textarea.value = await selected.text();
+  });
+  const payload = (commit) => ({
+    data: textarea.value,
+    format: format.value,
+    mode: mode.value,
+    commit,
+    default_username: defaultUsername.value.trim(),
+    default_key_path: defaultKeyPath.value.trim(),
+  });
+  const renderPreview = (result) => {
+    preview.replaceChildren();
+    const summary = el('p', 'muted', result.format.toUpperCase() + ' · ' + result.mode + ' · '
+      + result.rows.length + ' rows · ' + result.created + ' create · ' + result.updated + ' update'
+      + (result.skipped ? ' · ' + result.skipped + ' skipped' : ''));
+    preview.append(summary);
+    if (result.problems && result.problems.length) {
+      const problems = el('pre', 'key-box', result.problems.join('\n'));
+      problems.style.maxHeight = '110px';
+      problems.style.overflow = 'auto';
+      preview.append(problems);
+    }
+    const table = el('table');
+    const head = el('tr');
+    for (const label of ['Row', 'Action', 'Name', 'Address', 'Port', 'User', 'Matched', 'Error']) head.append(el('th', '', label));
+    table.append(head);
+    for (const row of result.rows || []) {
+      const tr = el('tr');
+      const actionTd = el('td');
+      const cls = row.action === 'create' ? 'green' : row.action === 'update' ? 'amber' : 'red';
+      actionTd.append(el('span', 'badge ' + cls, row.action));
+      tr.append(
+        el('td', '', row.row),
+        actionTd,
+        el('td', '', row.name || '—'),
+        el('td', '', row.address || '—'),
+        el('td', '', row.port || '—'),
+        el('td', '', row.username || '—'),
+        el('td', '', row.matched_by || 'new'),
+        el('td', '', row.error || ''),
+      );
+      table.append(tr);
+    }
+    preview.append(table);
+    preview.classList.remove('hidden');
+    commitButton.disabled = !(result.rows || []).some((row) => row.action === 'create' || row.action === 'update');
+  };
+  previewButton.addEventListener('click', async () => {
+    try {
+      const result = await api('/api/v1/cmdb/import', { method: 'POST', body: JSON.stringify(payload(false)) });
+      renderPreview(result);
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  });
+  commitButton.addEventListener('click', async () => {
+    try {
+      const result = await api('/api/v1/cmdb/import', { method: 'POST', body: JSON.stringify(payload(true)) });
+      close();
+      toast('CMDB import: ' + result.created + ' created, ' + result.updated + ' updated, ' + result.skipped + ' skipped', 'ok');
+      await loadAll();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  });
+}
+
 function showImportModal() {
   const body = el('div', 'modal-body');
   body.append(el('p', 'muted', 'CSV headers: name,address,port,username,auth_type,key_path,group,tags,cmdb_ci_id. A preview is always shown before commit.'));
@@ -2616,6 +2988,8 @@ function bind() {
   $('import-button').addEventListener('click', showImportModal);
   $('table-import').addEventListener('click', showImportModal);
   $('hosts-import').addEventListener('click', showImportModal);
+  $('table-cmdb').addEventListener('click', showCMDBImportModal);
+  $('hosts-cmdb').addEventListener('click', showCMDBImportModal);
   $('table-ssh-config').addEventListener('click', showSSHConfigModal);
   $('hosts-ssh-config').addEventListener('click', showSSHConfigModal);
   $('table-update-helpers').addEventListener('click', fleetUpdateHelpers);

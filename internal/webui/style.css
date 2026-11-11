@@ -332,3 +332,14 @@ label.field.checkbox-field input { width: auto; accent-color: #14b8a6; }
 .monitor-target { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .monitor-status-summary { font-size: 9.5px; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .alert-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.integration-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.integration-card { display: flex; flex-direction: column; gap: 10px; background: linear-gradient(165deg, rgba(17, 29, 49, .96), rgba(10, 18, 31, .96)); border: 1px solid var(--border); border-radius: 12px; padding: 14px; box-shadow: var(--shadow); }
+.integration-top { display: flex; align-items: center; gap: 8px; }
+.integration-title { font-size: 14px; font-weight: 750; }
+.integration-meta { display: flex; flex-direction: column; gap: 6px; }
+.integration-meta-row { display: flex; justify-content: space-between; gap: 10px; font-size: 10.5px; }
+.integration-meta-row span { color: var(--muted); white-space: nowrap; }
+.integration-meta-row b { font-weight: 600; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 68%; }
+.integration-error { color: #fca5a5; }
+.integration-card .modal-actions { margin-top: auto; }
+@media (max-width: 1100px) { .integration-grid { grid-template-columns: 1fr; } }

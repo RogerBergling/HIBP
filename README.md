@@ -4,13 +4,13 @@
 > contains a working Go server, browser UI, SQLCipher storage, host CRUD/import,
 > password + TOTP/passkey authentication, SSH host-key approval, remote helper
 > installation, fact collection, read-only system information, Docker
-> inventory, metric history, monitoring, SMTP email alerts, reboot control, SSH
-> config import, audit chain, backup/restore, helper actions, tests, and CI.
-> `make production` builds against current SQLCipher 4.20 in a pinned
-> Alpine/musl image; the development build still uses the 2020 spike driver and
-> prints a warning. SSH password and sudo fallbacks are manual-run only.
-> Scheduler, playbooks, agent mode, vCenter, HAProxy, OPNsense, and CMDB import
-> are not implemented yet.
+> inventory, metric history, monitoring, SMTP email alerts, vCenter/HAProxy/
+> OPNsense integrations, CMDB import, reboot control, SSH config import, audit
+> chain, backup/restore, helper actions, tests, and CI. `make production` builds
+> against current SQLCipher 4.20 in a pinned Alpine/musl image; the development
+> build still uses the 2020 spike driver and prints a warning. SSH password and
+> sudo fallbacks are manual-run only. Scheduler, playbooks, and agent mode are
+> not implemented yet.
 >
 > **Name:** HIBP stands for **Have I Been Patched**. It is not affiliated with
 > Have I Been Pwned (haveibeenpwned.com).
@@ -34,8 +34,11 @@ and can back up. A CLI and a background service use the same core.
 
 ![HIBP monitoring and alert history](docs/screenshots/monitoring.png)
 
+![HIBP integrations and external alert history](docs/screenshots/integrations.png)
+
 Monitoring checks use collected host snapshots and read-only network probes.
-Alert history is recorded even when email delivery is disabled or fails.
+External integrations poll vCenter, HAProxy, and OPNsense without changing
+them. Alert history is recorded even when email delivery is disabled or fails.
 
 ## Contents
 
@@ -101,7 +104,7 @@ End users should not need Go or a compiler.
 
    ```bash
    # Install a specific version
-   sh install.sh --version v0.3.0
+   sh install.sh --version v0.4.0
 
    # Install system-wide (run as a user with write access to /usr/local/bin)
    sudo HIBP_PREFIX=/usr/local/bin sh install.sh
@@ -482,11 +485,12 @@ recovery boundary.
 
 ## Docker, system information, and monitoring
 
-> **Status: v0.3.0 adds monitoring and email alerting.** Read-only system
-> information, Docker inventory, host details, metric history, configurable
-> collection, explicit Docker check/apply, monitoring definitions, and SMTP
-> email alerts are available. vCenter, HAProxy, OPNsense, and CMDB import are
-> the next phases.
+> **Status: v0.4.0 adds read-only external integrations and CMDB import.**
+> Read-only system information, Docker inventory, host details, metric history,
+> configurable collection, explicit Docker check/apply, monitoring definitions,
+> SMTP email alerts, vCenter alarms, HAProxy stats, OPNsense gateways, and
+> cmdb-lite CSV/JSON import are available. The scheduler and approved playbooks
+> remain the next major phases.
 
 ### Implemented now
 
@@ -497,6 +501,8 @@ recovery boundary.
 - System snapshot: CPU, memory, swap, disks, network, DNS, default route,
   kernel, uptime, systemd failed/running services, listening ports, Docker
   versions, and container counts.
+- systemd service list in the host **System** tab with a one-click **Monitor**
+  action for each failed or running unit.
 - Metric history for CPU, memory, disk, and load with canvas charts.
 - Fleet defaults under **Settings** and per-host overrides in the host detail
   view.
@@ -514,6 +520,10 @@ recovery boundary.
   repeat/cooldown behaviour, recovery notices, and a persistent alert history.
 - Live **Monitoring** view plus a read-only alert event table; no service
   start/stop/restart or automatic remediation.
+- Read-only **Integrations** view for vCenter active alarms, HAProxy stats,
+  and OPNsense gateway status, with per-integration recipients and event history.
+- Read-only CMDB import (CSV or JSON) with preview, merge/overwrite modes, and
+  no write-back to the CMDB.
 
 Scheduled collection requires a trusted host key and the restricted
 `NOPASSWD` helper. Password-auth hosts and sudo-password hosts can still be
@@ -646,12 +656,68 @@ must use **Update helpers** before service monitoring has unit-level state.
 | --- | --- |
 | ![Monitoring and alert history](docs/screenshots/monitoring.png) | ![Email notification settings](docs/screenshots/smtp-settings.png) |
 
-### CMDB
+### External integrations
 
-CMDB-lite remains the offline inventory authority. HIBP will provide a
-read-only CMDB CSV/JSON import with a preview and an explicit per-record choice
-to **merge** or **overwrite**. It will map `external_id`/`ci_id` to
-`cmdb_ci_id`. HIBP will not write back to the CMDB database.
+The **Integrations** view configures three read-only sources. All credentials
+are stored only in SQLCipher, are never returned by the API, and are never
+written to logs or audit details. Each source has a configurable poll interval
+and optional recipients; a blank recipient list uses the SMTP defaults. New
+findings and severity changes send email, and a finding that disappears sends a
+recovery notice. External alert history is stored independently of email delivery.
+
+- **vCenter 8+** — HTTPS SDK URL with a dedicated read-only username/password.
+  HIBP retrieves active triggered alarms for all managed entities through the
+  vSphere property collector. It never syncs the vCenter inventory, acknowledges
+  alarms, clears alarms, or changes vCenter objects. The default poll interval is
+  30 seconds; 30 seconds is the minimum. TLS verification is on by default;
+  self-signed labs can opt out explicitly.
+- **HAProxy** — stats HTTP endpoint with optional Basic authentication. HIBP reads
+  the standard CSV statistics view (it tries the `;csv` variant automatically)
+  and reports backend/server `DOWN`, `NOLB`, and related failures. `MAINT` and
+  `DRAIN` rows are ignored as operator intent. No admin socket or runtime
+  command is used.
+- **OPNsense** — REST API URL plus an API key/secret for a least-privilege user.
+  HIBP reads `/api/routes/gateway/status`; `none` is healthy, `loss` is a warning,
+  and `down` is critical.
+
+Integrations poll from the controller, so the controller needs network access to
+the configured endpoints. A polling failure is shown on the source card as
+`Last error`; it does not fabricate a recover or delete active findings. The
+**Check now** action queues an immediate read-only poll.
+
+| Integrations and external alerts | HAProxy read-only settings |
+| --- | --- |
+| ![Integrations and external alerts](docs/screenshots/integrations.png) | ![HAProxy read-only settings](docs/screenshots/integration-settings.png) |
+
+### CMDB import
+
+HIBP provides a read-only CMDB import under **Hosts → CMDB import**. It accepts
+the cmdb-lite Linux host CSV feed, generic CSV, and JSON arrays or wrapper objects
+(`hosts`, `cis`, `items`, `records`, or `data`). Nested cmdb-lite `attributes`
+and `custom` maps are flattened.
+
+Recognized fields include `name`/`ci_name`/`hostname`,
+`address`/`ip_address`/`management_ip`, `port`/`ssh_port`, SSH username and
+authentication fields, `group`/`environment`, `tags`, `os_family`,
+`os_version`, and `cmdb_ci_id`/`ci_id`/`external_id`. When no explicit CMDB ID is
+present, `external_id` becomes the stable link.
+
+The preview always shows per-row `create`, `update`, or `error` decisions before
+commit:
+
+- **Merge** updates non-empty inventory fields and preserves local SSH auth,
+  facts, host keys, and optional fields that the import omits.
+- **Overwrite** updates identity and inventory fields and clears optional group,
+  tags, OS family, or OS version when the import supplies them empty. SSH auth
+  fields are only replaced when the import supplies them.
+- Existing hosts are matched by CMDB ID first, then by address and port. Two rows
+  targeting the same host or the same new address are rejected.
+- The imported file never contains HIBP secrets; no CMDB database is opened,
+  and HIBP never writes back to the CMDB.
+
+| CMDB preview and merge/overwrite choice |
+| --- |
+| ![CMDB preview and merge/overwrite choice](docs/screenshots/cmdb-import.png) |
 
 ### Delivery phases
 
@@ -661,8 +727,9 @@ to **merge** or **overwrite**. It will map `external_id`/`ci_id` to
    explicit confirmation.
 3. **Implemented:** monitoring definitions, SMTP email, HTTP/TCP/SSL checks,
    Docker/systemd health, alert history, repeat/cooldown/recovery behaviour.
-4. **Next:** vCenter, HAProxy, and OPNsense integrations.
-5. **Next:** CMDB import with preview and merge/overwrite.
+4. **Implemented:** read-only vCenter alarms, HAProxy stats, OPNsense gateway
+   status, and cmdb-lite CSV/JSON import with preview and merge/overwrite.
+5. **Next:** scheduler, approved playbooks, and unattended run history.
 
 ### Collection settings
 
@@ -773,6 +840,8 @@ Configuration is fleet-first with per-host overrides where it makes sense:
   Hosts that lack Docker or a systemd unit snapshot are excluded from that
   monitor's host state rather than silently marked healthy.
 - SMTP is a global integration; recipients can be set per monitor or fleet.
+- vCenter, HAProxy, and OPNsense credentials are global read-only integrations
+  with their own poll interval and optional recipients.
 - Helper lifecycle: per-host **Setup** and fleet-wide **Update helpers**.
 - Secrets (SMTP, vCenter, API tokens) live only in SQLCipher and are never
   returned by the API.
@@ -1128,9 +1197,9 @@ as core features rather than afterthoughts.
 - A local API (Unix socket by default) for the browser UI and future
   integrations. If a TCP listener is added, it must be TLS-protected,
   authenticated, and disabled by default.
-- Notifications via webhook and ntfy in v1; email, Slack, and Teams later.
-- Import from `cmdb-lite`; write back patch status as attributes or through a
-  documented integration API.
+- Notifications via email are implemented; webhook and ntfy remain later phases,
+  followed by Slack and Teams.
+- Read-only import from `cmdb-lite`; no write-back to the CMDB.
 - Optional Prometheus metrics for fleet-level monitoring.
 
 ## Supported distributions
@@ -1658,15 +1727,15 @@ Agent mode is optional and later; v1 uses SSH from the always-on server.
 ## Data model
 
 The current schema is implemented in `internal/store/migrations/001_init.sql`
-through `004_monitoring.sql`. Domain objects use UUIDs, timestamps are UTC
+through `005_integrations.sql`. Domain objects use UUIDs, timestamps are UTC
 ISO 8601, and durations are stored in seconds.
 
 > **Implemented:** `schema_migrations`, `app_meta`, `hosts`, `host_facts`,
 > `host_keys`, `runs` (table only), `users`, `user_passkeys`, `sessions`,
 > `audit_log`, `host_system_info`, `host_metrics`, `docker_projects`,
 > `docker_containers`, `settings`, `monitors`, `monitor_assignments`,
-> `monitor_state`, `alert_events`, and `host_services`. The remaining tables
-> below are planned.
+> `monitor_state`, `alert_events`, `host_services`, `integration_state`, and
+> `integration_events`. The remaining tables below are planned.
 
 | Table | Purpose | Key fields |
 |---|---|---|
@@ -1685,6 +1754,8 @@ ISO 8601, and durations are stored in seconds.
 | `monitor_state` | Last status per monitor/host. | `monitor_id`, `host_id`, `status`, `message`, `checked_at`, `changed_at`, `last_notified` |
 | `alert_events` | Alert history independent of email delivery. | `id`, `monitor_id`, `host_id`, `status`, `subject`, `detail`, `created_at`, `emailed`, `error` |
 | `host_services` | systemd unit snapshot from metrics. | `host_id`, `unit`, `state`, `last_seen` |
+| `integration_state` | Active external findings. | `source`, `event_key`, `status`, `subject`, `detail`, `first_seen`, `last_seen`, `last_notified` |
+| `integration_events` | External alert history. | `id`, `source`, `event_key`, `status`, `subject`, `detail`, `created_at`, `emailed`, `error` |
 | `credentials` | Encrypted credential metadata and secrets. | `id`, `name`, `auth_type`, `username`, `key_path`, `secret_ref`, `wrapped_dek`, `encrypted_secret`, `sudo_mode`, `created_at`, `rotated_at` |
 | `host_credentials` | Credential assignment and precedence. | `host_id`, `credential_id`, `priority` |
 | `host_keys` | Known host keys. | `host_id`, `key_type`, `fingerprint`, `first_seen`, `last_seen`, `trusted`, `revoked_at` |
@@ -1746,8 +1817,9 @@ Schema rules:
 - Post-reboot verification: reconnect, check uptime and boot ID, confirm the
   kernel, and re-check pending updates and service health.
 - Notifications: failure, reboot required, long-running job, host stale, EOL
-  detected, and a daily/weekly summary. v1 supports webhook and ntfy; email,
-  Slack, Teams, and a generic JSON endpoint are later.
+  detected, and a daily/weekly summary. Email alerting for host monitoring and
+  external integrations is implemented; webhook, ntfy, Slack, and Teams remain
+  later phases.
 - UI: dashboard cards for hosts needing patches, reboot required, failed runs,
   stale hosts, and EOL hosts. A host table with filters, a run timeline, a
   package diff, a log viewer, and a next-run column.
@@ -1805,17 +1877,17 @@ not accept passwords, private keys, or scripts.
 
 ### cmdb-lite import
 
-- Use the `cmdb-lite` CSV/JSON export.
-- Map `external_id` to `cmdb_ci_id`; this is the idempotent key.
-- Import name, IP/hostname attributes, OS version, environment, owner, and tags
-  where present.
+- Implemented under **Hosts → CMDB import** for CSV and JSON.
+- Match by `cmdb_ci_id`, `ci_id`, or `external_id` first, then by address and
+  port. `external_id` becomes the stable `cmdb_ci_id` when no explicit CMDB ID
+  is supplied.
+- Import name, IP/hostname attributes, OS version, environment, group, and tags
+  where present. Preview is mandatory; merge and overwrite modes are explicit.
 - Do not import secrets from the CMDB. `cmdb-lite` explicitly does not store
-  them, and HIBP should not add them to the CMDB.
-- Optionally write back `last_patched_at`, `last_patch_status`,
-  `reboot_required`, and `uptime_seconds` as CI attributes or through a
-  documented integration API.
+  them, and HIBP does not add them to the CMDB.
 - Never open the `cmdb-lite` database directly. It has its own passphrase,
-  schema, and lifecycle. Integration happens through files or a narrow API.
+  schema, and lifecycle. Integration happens through files.
+- HIBP never writes patch status back to the CMDB in this release.
 
 ## Backup, restore, and schema upgrades
 
@@ -2147,7 +2219,10 @@ Still missing:
   `.deb`/`.rpm` wrappers.
 - Cross-distro CI matrix: Debian, Ubuntu, Kali, Fedora, and SUSE first; Arch and
   Alpine in the second wave.
-- read-only `cmdb-lite` import with explicit merge/overwrite preview; no write-back.
+- **Implemented:** read-only `cmdb-lite` import with explicit merge/overwrite
+  preview and no write-back.
+- **Implemented:** read-only vCenter alarms, HAProxy stats, and OPNsense gateway
+  integrations with email alert history.
 - Documentation for operators, backup, upgrade, and troubleshooting.
 
 ### M6 - Agent hardening and scale
@@ -2190,8 +2265,9 @@ Reasons:
 Integration points:
 
 - Import CIs from `cmdb-lite` CSV/JSON and preserve `external_id` as
-  `cmdb_ci_id`.
-- Write back patch facts as CI attributes or through a documented API.
+  `cmdb_ci_id` when no explicit CMDB ID is supplied.
+- No write-back in this release. Patch facts remain in HIBP; a future documented
+  integration API would require a separate decision.
 - Deep link from a CI to the corresponding HIBP host.
 - Share UI conventions, theme, and documentation style, not a database.
 - If a single pane of glass is mandatory, embed HIBP as a separate privileged
@@ -2244,9 +2320,11 @@ These are settled unless you explicitly change them:
 - **Reboot behavior:** never automatic. After a run that requires a reboot, the
   operator chooses **Reboot now** or **Reboot later**. Scheduled runs record the
   requirement and notify; they do not reboot.
-- **Notifications:** webhook and ntfy in v1; email, Slack, and Teams later.
-- **CMDB integration:** separate application, integrated through CSV/JSON import
-  and patch-status write-back. No shared database or passphrase.
+- **Notifications:** SMTP email alerting is implemented for host monitoring and
+  external integrations. Webhook, ntfy, Slack, and Teams remain later phases.
+- **CMDB integration:** separate application, integrated through read-only
+  CSV/JSON import with preview and merge/overwrite. No shared database,
+  passphrase, or write-back.
 - **Name:** Have I Been Patched (HIBP).
 - **License:** MIT.
 

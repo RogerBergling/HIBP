@@ -9,6 +9,7 @@ require (
 	github.com/mutecomm/go-sqlcipher/v4 v4.4.2
 	github.com/shirou/gopsutil/v4 v4.26.10
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
+	github.com/vmware/govmomi v0.56.2
 	golang.org/x/crypto v0.58.0
 	golang.org/x/term v0.48.0
 )

@@ -34,23 +34,27 @@ type Config struct {
 
 // Server is the HIBP HTTP server.
 type Server struct {
-	store             *store.Store
-	version           string
-	keyDirs           []string
-	sshConfigPath     string
-	dummyPasswordHash string
-	loginIPLimiter    *attemptLimiter
-	loginUserLimiter  *attemptLimiter
-	mfaLimiter        *attemptLimiter
-	ceremonies        *ceremonyStore
-	setupMu           sync.Mutex
-	collectorMu       sync.Mutex
-	collectorState    map[string]*collectorHostState
-	mailMu            sync.Mutex
-	monitorMu         sync.Mutex
-	monitorRunning    bool
-	monitorWake       chan struct{}
-	mux               *http.ServeMux
+	store              *store.Store
+	version            string
+	keyDirs            []string
+	sshConfigPath      string
+	dummyPasswordHash  string
+	loginIPLimiter     *attemptLimiter
+	loginUserLimiter   *attemptLimiter
+	mfaLimiter         *attemptLimiter
+	ceremonies         *ceremonyStore
+	setupMu            sync.Mutex
+	collectorMu        sync.Mutex
+	collectorState     map[string]*collectorHostState
+	mailMu             sync.Mutex
+	monitorMu          sync.Mutex
+	monitorRunning     bool
+	monitorWake        chan struct{}
+	integrationMu      sync.Mutex
+	integrationRunning bool
+	integrationWake    chan struct{}
+	integrationRuntime map[string]integrationRuntime
+	mux                *http.ServeMux
 }
 
 // New creates a server.
@@ -87,18 +91,20 @@ func New(cfg Config) (*Server, error) {
 		sshConfigPath = filepath.Join(home, ".ssh", "config")
 	}
 	s := &Server{
-		store:             cfg.Store,
-		version:           cfg.Version,
-		keyDirs:           keyDirs,
-		sshConfigPath:     sshConfigPath,
-		dummyPasswordHash: dummyPasswordHash,
-		loginIPLimiter:    newAttemptLimiter(10, 15*time.Minute),
-		loginUserLimiter:  newAttemptLimiter(5, 15*time.Minute),
-		mfaLimiter:        newAttemptLimiter(10, 15*time.Minute),
-		ceremonies:        newCeremonyStore(),
-		collectorState:    make(map[string]*collectorHostState),
-		monitorWake:       make(chan struct{}, 1),
-		mux:               http.NewServeMux(),
+		store:              cfg.Store,
+		version:            cfg.Version,
+		keyDirs:            keyDirs,
+		sshConfigPath:      sshConfigPath,
+		dummyPasswordHash:  dummyPasswordHash,
+		loginIPLimiter:     newAttemptLimiter(10, 15*time.Minute),
+		loginUserLimiter:   newAttemptLimiter(5, 15*time.Minute),
+		mfaLimiter:         newAttemptLimiter(10, 15*time.Minute),
+		ceremonies:         newCeremonyStore(),
+		collectorState:     make(map[string]*collectorHostState),
+		monitorWake:        make(chan struct{}, 1),
+		integrationWake:    make(chan struct{}, 1),
+		integrationRuntime: make(map[string]integrationRuntime),
+		mux:                http.NewServeMux(),
 	}
 	s.routes()
 	return s, nil
@@ -154,7 +160,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/v1/monitors/{id}", s.auth(s.handleDeleteMonitor))
 	s.mux.HandleFunc("POST /api/v1/monitors/{id}/check", s.auth(s.handleCheckMonitor))
 	s.mux.HandleFunc("GET /api/v1/alerts", s.auth(s.handleAlerts))
+	s.mux.HandleFunc("GET /api/v1/integrations", s.auth(s.handleListIntegrations))
+	s.mux.HandleFunc("GET /api/v1/integrations/{source}", s.auth(s.handleGetIntegration))
+	s.mux.HandleFunc("PUT /api/v1/integrations/{source}", s.auth(s.handlePutIntegration))
+	s.mux.HandleFunc("POST /api/v1/integrations/{source}/test", s.auth(s.handleTestIntegration))
+	s.mux.HandleFunc("POST /api/v1/integrations/{source}/check", s.auth(s.handleCheckIntegration))
 	s.mux.HandleFunc("POST /api/v1/import", s.auth(s.handleImport))
+	s.mux.HandleFunc("POST /api/v1/cmdb/import", s.auth(s.handleCMDBImport))
 	s.mux.HandleFunc("GET /api/v1/audit", s.auth(s.handleAudit))
 	s.mux.HandleFunc("GET /api/v1/audit/verify", s.auth(s.handleAuditVerify))
 	s.mux.HandleFunc("GET /api/v1/export/hosts.csv", s.auth(s.handleExportHosts))

@@ -112,6 +112,10 @@
           <span class="ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 17l4-6 3 3 4-7 5 10" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 20h16" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></span>
           Monitoring
         </button>
+        <button class="nav-item" data-view="integrations">
+          <span class="ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M8 7h8M8 12h8M8 17h5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><rect x="3.5" y="3.5" width="17" height="17" rx="3" stroke="currentColor" stroke-width="1.5"/></svg></span>
+          Integrations
+        </button>
         <button class="nav-item" id="open-settings" type="button">
           <span class="ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6"/><path d="M19.4 15a1.7 1.7 0 00.34 1.88l.06.06-2.12 2.12-.06-.06a1.7 1.7 0 00-1.88-.34 1.7 1.7 0 00-1 1.55V20h-3v-.1a1.7 1.7 0 00-1-1.55 1.7 1.7 0 00-1.88.34l-.06.06-2.12-2.12.06-.06A1.7 1.7 0 004.6 15a1.7 1.7 0 00-1.55-1H3v-3h.1a1.7 1.7 0 001.55-1 1.7 1.7 0 00-.34-1.88l-.06-.06 2.12-2.12.06.06A1.7 1.7 0 008.4 6.3a1.7 1.7 0 001-1.55V4h3v.1a1.7 1.7 0 001 1.55 1.7 1.7 0 001.88-.34l.06-.06 2.12 2.12-.06.06A1.7 1.7 0 0019.4 9c.1.35.4.7.75.9.28.16.6.25.95.25H21v3h-.1a1.7 1.7 0 00-1.5 1z" stroke="currentColor" stroke-width="1.3"/></svg></span>
           Settings
@@ -182,7 +186,7 @@
             <div class="card-head">
               <div class="card-title">Hosts</div>
               <div class="card-sub" id="hosts-sub">0 hosts</div>
-              <div class="card-actions"><button class="link-button" id="table-update-helpers">Update helpers</button><button class="link-button" id="table-ssh-config">SSH config</button><button class="link-button" id="table-import">Import CSV</button></div>
+              <div class="card-actions"><button class="link-button" id="table-update-helpers">Update helpers</button><button class="link-button" id="table-ssh-config">SSH config</button><button class="link-button" id="table-cmdb">CMDB import</button><button class="link-button" id="table-import">Import CSV</button></div>
             </div>
             <div class="table-wrap">
               <table>
@@ -250,7 +254,7 @@
         <section class="card table-card">
           <div class="card-head">
             <div class="card-title">Managed hosts</div>
-            <div class="card-actions"><button class="link-button" id="hosts-ssh-config">SSH config</button><button class="link-button" id="hosts-import">Import CSV</button></div>
+            <div class="card-actions"><button class="link-button" id="hosts-ssh-config">SSH config</button><button class="link-button" id="hosts-cmdb">CMDB import</button><button class="link-button" id="hosts-import">Import CSV</button></div>
           </div>
           <div class="table-wrap">
             <table>
@@ -339,6 +343,34 @@
                 </tr>
               </thead>
               <tbody id="alert-body"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section id="view-integrations" class="hidden">
+        <div class="page-head">
+          <div>
+            <div class="page-title">Integrations</div>
+            <div class="page-sub">Read-only vCenter alarms, HAProxy stats, and OPNsense gateway status.</div>
+          </div>
+        </div>
+        <div class="integration-grid" id="integration-grid"></div>
+        <section class="card table-card" style="margin-top:14px">
+          <div class="card-head"><div class="card-title">External alerts</div></div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th style="width:14%">Time</th>
+                  <th style="width:11%">Source</th>
+                  <th style="width:10%">Status</th>
+                  <th style="width:31%">Subject</th>
+                  <th style="width:26%">Detail</th>
+                  <th>Email</th>
+                </tr>
+              </thead>
+              <tbody id="integration-events-body"></tbody>
             </table>
           </div>
         </section>
