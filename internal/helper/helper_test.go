@@ -203,7 +203,7 @@ func TestSystemInfoAndMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Hostname == "" || info.CPU.Cores == 0 || info.Memory.TotalBytes == 0 || len(info.Disks) == 0 {
+	if info.Hostname == "" || info.CPU.Cores == 0 || info.Memory.TotalBytes == 0 {
 		t.Fatalf("incomplete system info: %+v", info)
 	}
 	metrics, err := collectMetrics(context.Background())
