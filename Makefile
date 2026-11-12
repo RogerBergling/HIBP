@@ -36,7 +36,7 @@ bootstrap:
 check-go:
 	@command -v "$(GO)" >/dev/null 2>&1 || { \
 		echo "ERROR: Go was not found: $(GO)"; \
-		echo "Install Go 1.27+ from https://go.dev/dl/ and add it to PATH."; \
+		echo "Install Go 1.27.4+ from https://go.dev/dl/ and add it to PATH."; \
 		echo "See 'Install prerequisites' in README.md."; \
 		echo "Or run: make build GO=/path/to/go"; \
 		exit 1; \

@@ -11,7 +11,7 @@
 
 set -eu
 
-GO_VERSION="${GO_VERSION:-1.27.3}"
+GO_VERSION="${GO_VERSION:-1.27.4}"
 GO_DIR="${GO_DIR:-$HOME/.local}"
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
@@ -20,7 +20,7 @@ usage() {
 Bootstrap a HIBP development build.
 
 Environment:
-  GO_VERSION  Go version to download when Go is missing (default: 1.27.3)
+  GO_VERSION  Go version to download when Go is missing (default: 1.27.4)
   GO_DIR      Directory used for a local Go install (default: $HOME/.local)
 
 The script runs `make build` at the end.

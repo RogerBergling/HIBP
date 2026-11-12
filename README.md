@@ -1,6 +1,6 @@
 # HIBP - Have I Been Patched
 
-> **Status: v0.6.3 production-hardening feature set with a production build path.**
+> **Status: v0.6.4 production-hardening feature set with a production build path.**
 > The repository contains a working Go server, browser UI, SQLCipher storage,
 > host CRUD/import, password + TOTP/passkey authentication with post-enrollment
 > MFA management, SSH host-key approval, remote helper installation, fact
@@ -101,6 +101,12 @@ does not try to be Ansible, Puppet, Chef, or Salt. It focuses on package
 updates, reboot state, evidence, and the safe execution of those updates across
 different Linux distributions.
 
+HIBP is designed for **self-hosted, single-operator** use. It is not a
+multi-tenant SaaS product. The browser UI can be used from Windows, Linux, or
+macOS over an SSH tunnel, but the controller and target helper must run on
+Linux. There is no native Windows client/controller and no Windows target
+support.
+
 ## Install a release (recommended)
 
 End users should not need Go or a compiler.
@@ -120,7 +126,7 @@ End users should not need Go or a compiler.
 
    ```bash
    # Install a specific version
-   sh install.sh --version v0.6.3
+   sh install.sh --version v0.6.4
 
    # Install system-wide (run as a user with write access to /usr/local/bin)
    sudo HIBP_PREFIX=/usr/local/bin sh install.sh
@@ -166,7 +172,7 @@ You do **not** need the prerequisites below unless you are building from source.
 
 These prerequisites are only needed when you build HIBP from source.
 
-HIBP's development build needs **Go 1.27 or newer** and a **C compiler** because
+HIBP's development build needs **Go 1.27.4 or newer** and a **C compiler** because
 the SQLCipher driver uses CGO. Use the latest Go 1.27 patch release; CI runs
 `govulncheck` as a release gate. A local older patch may report standard-library
 issues that are already fixed upstream. The production build uses **Docker** and
@@ -194,7 +200,7 @@ sudo apt update
 sudo apt install -y build-essential make pkg-config ca-certificates curl tar
 
 # Install Go 1.27 from upstream. The distribution package may be older.
-GO_VERSION=1.27.3
+GO_VERSION=1.27.4
 curl -fsSLO "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
 sudo rm -rf /usr/local/go
 sudo tar -C /usr/local -xzf "go${GO_VERSION}.linux-amd64.tar.gz"
@@ -214,7 +220,7 @@ If you do not have sudo, install Go under your home directory instead:
 
 ```bash
 mkdir -p "$HOME/.local"
-curl -fsSL "https://go.dev/dl/go1.27.3.linux-amd64.tar.gz" \
+curl -fsSL "https://go.dev/dl/go1.27.4.linux-amd64.tar.gz" \
   | tar -xz -C "$HOME/.local"
 export PATH="$HOME/.local/go/bin:$PATH"
 ```
@@ -230,7 +236,7 @@ make build GO="$HOME/.local/go/bin/go"
 ```bash
 sudo dnf install -y gcc make pkgconf-pkg-config curl tar ca-certificates
 
-GO_VERSION=1.27.3
+GO_VERSION=1.27.4
 curl -fsSLO "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
 sudo rm -rf /usr/local/go
 sudo tar -C /usr/local -xzf "go${GO_VERSION}.linux-amd64.tar.gz"
@@ -244,7 +250,7 @@ echo 'export PATH="$PATH:/usr/local/go/bin"' >> "$HOME/.bashrc"
 ```bash
 sudo zypper install -y gcc make pkg-config curl tar ca-certificates
 
-GO_VERSION=1.27.3
+GO_VERSION=1.27.4
 curl -fsSLO "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
 sudo rm -rf /usr/local/go
 sudo tar -C /usr/local -xzf "go${GO_VERSION}.linux-amd64.tar.gz"
@@ -309,7 +315,7 @@ release artifacts still use the static Docker build.
 ### Verify the toolchain
 
 ```bash
-go version       # must report go1.27 or newer
+go version       # must report go1.27.4 or newer
 gcc --version    # must be available
 make --version
 ```
@@ -414,7 +420,7 @@ form from a concrete alias. It follows simple `Include` files, skips wildcard
 and `Match` blocks, and never returns private key contents. Override the config
 path with `--ssh-config /path/to/config`.
 
-Requires Go 1.27+, a C toolchain, and CGO for the development build. The
+Requires Go 1.27.4+, a C toolchain, and CGO for the development build. The
 passphrase must be at least 12 characters. Use `make static` for the development
 static ELF, or `make production` for the current-SQLCipher Docker build. The
 target helper installation and sudoers example are in
@@ -453,7 +459,7 @@ names, or shell fragments.
 Important constraints:
 
 - The server requires the database passphrase before it starts. There is no
-  locked/paused browser UI in v0.6.3. If the process stops, the UI, collector,
+  locked/paused browser UI in v0.6.4. If the process stops, the UI, collector,
   scheduler, and monitoring stop with it.
 - `-create` is not an upgrade or reset flag. It refuses an existing database.
 - `-demo` writes sample hosts and is not a production mode.
@@ -474,7 +480,7 @@ against them without pinning and testing a release.
 `hibp version` and `hibp server --version` print the complete build identity:
 
 ```text
-hibp 0.6.3
+hibp 0.6.4
 build:  1234
 commit: abc123def456
 date:   2026-11-11T12:00:00Z
@@ -503,7 +509,7 @@ Build metadata is generated by `make`:
 Override the inferred values for a controlled build:
 
 ```bash
-make build VERSION=0.6.3 BUILD_NUMBER=1234 BUILD_COMMIT=abc123def456
+make build VERSION=0.6.4 BUILD_NUMBER=1234 BUILD_COMMIT=abc123def456
 ```
 
 `make production` passes the same values as Docker build arguments and records
@@ -684,7 +690,7 @@ This profile still requires the canary and restore tests below.
 ## Production deployment checklist
 
 This is the minimum operational and security review before using HIBP against
-real hosts. It reflects the current v0.6.3 implementation; treat it as a
+real hosts. It reflects the current v0.6.4 implementation; treat it as a
 gate, not as a suggestion.
 
 ### 1. Confirm the deployment model
@@ -1063,7 +1069,7 @@ and sessions.
 
 ## Docker, system information, and monitoring
 
-> **Status: v0.6.3 adds production hardening on top of cron schedules.**
+> **Status: v0.6.4 adds production hardening on top of cron schedules.**
 > Read-only system information, Docker inventory, host details, metric history,
 > configurable collection, explicit Docker check/apply, monitoring definitions,
 > SMTP email alerts, vCenter alarms, HAProxy stats, OPNsense gateways,
@@ -1713,7 +1719,7 @@ as core features rather than afterthoughts.
 ## Product requirements
 
 > These are product requirements and design targets, not a claim that every item
-> is implemented. See [Implemented in v0.6.3](#implemented-in-v063) and
+> is implemented. See [Implemented in v0.6.4](#implemented-in-v064) and
 > [Known limitations before production](#known-limitations-before-production)
 > for the current status.
 
@@ -1828,7 +1834,7 @@ as core features rather than afterthoughts.
 - The server requires the database passphrase before it starts. After a reboot,
   an operator must start the process and unlock the database; until then there
   is no UI, collector, or scheduler. There is no locked/paused browser state in
-  v0.6.3, and no database key is persisted.
+  v0.6.4, and no database key is persisted.
 
 ### History and drill-down
 
@@ -2015,7 +2021,7 @@ hibp agent (systemd timer) ── outbound mTLS ──► hibp server
 
 ### Execution flow
 
-> This is the design target. v0.6.3 implements collection, check/apply through
+> This is the design target. v0.6.4 implements collection, check/apply through
 > the fixed helper, per-host locking, retries, run history, and audit, but not
 > package plans/diffs, approval gates, cancellation, post-reboot verification,
 > or retention.
@@ -2146,7 +2152,7 @@ The current release derives the SQLCipher key directly from the database
 passphrase with Argon2id and keeps SMTP/integration secrets inside the encrypted
 database. It does **not** implement a separate credential vault, envelope/DEK
 wrapping, or passphrase rotation. The following is a future design goal, not a
-claim about v0.6.3:
+claim about v0.6.4:
 
 - Generate a random data encryption key (DEK) for a credential vault.
 - Derive a key-encryption key (KEK) from the database passphrase with Argon2id,
@@ -2395,7 +2401,7 @@ Current status:
   remote-code-execution feature.
 - Consider reproducible builds for the server and agent binaries.
 
-### Implemented in v0.6.3
+### Implemented in v0.6.4
 
 - SQLCipher database with Argon2id-derived keys and a validated `.meta` sidecar.
 - `0600` database, sidecar, key, and backup files; wrong-passphrase test.
@@ -2666,7 +2672,7 @@ Schema rules:
 
 ## Scheduling and job semantics
 
-> This section is the target semantics. v0.6.3 implements five-field cron,
+> This section is the target semantics. v0.6.4 implements five-field cron,
 > per-schedule time zones, jitter, a late-start window, skip/latest-missed
 > catch-up, per-schedule concurrency, a controller-wide cap, bounded retries,
 > run history, and email summaries. It does not implement systemd `OnCalendar`,
@@ -2969,7 +2975,7 @@ library and requires CGO. The build plan is:
   resolver instead of glibc NSS.
 - Verify with `ldd` that the release binary is "not a dynamic executable".
 
-**Development build:** Go 1.27.3 with `mutecomm/go-sqlcipher` v4.4.2 produced a
+**Development build:** Go 1.27.4 with `mutecomm/go-sqlcipher` v4.4.2 produced a
 statically linked ELF on Ubuntu/glibc using
 `-tags "sqlite_omit_load_extension netgo osusergo"` and
 `-ldflags '-linkmode external -extldflags "-static"'`. This is for development
@@ -3362,7 +3368,8 @@ No architecture-blocking decisions remain. These are intentionally deferred:
 - **Slack and Teams** notification channels; SMTP email alerting is
   implemented.
 - **Real-target validation** for the implemented Arch and Alpine helper paths.
-- **Native desktop client** — not planned; the browser UI is the chosen path.
+- **Native desktop client** — browser UI is the chosen path. A native Windows
+  client/controller is a requested future enhancement, not implemented.
 - **Windows/macOS targets** — not planned for v1.
 
 ## Validation
@@ -3394,13 +3401,18 @@ Current validation status:
 - `go test -race ./...` passes.
 - `make static` produces a development ELF with no dynamic dependencies.
 - The current-SQLCipher production Docker build and release pipeline passed for
-  `v0.6.3`; the published archive checksum, installed binary, and SQLCipher
+  `v0.6.4`; the published archive checksum, installed binary, and SQLCipher
   production driver were verified.
 - The store/server suite passes against the production driver with current
   system `libsqlcipher`, including backup, restore, audit-chain verification,
   configurable retention, failed-action audit, agent build persistence, and
   build-identity tests.
 - README validator and Python validator tests pass.
+- `govulncheck` with Go 1.27.4 and `golang.org/x/crypto` v0.59.0 reports no
+  reachable vulnerabilities in source or the production binary.
+- Manual `gosec`, `staticcheck`, and `gitleaks` review found no confirmed
+  exploitable issue; remaining findings are low-risk or documented false
+  positives. Container/image scanning is not part of CI.
 - Release validation used out-of-tree headless browser checks for monitoring,
   SMTP settings, CMDB import, schedules, external integration screens, Account
   security/MFA management, backup directory/retention configuration, Add host

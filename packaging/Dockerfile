@@ -3,7 +3,7 @@
 #   docker build -f packaging/Dockerfile -t hibp-production .
 #   docker run --rm hibp-production version
 
-FROM golang:1.27-alpine AS build
+FROM golang:1.27.4-alpine AS build
 
 ARG VERSION=0.1.0-dev
 ARG BUILD_NUMBER=dev
