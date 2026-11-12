@@ -417,9 +417,11 @@ directories with a comma-separated flag:
 ```
 
 The **SSH config** button reads the local `~/.ssh/config` and prefills a host
-form from a concrete alias. It follows simple `Include` files, skips wildcard
-and `Match` blocks, and never returns private key contents. Override the config
-path with `--ssh-config /path/to/config`.
+form from a concrete alias. It follows simple `Include` files, creates entries
+only for concrete aliases, applies `IdentityFile` defaults from `Host *` blocks,
+lists every configured private-key candidate for a host, and filters `*.pub`
+files. It never returns private key contents. Override the config path with
+`--ssh-config /path/to/config`.
 
 Requires Go 1.27.4+, a C toolchain, and CGO for the development build. The
 passphrase must be at least 12 characters. Use `make static` for the development
@@ -2549,7 +2551,8 @@ Current status:
   retention count, full audit-chain verification of backups, and hard refusal
   of databases written by a newer schema version.
 - Local SSH config reader for prefilling hosts, with simple `Include` support,
-  wildcard/`Match` filtering, and no private-key reads.
+  concrete-alias filtering, `Host *` identity defaults, all configured key
+  candidates, and `*.pub` filtering. No private-key reads.
 - Remote helper installation from the UI with `visudo` validation, a restricted
   per-host sudoers rule, and passwordless verification.
 - Hash-chained audit log with verification.

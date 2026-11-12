@@ -64,12 +64,13 @@ func loadWithHome(path, home string) ([]Host, error) {
 }
 
 type loader struct {
-	home        string
-	sshDir      string
-	defaultUser string
-	seen        map[string]bool
-	files       int
-	hosts       map[string]*rawHost
+	home                 string
+	sshDir               string
+	defaultUser          string
+	seen                 map[string]bool
+	files                int
+	hosts                map[string]*rawHost
+	defaultIdentityFiles []string
 }
 
 type rawHost struct {
@@ -85,6 +86,7 @@ type rawHost struct {
 
 type block struct {
 	aliases       []string
+	global        bool
 	hostName      string
 	port          string
 	user          string
@@ -152,8 +154,9 @@ func (l *loader) parse(data string, depth int) error {
 		case "host":
 			finalize()
 			inMatch = false
-			current = &block{aliases: concretePatterns(value)}
-			if len(current.aliases) == 0 {
+			aliases, global := hostPatterns(value)
+			current = &block{aliases: aliases, global: global}
+			if len(current.aliases) == 0 && !current.global {
 				current = nil
 			}
 		case "match":
@@ -196,6 +199,12 @@ func (l *loader) parse(data string, depth int) error {
 }
 
 func (l *loader) merge(b *block) {
+	if b.global {
+		l.defaultIdentityFiles = append(l.defaultIdentityFiles, b.identityFiles...)
+		if len(b.aliases) == 0 {
+			return
+		}
+	}
 	for _, alias := range b.aliases {
 		existing := l.hosts[alias]
 		if existing == nil {
@@ -214,8 +223,8 @@ func (l *loader) merge(b *block) {
 			existing.user = b.user
 			existing.setUser = true
 		}
-		if !existing.setIdentity && b.setIdentity {
-			existing.identityFiles = append([]string(nil), b.identityFiles...)
+		if b.setIdentity {
+			existing.identityFiles = append(existing.identityFiles, b.identityFiles...)
 			existing.setIdentity = true
 		}
 	}
@@ -242,11 +251,12 @@ func (l *loader) finalize() []Host {
 		if remoteUser == "" {
 			remoteUser = l.defaultUser
 		}
-		identityFiles := make([]string, 0, len(raw.identityFiles))
+		identityFiles := make([]string, 0, len(raw.identityFiles)+len(l.defaultIdentityFiles))
 		seen := make(map[string]bool)
-		for _, file := range raw.identityFiles {
+		combined := append(append([]string(nil), raw.identityFiles...), l.defaultIdentityFiles...)
+		for _, file := range combined {
 			expanded := l.expandIdentity(file, remoteUser, hostName)
-			if expanded == "" || seen[expanded] {
+			if expanded == "" || seen[expanded] || strings.HasSuffix(strings.ToLower(expanded), ".pub") {
 				continue
 			}
 			seen[expanded] = true
@@ -326,17 +336,25 @@ func (l *loader) processInclude(value string, depth int) error {
 	return nil
 }
 
-func concretePatterns(value string) []string {
+func hostPatterns(value string) ([]string, bool) {
 	fields := strings.Fields(value)
 	patterns := make([]string, 0, len(fields))
+	global := false
 	for _, field := range fields {
 		field = unquote(field)
-		if field == "" || strings.HasPrefix(field, "!") || strings.ContainsAny(field, "*?") {
+		if field == "" || strings.HasPrefix(field, "!") {
+			continue
+		}
+		if field == "*" {
+			global = true
+			continue
+		}
+		if strings.ContainsAny(field, "*?") {
 			continue
 		}
 		patterns = append(patterns, field)
 	}
-	return patterns
+	return patterns, global
 }
 
 func splitDirective(line string) (string, string) {

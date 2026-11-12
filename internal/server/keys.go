@@ -64,6 +64,9 @@ func (s *Server) handleListKeys(w http.ResponseWriter, r *http.Request) {
 		if !entry.IsDir() && !entryInfo.Mode().IsRegular() {
 			continue
 		}
+		if !entry.IsDir() && strings.HasSuffix(strings.ToLower(entry.Name()), ".pub") {
+			continue
+		}
 		entries = append(entries, keyEntry{
 			Name:  entry.Name(),
 			Path:  entryPath,

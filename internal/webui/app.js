@@ -3134,7 +3134,7 @@ function showAddHostModal(host = null, prefill = null) {
   form.append(row);
   const authRow = el('div', 'form-row');
   const authType = selectField(authRow, 'Auth type', 'auth_type', [['key', 'SSH key file'], ['password', 'Password (manual fallback)']]);
-  const keyPath = keyPathField(authRow, source.key_path || '');
+  const keyPath = keyPathField(authRow, source.key_path || '', source.identity_files || []);
   form.append(authRow);
   const groupRow = el('div', 'form-row');
   const group = inputField(groupRow, 'Group', 'group_name', 'web-prod');
@@ -3207,10 +3207,19 @@ async function showSSHConfigModal() {
     for (const host of result.hosts) {
       const row = el('div', 'file-row');
       const entry = el('div', 'ssh-config-entry');
+      const keys = (host.identity_files && host.identity_files.length ? host.identity_files : (host.key_path ? [host.key_path] : []))
+        .filter((key) => key && !/\.pub$/i.test(key));
       entry.append(
         el('div', 'file-name', host.alias),
-        el('div', 'file-meta', (host.user ? host.user + '@' : '') + host.hostname + ':' + host.port + (host.key_path ? ' · ' + host.key_path : ' · no key candidate')),
+        el('div', 'file-meta', (host.user ? host.user + '@' : '') + host.hostname + ':' + host.port),
       );
+      if (keys.length) {
+        const keyList = el('div', 'ssh-key-list');
+        for (const key of keys) keyList.append(el('div', 'file-meta', '🔑 ' + key));
+        entry.append(keyList);
+      } else {
+        entry.append(el('div', 'file-meta', 'no key candidate'));
+      }
       const use = el('button', 'btn small', 'Use');
       use.type = 'button';
       use.addEventListener('click', () => {
@@ -3225,7 +3234,7 @@ async function showSSHConfigModal() {
   }
 }
 
-function keyPathField(parent, value) {
+function keyPathField(parent, value, configuredKeys = []) {
   const wrapper = el('label', 'field', 'Key path');
   const row = el('div', 'input-with-button');
   const input = el('input');
@@ -3234,12 +3243,28 @@ function keyPathField(parent, value) {
   input.placeholder = '/home/ops/.ssh/id_ed25519';
   input.autocomplete = 'off';
   input.spellcheck = false;
-  input.value = value || '';
+  const keys = [...new Set(configuredKeys.filter((key) => key && !/\.pub$/i.test(key)))];
+  input.value = value || keys[0] || '';
   const browse = el('button', 'btn small', 'Browse');
   browse.type = 'button';
   browse.addEventListener('click', () => showKeyBrowser((selected) => { input.value = selected; }));
   row.append(input, browse);
   wrapper.append(row);
+  if (keys.length > 1) {
+    const choices = el('div', 'key-choices');
+    choices.append(el('div', 'muted', 'Configured keys'));
+    for (const key of keys) {
+      const choice = el('button', 'btn small', key.split('/').pop());
+      choice.type = 'button';
+      choice.title = key;
+      choice.addEventListener('click', () => {
+        input.value = key;
+        input.focus();
+      });
+      choices.append(choice);
+    }
+    wrapper.append(choices);
+  }
   parent.append(wrapper);
   return input;
 }

@@ -585,6 +585,12 @@ func TestListSSHKeys(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "id_ed25519"), []byte("not a real key"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "id_ed25519.pub"), []byte("public key"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "id_rsa.pub"), []byte("public key"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Mkdir(filepath.Join(dir, "subdir"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -620,6 +626,11 @@ func TestListSSHKeys(t *testing.T) {
 	}
 	if !result.Entries[0].IsDir {
 		t.Fatalf("expected directory first, got %+v", result.Entries)
+	}
+	for _, entry := range result.Entries {
+		if strings.HasSuffix(strings.ToLower(entry.Name), ".pub") {
+			t.Fatalf("public key was not filtered: %+v", result.Entries)
+		}
 	}
 
 	resp = request(t, http.MethodGet, ts.URL+"/api/v1/keys?path="+url.QueryEscape(filepath.Dir(dir)), "test-token", "")

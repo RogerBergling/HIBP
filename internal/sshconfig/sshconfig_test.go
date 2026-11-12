@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -199,6 +200,64 @@ func TestLoadExpandsIdentityTokens(t *testing.T) {
 	want := filepath.Join(home, ".ssh", "custom-deploy-example.com")
 	if host.KeyPath != want {
 		t.Fatalf("expected %q, got %q", want, host.KeyPath)
+	}
+}
+
+func TestLoadMultipleIdentityFilesAndGlobalDefaults(t *testing.T) {
+	home := t.TempDir()
+	sshDir := filepath.Join(home, ".ssh")
+	path := filepath.Join(sshDir, "config")
+	writeConfig(t, path, `Host web
+  HostName web.example
+  IdentityFile ~/.ssh/id_ed25519
+  IdentityFile ~/.ssh/id_rsa
+  IdentityFile ~/.ssh/id_ed25519.pub
+
+Host web
+  IdentityFile ~/.ssh/work_key
+
+Host db
+  HostName db.example
+
+Host *
+  IdentityFile ~/.ssh/global_key
+  IdentityFile ~/.ssh/global_key.pub
+`)
+	hosts, err := loadWithHome(path, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hosts) != 2 {
+		t.Fatalf("expected 2 hosts, got %d: %#v", len(hosts), hosts)
+	}
+	web := findHost(t, hosts, "web")
+	wantWeb := []string{
+		filepath.Join(sshDir, "id_ed25519"),
+		filepath.Join(sshDir, "id_rsa"),
+		filepath.Join(sshDir, "work_key"),
+		filepath.Join(sshDir, "global_key"),
+	}
+	if len(web.IdentityFiles) != len(wantWeb) {
+		t.Fatalf("expected %d identity files, got %#v", len(wantWeb), web.IdentityFiles)
+	}
+	for index, want := range wantWeb {
+		if web.IdentityFiles[index] != want {
+			t.Fatalf("identity file %d: expected %q, got %q", index, want, web.IdentityFiles[index])
+		}
+	}
+	if web.KeyPath != wantWeb[0] {
+		t.Fatalf("expected primary key %q, got %q", wantWeb[0], web.KeyPath)
+	}
+	db := findHost(t, hosts, "db")
+	if len(db.IdentityFiles) != 1 || db.IdentityFiles[0] != filepath.Join(sshDir, "global_key") {
+		t.Fatalf("expected global identity file on db, got %#v", db.IdentityFiles)
+	}
+	for _, host := range hosts {
+		for _, key := range host.IdentityFiles {
+			if strings.HasSuffix(strings.ToLower(key), ".pub") {
+				t.Fatalf("public key leaked into identity files: %q", key)
+			}
+		}
 	}
 }
 

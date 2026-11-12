@@ -326,6 +326,11 @@ label.field .password-field input:focus { border-color: transparent; box-shadow:
 .file-row:last-child { border-bottom: none; }
 .ssh-config-entry { flex: 1; min-width: 0; }
 .ssh-config-entry .file-meta { overflow: hidden; text-overflow: ellipsis; }
+.ssh-key-list { display: flex; flex-direction: column; gap: 2px; margin-top: 3px; }
+.ssh-key-list .file-meta { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
+.key-choices { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.key-choices .muted { width: 100%; font-size: 9.5px; }
+.key-choices .btn.small { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .fleet-update-list { max-height: 320px; overflow: auto; border: 1px solid var(--border-soft); border-radius: 8px; background: #08101d; }
 .fleet-update-list table { font-size: 10.5px; }
 .fleet-update-list td { padding: 6px 8px; }
