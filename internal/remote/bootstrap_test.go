@@ -294,3 +294,22 @@ func TestInstallHelperExplainsUnrunnableBinary(t *testing.T) {
 		t.Fatalf("expected runnable-binary error, got %v", err)
 	}
 }
+
+func TestInstallHelperClassifiesFedoraSudoMessages(t *testing.T) {
+	base := bootstrapHandler(t, controllerUname())
+	fake := &fakeRunner{handle: func(command, input string) (string, int, error) {
+		if command == "sudo -n -p '' true" {
+			return "sudo: Authentication failed, try again. sudo: Authentication required but not attempted", 1, nil
+		}
+		if command == "sudo -S -p '' true" {
+			return "sudo: Authentication failed, try again. sudo: Authentication required but not attempted", 1, nil
+		}
+		return base(command, input)
+	}}
+	if _, err := installHelper(context.Background(), Target{Username: "roger"}, nil, []byte("binary"), "", fake.run); !errors.Is(err, ErrSudoPasswordRequired) {
+		t.Fatalf("expected ErrSudoPasswordRequired, got %v", err)
+	}
+	if _, err := installHelper(context.Background(), Target{Username: "roger"}, nil, []byte("binary"), "wrong", fake.run); !errors.Is(err, ErrSudoPasswordInvalid) {
+		t.Fatalf("expected ErrSudoPasswordInvalid, got %v", err)
+	}
+}

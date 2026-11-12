@@ -857,6 +857,7 @@ func TestSudoPasswordInvalidDetection(t *testing.T) {
 		"Sorry, try again.",
 		"sudo: incorrect password",
 		"Authentication failure",
+		"sudo: Authentication failed, try again. sudo: Authentication required but not attempted",
 	} {
 		if !looksLikeSudoPasswordInvalid(output) {
 			t.Fatalf("expected invalid sudo password for %q", output)
@@ -871,6 +872,7 @@ func TestSudoAuthFailureDetection(t *testing.T) {
 	for _, output := range []string{
 		"sudo: interactive authentication is required",
 		"sudo: a password is required",
+		"sudo: Authentication failed, try again. sudo: Authentication required but not attempted",
 		"sudo: no tty present and no askpass program specified",
 		"sudo: a terminal is required to read the password",
 	} {

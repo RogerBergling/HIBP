@@ -243,6 +243,8 @@ func looksLikeSudoAuthFailure(output string) bool {
 	for _, needle := range []string{
 		"interactive authentication is required",
 		"a password is required",
+		"authentication required but not attempted",
+		"authentication failed, try again",
 		"no tty present",
 		"no askpass program specified",
 		"a terminal is required",
@@ -257,7 +259,13 @@ func looksLikeSudoAuthFailure(output string) bool {
 
 func looksLikeSudoPasswordInvalid(output string) bool {
 	lower := strings.ToLower(output)
-	for _, needle := range []string{"sorry, try again", "incorrect password", "incorrect password attempt", "authentication failure"} {
+	for _, needle := range []string{
+		"sorry, try again",
+		"incorrect password",
+		"incorrect password attempt",
+		"authentication failure",
+		"authentication failed",
+	} {
 		if strings.Contains(lower, needle) {
 			return true
 		}
