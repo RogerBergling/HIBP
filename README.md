@@ -1186,7 +1186,28 @@ illustrative.
 
 | Host system information | Docker containers and project actions |
 | --- | --- |
-| ![Host system information](docs/screenshots/host-details-system.png) | ![Docker containers and project actions](docs/screenshots/host-details-containers.png) |
+| ![Host system information](docs/screenshots/host-details-system.png) | ![Docker containers with project update status, Check all projects, and Update selected](docs/screenshots/host-details-containers.png) |
+
+### Docker update workflow screenshots
+
+The **+** next to `web01` in the Hosts table appears when cached Docker
+inventory is present and opens the host directly on the Containers tab:
+
+![Hosts table with a Docker + shortcut next to web01](docs/screenshots/hosts-docker-plus.png)
+
+The Containers tab shows each project's persisted update status, checkboxes for
+selection, and the **Check all projects**, **Update selected**, and **Update all
+Compose projects** actions.
+
+**Check all projects** pulls and compares every Compose project without
+restarting containers:
+
+![Check all Compose projects results with update-available and up-to-date status](docs/screenshots/docker-check-all.png)
+
+**Update selected** re-checks the chosen projects and recreates only the ones
+whose image changed:
+
+![Update selected Compose projects results with updated and no-change actions](docs/screenshots/docker-update-selected.png)
 
 ### Docker check and apply
 
