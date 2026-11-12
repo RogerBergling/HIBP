@@ -3,7 +3,7 @@
 #
 # Usage:
 #   sh install.sh
-#   sh install.sh --version v0.6.8
+#   sh install.sh --version v0.6.9
 #   sh install.sh --prefix "$HOME/.local/bin"
 #
 # Environment:
@@ -25,7 +25,7 @@ usage() {
 Install HIBP from a prebuilt GitHub release.
 
 Options:
-  --version TAG   Install a specific release tag (for example v0.6.8)
+  --version TAG   Install a specific release tag (for example v0.6.9)
   --prefix DIR    Install into DIR (default: $HOME/.local/bin)
   -h, --help      Show this help
 
