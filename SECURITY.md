@@ -136,12 +136,13 @@ cron-based patch schedules are implemented.
   the restricted NOPASSWD helper; password-auth hosts are collected manually.
 - Docker updates are project-level Compose operations. Project names and paths
   come from Docker metadata, not arbitrary controller input. The helper accepts
-  exactly one validated project argument; the `docker-check *` and
-  `docker-apply *` sudoers wildcards are constrained by that validation.
+  exactly one validated project argument for check/apply, and a separate
+  argument-free `docker-update-all` action for the bulk path. The `docker-check *`
+  and `docker-apply *` sudoers wildcards are constrained by that validation.
 - Compose files and their parent directory chain must be root-owned and not
   group/world-writable. `.env` files and build contexts must be protected by the
-  operator. No automatic updates, no `down -v`, and no volume pruning. Check
-  and apply are serialised with a host-wide lock and audited.
+  operator. No automatic updates, no `down -v`, and no volume pruning. Check,
+  apply, and bulk update are serialised with a host-wide lock and audited.
 - System information remains read-only. No service start/stop/restart is exposed.
   Fleet and per-host collection settings are stored in SQLCipher.
 - Monitoring definitions are administrator-only application data. Checks use

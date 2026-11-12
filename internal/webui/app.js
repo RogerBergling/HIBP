@@ -2592,6 +2592,80 @@ async function applyDockerProject(host, project, reload) {
   }
 }
 
+async function updateAllDockerProjects(host, reload) {
+  const answer = prompt('Type UPDATE to pull images and recreate only changed Compose projects on "' + host.name + '":');
+  if (answer !== 'UPDATE') return;
+  toast('Updating all Docker Compose projects on ' + host.name + '…');
+  try {
+    const password = await passwordFor(host);
+    const response = await requestWithSudo(
+      host,
+      '/api/v1/hosts/' + encodeURIComponent(host.id) + '/docker/update-all',
+      (sudoPassword) => ({ confirm: 'update', password, sudo_password: sudoPassword }),
+      { method: 'POST' },
+    );
+    showDockerUpdateAllResult(response.result || {});
+    await reload();
+  } catch (error) {
+    if (error.message !== 'cancelled') toast(error.message, 'error');
+  }
+}
+
+function showDockerUpdateAllResult(result) {
+  const body = el('div', 'modal-body');
+  body.append(el('p', 'muted', 'Only Compose projects whose pulled image changed are recreated. Containers in unchanged projects are left running.'));
+  const summary = el('div', 'status-list');
+  const row = (label, value) => {
+    const div = el('div');
+    div.append(el('span', '', label), el('b', '', value));
+    return div;
+  };
+  summary.append(
+    row('Updated projects', String(result.updated || 0)),
+    row('Unchanged projects', String(result.skipped || 0)),
+    row('Failed projects', String(result.failed || 0)),
+    row('Duration', (Number(result.duration_seconds) || 0).toFixed(1) + 's'),
+  );
+  body.append(summary);
+  const wrap = el('div', 'scroll-list');
+  const table = el('table');
+  const head = el('tr');
+  for (const label of ['Project', 'Action', 'Changed services', 'Detail']) head.append(el('th', '', label));
+  table.append(head);
+  for (const project of result.projects || []) {
+    const row = el('tr');
+    const statusClass = project.action === 'updated' ? 'reachable'
+      : project.action === 'failed' ? 'unreachable' : 'unknown';
+    const action = el('span', 'pill ' + statusClass, project.action || 'unknown');
+    const actionCell = el('td');
+    actionCell.append(action);
+    const changed = (project.check && project.check.services || [])
+      .filter((service) => ['new-image', 'image-updated', 'container-stale'].includes(service.status))
+      .map((service) => service.service);
+    const detail = project.error || (project.apply && project.apply.output) || '—';
+    row.append(
+      el('td', '', project.name || '—'),
+      actionCell,
+      el('td', '', changed.length ? changed.join(', ') : '—'),
+      el('td', 'alert-detail', String(detail).replace(/\s+/g, ' ').slice(0, 180)),
+    );
+    table.append(row);
+  }
+  if (!(result.projects || []).length) {
+    wrap.append(el('div', '', 'No Compose projects were found.'));
+  } else {
+    wrap.append(table);
+  }
+  body.append(wrap);
+  const actions = el('div', 'modal-actions');
+  const close = el('button', 'btn', 'Close');
+  close.type = 'button';
+  actions.append(close);
+  body.append(actions);
+  const closeFn = openModal('Docker update all — ' + ((result.projects || []).length) + ' projects', body, null, 'wide');
+  close.addEventListener('click', closeFn);
+}
+
 function renderContainersPanel(panel, data, host, reload) {
   panel.replaceChildren();
   const info = (data.system_info && data.system_info.docker) || {};
@@ -2634,7 +2708,15 @@ function renderContainersPanel(panel, data, host, reload) {
       projectWrap.append(card);
     }
   }
-  panel.append(detailSection('Compose projects', projectWrap));
+  const projectContent = el('div');
+  const bulkActions = el('div', 'modal-actions');
+  const updateAll = el('button', 'btn danger', 'Update all Compose projects');
+  updateAll.type = 'button';
+  updateAll.title = 'Pull images and recreate only projects whose image changed';
+  updateAll.addEventListener('click', () => updateAllDockerProjects(host, reload));
+  bulkActions.append(updateAll);
+  projectContent.append(bulkActions, projectWrap);
+  panel.append(detailSection('Compose projects', projectContent));
 
   const containerWrap = el('div', 'scroll-list');
   const table = el('table');

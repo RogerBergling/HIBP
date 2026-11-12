@@ -117,7 +117,7 @@ func usage() {
 
 Usage:
   hibp server [flags]     Run the local browser UI and API
-  hibp helper <action>    Run a fixed target action (facts|check|apply|reboot|reboot-check|system-info|metrics|docker-list|docker-check|docker-apply)
+  hibp helper <action>    Run a fixed target action (facts|check|apply|reboot|reboot-check|system-info|metrics|docker-list|docker-check|docker-apply|docker-update-all)
   hibp user reset         Reset the local account password, TOTP, and passkeys
   hibp version            Print the version and build identity
 
@@ -292,7 +292,11 @@ func runHelper(args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: hibp helper <action> [args]")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+	timeout := 45 * time.Minute
+	if args[0] == "docker-update-all" {
+		timeout = 2 * time.Hour
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	return helper.Run(ctx, args[0], os.Stdout, args[1:]...)
 }

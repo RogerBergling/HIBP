@@ -287,7 +287,7 @@ func looksLikeSudoAuthFailure(output string) bool {
 
 func (s *Server) runHelper(ctx context.Context, host store.Host, action, sshPassword, sudoPassword string, timeout time.Duration, args ...string) (string, int, error) {
 	switch action {
-	case "facts", "check", "apply", "reboot", "system-info", "metrics", "docker-list", "docker-check", "docker-apply":
+	case "facts", "check", "apply", "reboot", "system-info", "metrics", "docker-list", "docker-check", "docker-apply", "docker-update-all":
 	default:
 		return "", 0, errors.New("invalid helper action")
 	}

@@ -52,6 +52,26 @@ type DockerApplyResult struct {
 	Error           string  `json:"error,omitempty"`
 }
 
+// DockerUpdateAllResult reports one pass over every Compose project.
+type DockerUpdateAllResult struct {
+	Action          string                      `json:"action"`
+	OK              bool                        `json:"ok"`
+	Updated         int                         `json:"updated"`
+	Skipped         int                         `json:"skipped"`
+	Failed          int                         `json:"failed"`
+	DurationSeconds float64                     `json:"duration_seconds"`
+	Projects        []DockerProjectUpdateResult `json:"projects"`
+}
+
+type DockerProjectUpdateResult struct {
+	Name   string             `json:"name"`
+	Action string             `json:"action"`
+	OK     bool               `json:"ok"`
+	Check  *DockerCheckResult `json:"check,omitempty"`
+	Apply  *DockerApplyResult `json:"apply,omitempty"`
+	Error  string             `json:"error,omitempty"`
+}
+
 type composeProjectFile struct {
 	Name        string `json:"Name"`
 	Status      string `json:"Status"`
@@ -186,6 +206,97 @@ func dockerApply(ctx context.Context, args []string) (DockerApplyResult, error) 
 	return result, nil
 }
 
+func dockerCheckNeedsApply(result DockerCheckResult) bool {
+	for _, service := range result.Services {
+		switch service.Status {
+		case "new-image", "image-updated", "container-stale":
+			return true
+		}
+	}
+	return false
+}
+
+// dockerUpdateAll pulls every Compose project and recreates only projects with
+// a new or changed image. A failure in one project does not stop the rest.
+func dockerUpdateAll(ctx context.Context) (DockerUpdateAllResult, error) {
+	started := time.Now()
+	result := DockerUpdateAllResult{Action: "docker-update-all", Projects: []DockerProjectUpdateResult{}}
+	projects, err := listComposeProjects(ctx)
+	if err != nil {
+		return DockerUpdateAllResult{}, err
+	}
+	for _, project := range projects {
+		entry := DockerProjectUpdateResult{Name: project.Name, OK: false}
+		check, checkErr := dockerCheck(ctx, []string{project.Name})
+		if checkErr != nil {
+			entry.Action = "failed"
+			entry.Error = checkErr.Error()
+			result.Failed++
+			result.Projects = append(result.Projects, entry)
+			continue
+		}
+		entry.Check = &check
+		if !check.OK {
+			entry.Action = "failed"
+			entry.Error = check.Error
+			if entry.Error == "" {
+				entry.Error = "docker compose pull failed"
+			}
+			result.Failed++
+			result.Projects = append(result.Projects, entry)
+			continue
+		}
+		if !dockerCheckNeedsApply(check) {
+			entry.Action = "no-change"
+			entry.OK = true
+			result.Skipped++
+			result.Projects = append(result.Projects, entry)
+			continue
+		}
+		apply, applyErr := dockerApply(ctx, []string{project.Name})
+		if applyErr != nil {
+			entry.Action = "failed"
+			entry.Error = applyErr.Error()
+			result.Failed++
+			result.Projects = append(result.Projects, entry)
+			continue
+		}
+		entry.Apply = &apply
+		entry.OK = apply.OK
+		if apply.OK {
+			entry.Action = "updated"
+			result.Updated++
+		} else {
+			entry.Action = "failed"
+			if apply.Error != "" {
+				entry.Error = apply.Error
+			} else {
+				entry.Error = "docker compose up failed"
+			}
+			result.Failed++
+		}
+		result.Projects = append(result.Projects, entry)
+	}
+	result.OK = result.Failed == 0
+	result.DurationSeconds = time.Since(started).Seconds()
+	return result, nil
+}
+
+func listComposeProjects(ctx context.Context) ([]composeProjectFile, error) {
+	output, code, err := runBinary(ctx, "docker", "compose", "ls", "--all", "--format", "json")
+	if err != nil {
+		return nil, fmt.Errorf("list Compose projects: %w", err)
+	}
+	if code != 0 {
+		return nil, fmt.Errorf("list Compose projects: %s", strings.TrimSpace(string(output)))
+	}
+	var projects []composeProjectFile
+	if err := json.Unmarshal(output, &projects); err != nil {
+		return nil, fmt.Errorf("parse Compose projects: %w", err)
+	}
+	return projects, nil
+}
+
 func dockerProject(ctx context.Context, args []string) (string, []string, error) {
 	if len(args) != 1 {
 		return "", nil, errors.New("docker project name is required")
@@ -194,16 +305,9 @@ func dockerProject(ctx context.Context, args []string) (string, []string, error)
 	if !dockerProjectPattern.MatchString(project) {
 		return "", nil, errors.New("invalid Docker project name")
 	}
-	output, code, err := runBinary(ctx, "docker", "compose", "ls", "--all", "--format", "json")
+	projects, err := listComposeProjects(ctx)
 	if err != nil {
-		return "", nil, fmt.Errorf("list Compose projects: %w", err)
-	}
-	if code != 0 {
-		return "", nil, fmt.Errorf("list Compose projects: %s", strings.TrimSpace(string(output)))
-	}
-	var projects []composeProjectFile
-	if err := json.Unmarshal(output, &projects); err != nil {
-		return "", nil, fmt.Errorf("parse Compose projects: %w", err)
+		return "", nil, err
 	}
 	for _, candidate := range projects {
 		if candidate.Name != project {

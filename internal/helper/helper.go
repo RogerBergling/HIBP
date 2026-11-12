@@ -138,6 +138,15 @@ func Run(ctx context.Context, action string, out io.Writer, args ...string) erro
 			return err
 		}
 		return json.NewEncoder(out).Encode(result)
+	case "docker-update-all":
+		if len(args) != 0 {
+			return errors.New("docker-update-all does not accept arguments")
+		}
+		result, err := dockerUpdateAll(ctx)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(out).Encode(result)
 	case "reboot-check":
 		required, err := rebootRequired(ctx)
 		result := Result{Action: "reboot-check", OK: err == nil, ExitCode: 0}

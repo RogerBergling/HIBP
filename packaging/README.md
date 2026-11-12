@@ -144,6 +144,7 @@ sudo -n /usr/local/libexec/hibp/hibp-helper metrics
 sudo -n /usr/local/libexec/hibp/hibp-helper docker-list
 sudo -n /usr/local/libexec/hibp/hibp-helper docker-check <project>
 sudo -n /usr/local/libexec/hibp/hibp-helper docker-apply <project>
+sudo -n /usr/local/libexec/hibp/hibp-helper docker-update-all
 ```
 
 No package names, host names, or shell fragments are accepted from the

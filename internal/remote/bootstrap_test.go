@@ -31,7 +31,7 @@ func TestSudoersContentIsRestricted(t *testing.T) {
 	if strings.Contains(content, "NOPASSWD: ALL") {
 		t.Fatal("sudoers content must not grant unrestricted passwordless sudo")
 	}
-	for _, action := range []string{"facts", "check", "apply", "reboot", "reboot-check", "system-info", "metrics", "docker-list"} {
+	for _, action := range []string{"facts", "check", "apply", "reboot", "reboot-check", "system-info", "metrics", "docker-list", "docker-update-all"} {
 		want := "roger ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper " + action
 		if !strings.Contains(content, want) {
 			t.Fatalf("missing restricted rule for %s in:\n%s", action, content)
@@ -44,8 +44,8 @@ func TestSudoersContentIsRestricted(t *testing.T) {
 		}
 	}
 	lines := strings.Split(strings.TrimSpace(content), "\n")
-	if len(lines) != 11 {
-		t.Fatalf("expected one comment and ten rules, got %d lines:\n%s", len(lines), content)
+	if len(lines) != 12 {
+		t.Fatalf("expected one comment and eleven rules, got %d lines:\n%s", len(lines), content)
 	}
 }
 

@@ -320,3 +320,88 @@ func TestFactsIncludeHelperBuildIdentity(t *testing.T) {
 		t.Fatalf("helper build = %+v, want %+v", facts.Agent, buildinfo.Current)
 	}
 }
+
+func TestDockerUpdateAllUpdatesOnlyChangedProjects(t *testing.T) {
+	restoreLook := SetLookPathForTest(func(name string) (string, error) {
+		if name == "docker" {
+			return "/usr/bin/docker", nil
+		}
+		return "", errors.New("not found")
+	})
+	defer restoreLook()
+	oldTrust := composeTrustCheck
+	composeTrustCheck = func([]string) error { return nil }
+	defer func() { composeTrustCheck = oldTrust }()
+	oldLock := dockerLockPath
+	dockerLockPath = filepath.Join(t.TempDir(), "docker.lock")
+	defer func() { dockerLockPath = oldLock }()
+
+	imageCalls := map[string]int{}
+	applyCalls := 0
+	restoreRun := SetRunnerForTest(func(_ context.Context, name string, args ...string) ([]byte, int, error) {
+		if name != "/usr/bin/docker" {
+			t.Fatalf("unexpected binary: %s", name)
+		}
+		joined := strings.Join(args, " ")
+		switch {
+		case joined == "compose ls --all --format json":
+			return []byte(`[{"Name":"web","Status":"running(1)","ConfigFiles":"/opt/web/compose.yaml"},{"Name":"db","Status":"running(1)","ConfigFiles":"/opt/db/compose.yaml"}]`), 0, nil
+		case strings.Contains(joined, "-p web") && strings.Contains(joined, "config --format json"):
+			return []byte(`{"services":{"frontend":{"image":"nginx:1.27"}}}`), 0, nil
+		case strings.Contains(joined, "-p db") && strings.Contains(joined, "config --format json"):
+			return []byte(`{"services":{"db":{"image":"postgres:16"}}}`), 0, nil
+		case strings.Contains(joined, "image inspect"):
+			image := "unknown"
+			for _, candidate := range []string{"nginx:1.27", "postgres:16"} {
+				if strings.Contains(joined, candidate) {
+					image = candidate
+				}
+			}
+			imageCalls[image]++
+			if image == "nginx:1.27" && imageCalls[image] == 1 {
+				return []byte("sha256:web-old\n"), 0, nil
+			}
+			if image == "nginx:1.27" {
+				return []byte("sha256:web-new\n"), 0, nil
+			}
+			return []byte("sha256:db-same\n"), 0, nil
+		case strings.Contains(joined, "pull --quiet --ignore-buildable"):
+			return []byte("pulled\n"), 0, nil
+		case strings.Contains(joined, "ps --filter"):
+			if strings.Contains(joined, "project=web") {
+				return []byte("web-container\n"), 0, nil
+			}
+			return []byte("db-container\n"), 0, nil
+		case strings.Contains(joined, "inspect --format"):
+			if strings.Contains(joined, "web-container") {
+				return []byte("sha256:web-new frontend\n"), 0, nil
+			}
+			return []byte("sha256:db-same db\n"), 0, nil
+		case strings.Contains(joined, "up -d --pull never"):
+			applyCalls++
+			return []byte("up ok\n"), 0, nil
+		default:
+			t.Fatalf("unexpected docker command: %s", joined)
+		}
+		return nil, 0, nil
+	})
+	defer restoreRun()
+
+	result, err := dockerUpdateAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || result.Updated != 1 || result.Skipped != 1 || result.Failed != 0 {
+		t.Fatalf("unexpected update-all result: %+v", result)
+	}
+	if applyCalls != 1 {
+		t.Fatalf("expected one compose up, got %d", applyCalls)
+	}
+	actions := map[string]string{}
+	for _, project := range result.Projects {
+		actions[project.Name] = project.Action
+	}
+	if actions["web"] != "updated" || actions["db"] != "no-change" {
+		t.Fatalf("unexpected project actions: %+v", actions)
+	}
+}

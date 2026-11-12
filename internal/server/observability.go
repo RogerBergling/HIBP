@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"regexp"
@@ -272,6 +273,69 @@ func (s *Server) handleDockerApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.store.AddAudit(s.auditActor(r), "docker-apply", "host", host.ID, "project="+request.Project)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": result.OK, "result": result})
+}
+
+type dockerUpdateAllRequest struct {
+	Confirm      string `json:"confirm"`
+	Password     string `json:"password"`
+	SudoPassword string `json:"sudo_password"`
+}
+
+func (s *Server) handleDockerUpdateAll(w http.ResponseWriter, r *http.Request) {
+	host, err := s.store.GetHost(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "host not found")
+		return
+	}
+	var request dockerUpdateAllRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if request.Confirm != "update" {
+		writeError(w, http.StatusBadRequest, "confirm must be \"update\" for a Docker bulk update")
+		return
+	}
+	if host.AuthType == "password" && request.Password == "" {
+		writeError(w, http.StatusBadRequest, "password is required for password authentication")
+		return
+	}
+	if !s.tryLockHost(host.ID) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "another operation is already running for this host", "code": "host_busy"})
+		return
+	}
+	defer s.unlockHost(host.ID)
+	output, code, err := s.runHelper(r.Context(), host, "docker-update-all", request.Password, request.SudoPassword, 2*time.Hour)
+	if errors.Is(err, errSudoPasswordInvalid) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "sudo_password_invalid"})
+		return
+	}
+	if errors.Is(err, errSudoPasswordRequired) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "sudo_password_required"})
+		return
+	}
+	if err != nil {
+		s.auditHostActionFailure(r, "docker-update-all", host.ID, err)
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if code != 0 {
+		s.auditHostActionFailure(r, "docker-update-all", host.ID, errors.New(strings.TrimSpace(output)))
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "docker-update-all helper failed", "exit_code": code, "output": output})
+		return
+	}
+	var result helper.DockerUpdateAllResult
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "invalid docker-update-all result", "output": output})
+		return
+	}
+	for _, project := range result.Projects {
+		_ = s.store.AddAudit(s.auditActor(r), "docker-update-all", "host", host.ID,
+			fmt.Sprintf("project=%s action=%s ok=%t", project.Name, project.Action, project.OK))
+	}
+	_ = s.store.AddAudit(s.auditActor(r), "docker-update-all", "host", host.ID,
+		fmt.Sprintf("updated=%d skipped=%d failed=%d", result.Updated, result.Skipped, result.Failed))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": result.OK, "result": result})
 }
 

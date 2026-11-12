@@ -18,3 +18,4 @@ hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper metrics
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-list
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-check *
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-apply *
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-update-all
