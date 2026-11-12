@@ -47,27 +47,38 @@ func DefaultOptions() Options {
 	}
 }
 
+// ProxyJump is an optional single-hop SSH jump host for a managed host.
+type ProxyJump struct {
+	Address     string `json:"address"`
+	Port        int    `json:"port"`
+	Username    string `json:"username"`
+	KeyPath     string `json:"key_path,omitempty"`
+	KeyType     string `json:"key_type,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+}
+
 // Host is a managed Linux host.
 type Host struct {
-	ID                   string   `json:"id"`
-	Name                 string   `json:"name"`
-	Address              string   `json:"address"`
-	Port                 int      `json:"port"`
-	Username             string   `json:"username"`
-	AuthType             string   `json:"auth_type"`
-	KeyPath              string   `json:"key_path"`
-	OSFamily             string   `json:"os_family"`
-	OSVersion            string   `json:"os_version"`
-	Status               string   `json:"status"`
-	Tags                 string   `json:"tags"`
-	GroupName            string   `json:"group_name"`
-	CMDBCIID             string   `json:"cmdb_ci_id"`
-	CreatedAt            string   `json:"created_at"`
-	UpdatedAt            string   `json:"updated_at"`
-	DockerProjectCount   int      `json:"docker_project_count"`
-	DockerContainerCount int      `json:"docker_container_count"`
-	Facts                *Facts   `json:"facts,omitempty"`
-	TrustedKey           *HostKey `json:"trusted_key,omitempty"`
+	ID                   string     `json:"id"`
+	Name                 string     `json:"name"`
+	Address              string     `json:"address"`
+	Port                 int        `json:"port"`
+	Username             string     `json:"username"`
+	AuthType             string     `json:"auth_type"`
+	KeyPath              string     `json:"key_path"`
+	ProxyJump            *ProxyJump `json:"proxy_jump,omitempty"`
+	OSFamily             string     `json:"os_family"`
+	OSVersion            string     `json:"os_version"`
+	Status               string     `json:"status"`
+	Tags                 string     `json:"tags"`
+	GroupName            string     `json:"group_name"`
+	CMDBCIID             string     `json:"cmdb_ci_id"`
+	CreatedAt            string     `json:"created_at"`
+	UpdatedAt            string     `json:"updated_at"`
+	DockerProjectCount   int        `json:"docker_project_count"`
+	DockerContainerCount int        `json:"docker_container_count"`
+	Facts                *Facts     `json:"facts,omitempty"`
+	TrustedKey           *HostKey   `json:"trusted_key,omitempty"`
 }
 
 // Facts is the latest collected host state.
@@ -526,6 +537,68 @@ func ValidateHost(host Host) error {
 	return validateHost(host)
 }
 
+func proxyJumpAddress(host Host) string {
+	if host.ProxyJump == nil {
+		return ""
+	}
+	return host.ProxyJump.Address
+}
+
+func proxyJumpPort(host Host) int {
+	if host.ProxyJump == nil || host.ProxyJump.Port == 0 {
+		return 22
+	}
+	return host.ProxyJump.Port
+}
+
+func proxyJumpUsername(host Host) string {
+	if host.ProxyJump == nil {
+		return ""
+	}
+	return host.ProxyJump.Username
+}
+
+func proxyJumpKeyPath(host Host) string {
+	if host.ProxyJump == nil {
+		return ""
+	}
+	return host.ProxyJump.KeyPath
+}
+
+func proxyJumpKeyType(host Host) string {
+	if host.ProxyJump == nil {
+		return ""
+	}
+	return host.ProxyJump.KeyType
+}
+
+func proxyJumpFingerprint(host Host) string {
+	if host.ProxyJump == nil {
+		return ""
+	}
+	return host.ProxyJump.Fingerprint
+}
+
+func normalizeProxyJump(host *Host) {
+	if host.ProxyJump == nil {
+		return
+	}
+	jump := host.ProxyJump
+	jump.Address = strings.TrimSpace(jump.Address)
+	jump.Username = strings.TrimSpace(jump.Username)
+	jump.KeyPath = strings.TrimSpace(jump.KeyPath)
+	if jump.Address == "" {
+		host.ProxyJump = nil
+		return
+	}
+	if jump.Port == 0 {
+		jump.Port = 22
+	}
+	if jump.Username == "" {
+		jump.Username = strings.TrimSpace(host.Username)
+	}
+}
+
 func validateHost(host Host) error {
 	if strings.TrimSpace(host.Name) == "" {
 		return errors.New("host name is required")
@@ -554,6 +627,18 @@ func validateHost(host Host) error {
 	if authType == "key" && strings.TrimSpace(host.KeyPath) == "" {
 		return errors.New("key_path is required for key authentication")
 	}
+	if host.ProxyJump != nil {
+		jump := host.ProxyJump
+		if strings.TrimSpace(jump.Address) == "" {
+			return errors.New("proxy_jump.address is required when a jump host is configured")
+		}
+		if jump.Port < 1 || jump.Port > 65535 {
+			return errors.New("proxy_jump.port must be between 1 and 65535")
+		}
+		if strings.TrimSpace(jump.Username) == "" {
+			return errors.New("proxy_jump.username is required when a jump host is configured")
+		}
+	}
 	return nil
 }
 
@@ -568,6 +653,7 @@ func (s *Store) CreateHostAs(actor string, host Host) (Host, error) {
 	if actor == "" {
 		actor = "local"
 	}
+	normalizeProxyJump(&host)
 	if err := validateHost(host); err != nil {
 		return Host{}, err
 	}
@@ -590,9 +676,12 @@ func (s *Store) CreateHostAs(actor string, host Host) (Host, error) {
 		return Host{}, err
 	}
 	_, err = tx.Exec(`INSERT INTO hosts
-		(id,name,address,port,username,auth_type,key_path,os_family,os_version,status,tags,group_name,cmdb_ci_id,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		(id,name,address,port,username,auth_type,key_path,
+		proxy_jump_address,proxy_jump_port,proxy_jump_username,proxy_jump_key_path,proxy_jump_key_type,proxy_jump_key_fingerprint,
+		os_family,os_version,status,tags,group_name,cmdb_ci_id,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		host.ID, host.Name, host.Address, host.Port, host.Username, host.AuthType, host.KeyPath,
+		proxyJumpAddress(host), proxyJumpPort(host), proxyJumpUsername(host), proxyJumpKeyPath(host), proxyJumpKeyType(host), proxyJumpFingerprint(host),
 		host.OSFamily, host.OSVersion, host.Status, host.Tags, host.GroupName, host.CMDBCIID,
 		host.CreatedAt, host.UpdatedAt)
 	if err != nil {
@@ -620,6 +709,7 @@ func (s *Store) UpdateHostAs(actor string, host Host) (Host, error) {
 	if actor == "" {
 		actor = "local"
 	}
+	normalizeProxyJump(&host)
 	if err := validateHost(host); err != nil {
 		return Host{}, err
 	}
@@ -635,8 +725,10 @@ func (s *Store) UpdateHostAs(actor string, host Host) (Host, error) {
 		return Host{}, err
 	}
 	result, err := tx.Exec(`UPDATE hosts SET name=?,address=?,port=?,username=?,auth_type=?,key_path=?,
+		proxy_jump_address=?,proxy_jump_port=?,proxy_jump_username=?,proxy_jump_key_path=?,proxy_jump_key_type=?,proxy_jump_key_fingerprint=?,
 		os_family=?,os_version=?,status=?,tags=?,group_name=?,cmdb_ci_id=?,updated_at=? WHERE id=?`,
 		host.Name, host.Address, host.Port, host.Username, host.AuthType, host.KeyPath,
+		proxyJumpAddress(host), proxyJumpPort(host), proxyJumpUsername(host), proxyJumpKeyPath(host), proxyJumpKeyType(host), proxyJumpFingerprint(host),
 		host.OSFamily, host.OSVersion, host.Status, host.Tags, host.GroupName, host.CMDBCIID,
 		host.UpdatedAt, host.ID)
 	if err != nil {
@@ -656,6 +748,37 @@ func (s *Store) UpdateHostAs(actor string, host Host) (Host, error) {
 		return Host{}, err
 	}
 	return host, nil
+}
+
+// SetProxyJumpKeyAs records the trusted key for a host's jump host.
+func (s *Store) SetProxyJumpKeyAs(actor, hostID, keyType, fingerprint string) error {
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		actor = "local"
+	}
+	if strings.TrimSpace(keyType) == "" || strings.TrimSpace(fingerprint) == "" {
+		return errors.New("jump host key type and fingerprint are required")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	result, err := tx.Exec(`UPDATE hosts SET proxy_jump_key_type=?,proxy_jump_key_fingerprint=?,updated_at=? WHERE id=?`,
+		keyType, fingerprint, crypto.Now(), hostID)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		_ = tx.Rollback()
+		return sql.ErrNoRows
+	}
+	if err := s.addAuditTx(tx, actor, "trust-jump-key", "host", hostID, keyType+" "+fingerprint); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
 }
 
 // DeleteHost removes a host and its related facts/keys/runs.
@@ -693,6 +816,7 @@ func (s *Store) DeleteHostAs(actor, id string) error {
 // ListHosts returns hosts with their latest facts and trusted key.
 func (s *Store) ListHosts() ([]Host, error) {
 	rows, err := s.db.Query(`SELECT h.id,h.name,h.address,h.port,h.username,h.auth_type,h.key_path,
+		h.proxy_jump_address,h.proxy_jump_port,h.proxy_jump_username,h.proxy_jump_key_path,h.proxy_jump_key_type,h.proxy_jump_key_fingerprint,
 		h.os_family,h.os_version,h.status,h.tags,h.group_name,h.cmdb_ci_id,h.created_at,h.updated_at,
 		f.collected_at,f.uptime_seconds,f.boot_time,f.kernel,f.os_pretty_name,f.package_manager,
 		f.reboot_required,f.disk_free_bytes,f.time_sync_ok,f.pending_updates,
@@ -719,6 +843,7 @@ func (s *Store) ListHosts() ([]Host, error) {
 // FindHostByAddress returns a host by address and port, if present.
 func (s *Store) FindHostByAddress(address string, port int) (Host, error) {
 	row := s.db.QueryRow(`SELECT h.id,h.name,h.address,h.port,h.username,h.auth_type,h.key_path,
+		h.proxy_jump_address,h.proxy_jump_port,h.proxy_jump_username,h.proxy_jump_key_path,h.proxy_jump_key_type,h.proxy_jump_key_fingerprint,
 		h.os_family,h.os_version,h.status,h.tags,h.group_name,h.cmdb_ci_id,h.created_at,h.updated_at,
 		f.collected_at,f.uptime_seconds,f.boot_time,f.kernel,f.os_pretty_name,f.package_manager,
 		f.reboot_required,f.disk_free_bytes,f.time_sync_ok,f.pending_updates,
@@ -733,6 +858,7 @@ func (s *Store) FindHostByAddress(address string, port int) (Host, error) {
 // GetHost returns one host by ID.
 func (s *Store) GetHost(id string) (Host, error) {
 	row := s.db.QueryRow(`SELECT h.id,h.name,h.address,h.port,h.username,h.auth_type,h.key_path,
+		h.proxy_jump_address,h.proxy_jump_port,h.proxy_jump_username,h.proxy_jump_key_path,h.proxy_jump_key_type,h.proxy_jump_key_fingerprint,
 		h.os_family,h.os_version,h.status,h.tags,h.group_name,h.cmdb_ci_id,h.created_at,h.updated_at,
 		f.collected_at,f.uptime_seconds,f.boot_time,f.kernel,f.os_pretty_name,f.package_manager,
 		f.reboot_required,f.disk_free_bytes,f.time_sync_ok,f.pending_updates,
@@ -755,13 +881,22 @@ func scanHost(row scanner) (Host, error) {
 	var agentBuildDate, agentBuildTarget, agentBuildType sql.NullString
 	var uptime, disk, pending sql.NullInt64
 	var reboot, timeSync sql.NullBool
+	var jumpAddress, jumpUsername, jumpKeyPath, jumpKeyType, jumpFingerprint string
+	var jumpPort int
 	err := row.Scan(&host.ID, &host.Name, &host.Address, &host.Port, &host.Username, &host.AuthType, &host.KeyPath,
+		&jumpAddress, &jumpPort, &jumpUsername, &jumpKeyPath, &jumpKeyType, &jumpFingerprint,
 		&host.OSFamily, &host.OSVersion, &host.Status, &host.Tags, &host.GroupName, &host.CMDBCIID, &host.CreatedAt, &host.UpdatedAt,
 		&collectedAt, &uptime, &bootTime, &kernel, &pretty, &pkg, &reboot, &disk, &timeSync, &pending,
 		&agentVersion, &agentBuildNumber, &agentBuildCommit, &agentBuildDate, &agentBuildTarget, &agentBuildType,
 		&host.DockerProjectCount, &host.DockerContainerCount)
 	if err != nil {
 		return Host{}, err
+	}
+	if jumpAddress != "" {
+		host.ProxyJump = &ProxyJump{
+			Address: jumpAddress, Port: jumpPort, Username: jumpUsername,
+			KeyPath: jumpKeyPath, KeyType: jumpKeyType, Fingerprint: jumpFingerprint,
+		}
 	}
 	if collectedAt.Valid {
 		host.Facts = &Facts{

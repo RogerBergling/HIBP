@@ -15,14 +15,25 @@ import (
 	"strings"
 )
 
+// ProxyJump is a resolved single-hop jump host from an SSH config entry.
+type ProxyJump struct {
+	Alias   string `json:"alias,omitempty"`
+	Address string `json:"address"`
+	Port    int    `json:"port"`
+	User    string `json:"user"`
+	KeyPath string `json:"key_path,omitempty"`
+}
+
 // Host is a concrete SSH config entry with its effective connection fields.
 type Host struct {
-	Alias         string   `json:"alias"`
-	HostName      string   `json:"hostname"`
-	Port          int      `json:"port"`
-	User          string   `json:"user"`
-	KeyPath       string   `json:"key_path"`
-	IdentityFiles []string `json:"identity_files,omitempty"`
+	Alias         string     `json:"alias"`
+	HostName      string     `json:"hostname"`
+	Port          int        `json:"port"`
+	User          string     `json:"user"`
+	KeyPath       string     `json:"key_path"`
+	IdentityFiles []string   `json:"identity_files,omitempty"`
+	ProxyJump     *ProxyJump `json:"proxy_jump,omitempty"`
+	ProxyJumpRaw  string     `json:"proxy_jump_raw,omitempty"`
 }
 
 const (
@@ -78,10 +89,12 @@ type rawHost struct {
 	port          string
 	user          string
 	identityFiles []string
+	proxyJump     string
 	setHostName   bool
 	setPort       bool
 	setUser       bool
 	setIdentity   bool
+	setProxyJump  bool
 }
 
 type block struct {
@@ -91,10 +104,12 @@ type block struct {
 	port          string
 	user          string
 	identityFiles []string
+	proxyJump     string
 	setHostName   bool
 	setPort       bool
 	setUser       bool
 	setIdentity   bool
+	setProxyJump  bool
 }
 
 func (l *loader) loadFile(path string, depth int) error {
@@ -191,6 +206,11 @@ func (l *loader) parse(data string, depth int) error {
 			case "identityfile":
 				current.identityFiles = append(current.identityFiles, unquote(value))
 				current.setIdentity = true
+			case "proxyjump":
+				if !current.setProxyJump {
+					current.proxyJump = unquote(value)
+					current.setProxyJump = true
+				}
 			}
 		}
 	}
@@ -226,6 +246,10 @@ func (l *loader) merge(b *block) {
 		if b.setIdentity {
 			existing.identityFiles = append(existing.identityFiles, b.identityFiles...)
 			existing.setIdentity = true
+		}
+		if !existing.setProxyJump && b.setProxyJump {
+			existing.proxyJump = b.proxyJump
+			existing.setProxyJump = true
 		}
 	}
 }
@@ -275,9 +299,93 @@ func (l *loader) finalize() []Host {
 			User:          remoteUser,
 			KeyPath:       keyPath,
 			IdentityFiles: identityFiles,
+			ProxyJumpRaw:  raw.proxyJump,
 		})
 	}
+	byAlias := make(map[string]*Host, len(hosts))
+	for index := range hosts {
+		byAlias[hosts[index].Alias] = &hosts[index]
+	}
+	for index := range hosts {
+		raw := l.hosts[hosts[index].Alias]
+		rawJump := strings.TrimSpace(raw.proxyJump)
+		if rawJump == "" || strings.EqualFold(rawJump, "none") {
+			hosts[index].ProxyJumpRaw = ""
+			continue
+		}
+		if jump := l.resolveProxyJump(rawJump, byAlias); jump != nil {
+			hosts[index].ProxyJump = jump
+			hosts[index].ProxyJumpRaw = ""
+		}
+	}
 	return hosts
+}
+
+func (l *loader) resolveProxyJump(value string, byAlias map[string]*Host) *ProxyJump {
+	value = unquote(strings.TrimSpace(value))
+	if value == "" || strings.EqualFold(value, "none") || strings.Contains(value, ",") {
+		return nil
+	}
+	user, host, port, ok := parseJumpSpec(value)
+	if !ok {
+		return nil
+	}
+	if alias, exists := byAlias[host]; exists {
+		if user == "" {
+			user = alias.User
+		}
+		return &ProxyJump{
+			Alias:   host,
+			Address: alias.HostName,
+			Port:    alias.Port,
+			User:    user,
+			KeyPath: alias.KeyPath,
+		}
+	}
+	if user == "" {
+		user = l.defaultUser
+	}
+	return &ProxyJump{Address: host, Port: port, User: user}
+}
+
+func parseJumpSpec(value string) (user, host string, port int, ok bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", "", 0, false
+	}
+	if at := strings.LastIndex(value, "@"); at >= 0 {
+		user = value[:at]
+		value = value[at+1:]
+	}
+	port = 22
+	if strings.HasPrefix(value, "[") {
+		end := strings.LastIndex(value, "]")
+		if end < 0 {
+			return "", "", 0, false
+		}
+		host = value[1:end]
+		if rest := value[end+1:]; strings.HasPrefix(rest, ":") {
+			parsed, err := strconv.Atoi(rest[1:])
+			if err != nil {
+				return "", "", 0, false
+			}
+			port = parsed
+		}
+	} else if strings.Count(value, ":") == 1 {
+		index := strings.LastIndex(value, ":")
+		host = value[:index]
+		parsed, err := strconv.Atoi(value[index+1:])
+		if err != nil {
+			return "", "", 0, false
+		}
+		port = parsed
+	} else {
+		host = value
+	}
+	if host == "" || port < 1 || port > 65535 {
+		return "", "", 0, false
+	}
+	return user, host, port, true
 }
 
 func (l *loader) expandIdentity(value, remoteUser, hostName string) string {

@@ -26,23 +26,34 @@ type passwordRequest struct {
 }
 
 type hostRequest struct {
-	Name      string `json:"name"`
-	Address   string `json:"address"`
-	Port      int    `json:"port"`
-	Username  string `json:"username"`
-	AuthType  string `json:"auth_type"`
-	KeyPath   string `json:"key_path"`
-	Tags      string `json:"tags"`
-	GroupName string `json:"group_name"`
-	CMDBCIID  string `json:"cmdb_ci_id"`
+	Name              string `json:"name"`
+	Address           string `json:"address"`
+	Port              int    `json:"port"`
+	Username          string `json:"username"`
+	AuthType          string `json:"auth_type"`
+	KeyPath           string `json:"key_path"`
+	ProxyJumpAddress  string `json:"proxy_jump_address"`
+	ProxyJumpPort     int    `json:"proxy_jump_port"`
+	ProxyJumpUsername string `json:"proxy_jump_username"`
+	ProxyJumpKeyPath  string `json:"proxy_jump_key_path"`
+	Tags              string `json:"tags"`
+	GroupName         string `json:"group_name"`
+	CMDBCIID          string `json:"cmdb_ci_id"`
 }
 
 func (h hostRequest) host() store.Host {
-	return store.Host{
+	host := store.Host{
 		Name: h.Name, Address: h.Address, Port: h.Port, Username: h.Username,
 		AuthType: h.AuthType, KeyPath: h.KeyPath, Tags: h.Tags,
 		GroupName: h.GroupName, CMDBCIID: h.CMDBCIID,
 	}
+	if strings.TrimSpace(h.ProxyJumpAddress) != "" {
+		host.ProxyJump = &store.ProxyJump{
+			Address: h.ProxyJumpAddress, Port: h.ProxyJumpPort,
+			Username: h.ProxyJumpUsername, KeyPath: h.ProxyJumpKeyPath,
+		}
+	}
+	return host
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
@@ -112,6 +123,11 @@ func (s *Server) handleUpdateHost(w http.ResponseWriter, r *http.Request) {
 	if host.OSVersion == "" {
 		host.OSVersion = existing.OSVersion
 	}
+	if host.ProxyJump != nil && existing.ProxyJump != nil &&
+		host.ProxyJump.Address == existing.ProxyJump.Address && host.ProxyJump.Port == existing.ProxyJump.Port {
+		host.ProxyJump.KeyType = existing.ProxyJump.KeyType
+		host.ProxyJump.Fingerprint = existing.ProxyJump.Fingerprint
+	}
 	updated, err := s.store.UpdateHostAs(s.auditActor(r), host)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -175,7 +191,11 @@ func (s *Server) handleTestHost(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var keyErr *remote.KeyError
 		if errors.As(err, &keyErr) {
-			_ = s.store.AddAudit(s.auditActor(r), "host-key-"+keyErr.Kind, "host", host.ID,
+			action := "host-key-" + keyErr.Kind
+			if keyErr.Scope == "jump" {
+				action = "jump-key-" + keyErr.Kind
+			}
+			_ = s.store.AddAudit(s.auditActor(r), action, "host", host.ID,
 				fmt.Sprintf("presented=%s %s expected=%s %s", keyErr.KeyType, keyErr.Fingerprint, keyErr.ExpectedType, keyErr.ExpectedFingerprint))
 			writeJSON(w, http.StatusConflict, map[string]any{"error": keyErr.Error(), "key": keyErr})
 			return
@@ -223,6 +243,11 @@ func (s *Server) handleTrustKey(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	actual, err := remote.Probe(ctx, s.hostTarget(host, password))
 	if err != nil {
+		var keyErr *remote.KeyError
+		if errors.As(err, &keyErr) {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": keyErr.Error(), "key": keyErr})
+			return
+		}
 		s.auditHostActionFailure(r, "trust-key", host.ID, err)
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -234,6 +259,59 @@ func (s *Server) handleTrustKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.SaveHostKeyAs(s.auditActor(r), store.HostKey{HostID: host.ID, KeyType: actual.KeyType, Fingerprint: actual.Fingerprint}); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "key": actual})
+}
+
+func (s *Server) handleTrustJumpKey(w http.ResponseWriter, r *http.Request) {
+	host, err := s.store.GetHost(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "host not found")
+		return
+	}
+	if host.ProxyJump == nil {
+		writeError(w, http.StatusBadRequest, "host has no proxy jump configured")
+		return
+	}
+	var request trustKeyRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if request.KeyType == "" || request.Fingerprint == "" {
+		writeError(w, http.StatusBadRequest, "key_type and fingerprint are required")
+		return
+	}
+	password := ""
+	if host.AuthType == "password" {
+		if request.Password == "" {
+			writeError(w, http.StatusBadRequest, "password is required for password authentication")
+			return
+		}
+		password = request.Password
+	}
+	target := s.hostTarget(host, password)
+	if target.ProxyJump == nil {
+		writeError(w, http.StatusBadRequest, "host has no proxy jump configured")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	actual, err := remote.ProbeJump(ctx, *target.ProxyJump)
+	if err != nil {
+		s.auditHostActionFailure(r, "trust-jump-key", host.ID, err)
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if actual.KeyType != request.KeyType || actual.Fingerprint != request.Fingerprint {
+		_ = s.store.AddAudit(s.auditActor(r), "trust-jump-key-failed", "host", host.ID,
+			fmt.Sprintf("presented=%s %s approved=%s %s", actual.KeyType, actual.Fingerprint, request.KeyType, request.Fingerprint))
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "presented jump host key does not match the approval", "key": actual})
+		return
+	}
+	if err := s.store.SetProxyJumpKeyAs(s.auditActor(r), host.ID, actual.KeyType, actual.Fingerprint); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

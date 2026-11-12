@@ -165,6 +165,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/v1/hosts/{id}", s.auth(s.handleDeleteHost))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/test", s.auth(s.handleTestHost))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/trust-key", s.auth(s.handleTrustKey))
+	s.mux.HandleFunc("POST /api/v1/hosts/{id}/trust-jump-key", s.auth(s.handleTrustJumpKey))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/facts", s.auth(s.handleFacts))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/bootstrap", s.auth(s.handleBootstrap))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/patch", s.auth(s.handlePatch))
@@ -319,5 +320,29 @@ func resolveHomePath(path string) (string, error) {
 }
 
 func (s *Server) hostTarget(host store.Host, password string) remote.Target {
-	return remote.Target{Address: host.Address, Port: host.Port, Username: host.Username, KeyPath: host.KeyPath, Password: password}
+	target := remote.Target{Address: host.Address, Port: host.Port, Username: host.Username, KeyPath: host.KeyPath, Password: password}
+	if host.ProxyJump == nil {
+		return target
+	}
+	jump := &remote.JumpTarget{
+		Address: host.ProxyJump.Address, Port: host.ProxyJump.Port,
+		Username: host.ProxyJump.Username, KeyPath: host.ProxyJump.KeyPath,
+	}
+	if jump.Port == 0 {
+		jump.Port = 22
+	}
+	if jump.Username == "" {
+		jump.Username = host.Username
+	}
+	if jump.KeyPath == "" && host.AuthType == "key" {
+		jump.KeyPath = host.KeyPath
+	}
+	if jump.KeyPath == "" {
+		jump.Password = password
+	}
+	if host.ProxyJump.KeyType != "" && host.ProxyJump.Fingerprint != "" {
+		jump.HostKey = &remote.HostKey{KeyType: host.ProxyJump.KeyType, Fingerprint: host.ProxyJump.Fingerprint}
+	}
+	target.ProxyJump = jump
+	return target
 }

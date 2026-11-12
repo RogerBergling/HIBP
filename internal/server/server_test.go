@@ -580,6 +580,82 @@ func TestDeleteHostEndpoint(t *testing.T) {
 	}
 }
 
+func TestProxyJumpHostEndpoint(t *testing.T) {
+	ts, db := testServer(t)
+	body := `{"name":"web01","address":"10.0.0.10","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519","proxy_jump_address":"jump.example.com","proxy_jump_port":2200,"proxy_jump_username":"jumpuser","proxy_jump_key_path":"/home/ops/.ssh/jump_key"}`
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/hosts", "test-token", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create failed: %d %s", resp.StatusCode, data)
+	}
+	var host store.Host
+	if err := json.NewDecoder(resp.Body).Decode(&host); err != nil {
+		t.Fatal(err)
+	}
+	if host.ProxyJump == nil || host.ProxyJump.Address != "jump.example.com" || host.ProxyJump.Port != 2200 {
+		t.Fatalf("unexpected proxy jump: %+v", host.ProxyJump)
+	}
+	if err := db.SetProxyJumpKeyAs("test", host.ID, "ssh-ed25519", "SHA256:jump"); err != nil {
+		t.Fatal(err)
+	}
+
+	update := `{"name":"web01","address":"10.0.0.10","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519","proxy_jump_address":"jump.example.com","proxy_jump_port":2200,"proxy_jump_username":"jumpuser","proxy_jump_key_path":"/home/ops/.ssh/jump_key"}`
+	resp = request(t, http.MethodPut, ts.URL+"/api/v1/hosts/"+host.ID, "test-token", update)
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("update failed: %d %s", resp.StatusCode, data)
+	}
+	var preserved store.Host
+	if err := json.NewDecoder(resp.Body).Decode(&preserved); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if preserved.ProxyJump == nil || preserved.ProxyJump.KeyType != "ssh-ed25519" || preserved.ProxyJump.Fingerprint != "SHA256:jump" {
+		t.Fatalf("jump key was not preserved: %+v", preserved.ProxyJump)
+	}
+
+	update = `{"name":"web01","address":"10.0.0.10","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519","proxy_jump_address":"other-jump.example.com","proxy_jump_port":22,"proxy_jump_username":"jumpuser"}`
+	resp = request(t, http.MethodPut, ts.URL+"/api/v1/hosts/"+host.ID, "test-token", update)
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("jump change failed: %d %s", resp.StatusCode, data)
+	}
+	var changed store.Host
+	if err := json.NewDecoder(resp.Body).Decode(&changed); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if changed.ProxyJump == nil || changed.ProxyJump.Address != "other-jump.example.com" || changed.ProxyJump.KeyType != "" || changed.ProxyJump.Fingerprint != "" {
+		t.Fatalf("jump key should be cleared on address change: %+v", changed.ProxyJump)
+	}
+
+	invalid := `{"name":"web01","address":"10.0.0.10","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519","proxy_jump_address":"jump.example.com","proxy_jump_port":70000,"proxy_jump_username":"jumpuser"}`
+	resp = request(t, http.MethodPut, ts.URL+"/api/v1/hosts/"+host.ID, "test-token", invalid)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected invalid jump port rejection, got %d", resp.StatusCode)
+	}
+
+	direct := `{"name":"direct01","address":"10.0.0.20","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519"}`
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/hosts", "test-token", direct)
+	var directHost store.Host
+	if err := json.NewDecoder(resp.Body).Decode(&directHost); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/hosts/"+directHost.ID+"/trust-jump-key", "test-token", `{"key_type":"ssh-ed25519","fingerprint":"SHA256:jump"}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected no-jump rejection, got %d", resp.StatusCode)
+	}
+}
+
 func TestListSSHKeys(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "id_ed25519"), []byte("not a real key"), 0o600); err != nil {
@@ -834,6 +910,39 @@ func TestSettingsEndpoints(t *testing.T) {
 		t.Fatalf("expected invalid interval rejection, got %d", resp.StatusCode)
 	}
 	resp.Body.Close()
+}
+
+func TestHostTargetProxyJump(t *testing.T) {
+	_, _, app := testServerWithApp(t, true)
+	host := store.Host{
+		Name: "web01", Address: "10.0.0.10", Port: 22, Username: "ubuntu",
+		AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519",
+		ProxyJump: &store.ProxyJump{Address: "jump.example.com", Port: 2200, Username: "jumpuser",
+			KeyType: "ssh-ed25519", Fingerprint: "SHA256:jump"},
+	}
+	target := app.hostTarget(host, "")
+	if target.ProxyJump == nil || target.ProxyJump.Address != "jump.example.com" ||
+		target.ProxyJump.Port != 2200 || target.ProxyJump.Username != "jumpuser" ||
+		target.ProxyJump.KeyPath != host.KeyPath || target.ProxyJump.Password != "" {
+		t.Fatalf("unexpected key-auth jump target: %+v", target.ProxyJump)
+	}
+	if target.ProxyJump.HostKey == nil || target.ProxyJump.HostKey.Fingerprint != "SHA256:jump" {
+		t.Fatalf("missing jump host key: %+v", target.ProxyJump.HostKey)
+	}
+
+	passwordHost := host
+	passwordHost.AuthType = "password"
+	passwordTarget := app.hostTarget(passwordHost, "secret")
+	if passwordTarget.ProxyJump.KeyPath != "" || passwordTarget.ProxyJump.Password != "secret" {
+		t.Fatalf("unexpected password-auth jump target: %+v", passwordTarget.ProxyJump)
+	}
+
+	explicitKeyHost := passwordHost
+	explicitKeyHost.ProxyJump = &store.ProxyJump{Address: "jump.example.com", Port: 22, Username: "jumpuser", KeyPath: "/home/ops/.ssh/jump_key"}
+	explicitKeyTarget := app.hostTarget(explicitKeyHost, "secret")
+	if explicitKeyTarget.ProxyJump.KeyPath != "/home/ops/.ssh/jump_key" || explicitKeyTarget.ProxyJump.Password != "" {
+		t.Fatalf("unexpected explicit jump key target: %+v", explicitKeyTarget.ProxyJump)
+	}
 }
 
 func TestHostDetailsEndpoint(t *testing.T) {

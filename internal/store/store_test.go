@@ -166,6 +166,51 @@ func TestUpdateAndDeleteHost(t *testing.T) {
 	}
 }
 
+func TestProxyJumpPersistence(t *testing.T) {
+	s := openAuthTestStore(t)
+	host, err := s.CreateHost(Host{
+		Name: "web01", Address: "10.0.0.10", Port: 22, Username: "ubuntu",
+		AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519",
+		ProxyJump: &ProxyJump{
+			Address: "jump.example.com", Port: 2200, Username: "jumpuser",
+			KeyPath: "/home/ops/.ssh/jump_key",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetHost(host.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProxyJump == nil || got.ProxyJump.Address != "jump.example.com" ||
+		got.ProxyJump.Port != 2200 || got.ProxyJump.Username != "jumpuser" ||
+		got.ProxyJump.KeyPath != "/home/ops/.ssh/jump_key" {
+		t.Fatalf("proxy jump not persisted: %+v", got.ProxyJump)
+	}
+	if err := s.SetProxyJumpKeyAs("test", host.ID, "ssh-ed25519", "SHA256:jump"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.GetHost(host.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProxyJump.KeyType != "ssh-ed25519" || got.ProxyJump.Fingerprint != "SHA256:jump" {
+		t.Fatalf("jump key not persisted: %+v", got.ProxyJump)
+	}
+	got.ProxyJump.Address = ""
+	if _, err := s.UpdateHost(got); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.GetHost(host.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProxyJump != nil {
+		t.Fatalf("proxy jump not cleared: %+v", got.ProxyJump)
+	}
+}
+
 func TestBackupVerificationRejectsBrokenAuditChain(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "inventory.hibp")

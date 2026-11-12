@@ -63,6 +63,9 @@ Out of scope:
   passphrase-protected key files are not implemented. Host create, update, CSV
   import, and CMDB import reject `agent` and `certificate`; scheduled
   collection only processes `auth_type=key`.
+- `ProxyJump` is single-hop only. Multi-hop chains, interactive bastion
+  authentication, SSH agent forwarding, and a jump host behind another jump are
+  not supported.
 - The browser session cookie is an administrator credential. It is HttpOnly,
   SameSite=Strict, and only a SHA-256 hash is stored in SQLCipher. Protect the
   browser profile, SSH tunnel, and controller.
@@ -134,6 +137,10 @@ cron-based patch schedules are implemented.
   deliberately omits environment variables, command lines, mounts, and secrets.
 - The collector never prompts for credentials. Scheduled collection requires
   the restricted NOPASSWD helper; password-auth hosts are collected manually.
+- Optional single-hop `ProxyJump` uses a separately trusted jump-host key;
+  HIBP verifies both the jump host and target host keys before running a helper
+  action. Jump credentials are never logged, agent forwarding is not used, and
+  multi-hop chains are rejected rather than flattened.
 - Docker updates are project-level Compose operations. Project names and paths
   come from Docker metadata, not arbitrary controller input. The helper accepts
   exactly one validated project argument for check/apply, and a separate

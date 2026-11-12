@@ -1979,10 +1979,12 @@ async function deleteHost(host) {
 
 function showTrustModal(host, key, password) {
   const changed = key.kind === 'changed';
+  const jump = key.scope === 'jump';
+  const label = jump ? 'jump host' : 'host';
   const body = el('div', 'modal-body');
   body.append(el('p', 'muted', changed
-    ? 'The host presented a different key than the one currently trusted. This can indicate a rebuild or a man-in-the-middle attack. Verify the new fingerprint through an independent channel before replacing the trusted key.'
-    : 'Verify this fingerprint through an independent channel before trusting it.'));
+    ? 'The ' + label + ' presented a different key than the one currently trusted. This can indicate a rebuild or a man-in-the-middle attack. Verify the new fingerprint through an independent channel before replacing the trusted key.'
+    : 'Verify this ' + label + ' fingerprint through an independent channel before trusting it.'));
   const box = el('div', 'key-box');
   box.append(el('div', '', 'Presented: ' + key.key_type + ' ' + key.fingerprint));
   if (changed) {
@@ -1996,18 +1998,26 @@ function showTrustModal(host, key, password) {
   trust.type = 'button';
   actions.append(cancel, trust);
   body.append(actions);
-  const close = openModal((changed ? 'Host key changed — ' : 'Unknown host key — ') + host.name, body);
+  const title = changed
+    ? (jump ? 'Jump host key changed — ' : 'Host key changed — ')
+    : (jump ? 'Unknown jump host key — ' : 'Unknown host key — ');
+  const close = openModal(title + host.name, body);
   cancel.addEventListener('click', close);
   trust.addEventListener('click', async () => {
     try {
-      await api('/api/v1/hosts/' + encodeURIComponent(host.id) + '/trust-key', {
+      await api('/api/v1/hosts/' + encodeURIComponent(host.id) + (jump ? '/trust-jump-key' : '/trust-key'), {
         method: 'POST',
         body: JSON.stringify({ key_type: key.key_type, fingerprint: key.fingerprint, password }),
       });
       close();
-      toast(changed ? 'Trusted the replacement host key. Testing connection…' : 'Host key trusted. Testing connection…', 'ok');
+      toast(changed ? 'Trusted the replacement ' + label + ' key. Testing connection…' : 'Trusted the ' + label + ' key. Testing connection…', 'ok');
       await testHost(host);
     } catch (error) {
+      if (error.status === 409 && error.data && error.data.key) {
+        close();
+        showTrustModal(host, error.data.key, password);
+        return;
+      }
       toast(error.message, 'error');
     }
   });
@@ -2306,6 +2316,7 @@ function renderOverviewPanel(panel, data, host) {
       ['Address', host.address + ':' + host.port],
       ['SSH user', host.username],
       ['Auth', host.auth_type],
+      ['Proxy jump', host.proxy_jump ? (host.proxy_jump.username ? host.proxy_jump.username + '@' : '') + host.proxy_jump.address + ':' + (host.proxy_jump.port || 22) : ''],
       ['Status', host.status || 'unknown'],
     ]),
     detailCard('Operating system', [
@@ -3136,6 +3147,20 @@ function showAddHostModal(host = null, prefill = null) {
   const authType = selectField(authRow, 'Auth type', 'auth_type', [['key', 'SSH key file'], ['password', 'Password (manual fallback)']]);
   const keyPath = keyPathField(authRow, source.key_path || '', source.identity_files || []);
   form.append(authRow);
+  const jump = source.proxy_jump || {};
+  const jumpRow = el('div', 'form-row');
+  const jumpAddress = inputField(jumpRow, 'Proxy jump host (optional)', 'proxy_jump_address', 'jump.example.com');
+  const jumpPort = inputField(jumpRow, 'Proxy jump port', 'proxy_jump_port', '22', 'number');
+  form.append(jumpRow);
+  const jumpRow2 = el('div', 'form-row');
+  const jumpUsername = inputField(jumpRow2, 'Proxy jump username', 'proxy_jump_username', 'ubuntu');
+  const jumpKeyPath = keyPathField(jumpRow2, jump.key_path || '', [], {
+    label: 'Proxy jump key path (optional)',
+    name: 'proxy_jump_key_path',
+    placeholder: 'Defaults to the host key',
+  });
+  form.append(jumpRow2);
+  form.append(el('p', 'field-note', 'Optional single SSH jump hop. The jump host key is trusted separately. HIBP uses the jump key path when set; otherwise it uses the host key or the manual password.'));
   const groupRow = el('div', 'form-row');
   const group = inputField(groupRow, 'Group', 'group_name', 'web-prod');
   const tags = inputField(groupRow, 'Tags', 'tags', 'web,prod');
@@ -3147,6 +3172,10 @@ function showAddHostModal(host = null, prefill = null) {
   port.value = String(source.port || 22);
   username.value = source.username || source.user || '';
   authType.value = source.auth_type || 'key';
+  jumpAddress.value = jump.address || '';
+  jumpPort.value = String(jump.port || 22);
+  jumpUsername.value = jump.username || jump.user || '';
+  jumpKeyPath.value = jump.key_path || '';
   group.value = source.group_name || '';
   tags.value = source.tags || (prefill ? 'ssh-config' : '');
   cmdb.value = source.cmdb_ci_id || '';
@@ -3165,6 +3194,8 @@ function showAddHostModal(host = null, prefill = null) {
     const payload = {
       name: name.value.trim(), address: address.value.trim(), port: Number(port.value || 22),
       username: username.value.trim(), auth_type: authType.value, key_path: keyPath.value.trim(),
+      proxy_jump_address: jumpAddress.value.trim(), proxy_jump_port: Number(jumpPort.value || 22),
+      proxy_jump_username: jumpUsername.value.trim(), proxy_jump_key_path: jumpKeyPath.value.trim(),
       group_name: group.value.trim(), tags: tags.value.trim(), cmdb_ci_id: cmdb.value.trim(),
     };
     try {
@@ -3185,6 +3216,7 @@ async function showSSHConfigModal() {
   const pathLine = el('p', 'muted', 'Reading local SSH config…');
   const list = el('div', 'file-list');
   body.append(pathLine, list);
+  body.append(el('p', 'muted', 'HIBP always uses the selected key per connection (IdentitiesOnly behavior) and never forwards an SSH agent. Multi-hop ProxyJump chains are shown but not imported.'));
   const actions = el('div', 'modal-actions');
   const closeButton = el('button', 'btn', 'Close');
   closeButton.type = 'button';
@@ -3220,6 +3252,12 @@ async function showSSHConfigModal() {
       } else {
         entry.append(el('div', 'file-meta', 'no key candidate'));
       }
+      if (host.proxy_jump) {
+        const jump = host.proxy_jump;
+        entry.append(el('div', 'file-meta', '↪ ProxyJump: ' + (jump.user ? jump.user + '@' : '') + jump.address + ':' + (jump.port || 22)));
+      } else if (host.proxy_jump_raw) {
+        entry.append(el('div', 'file-meta', '↪ ProxyJump chain not imported: ' + host.proxy_jump_raw));
+      }
       const use = el('button', 'btn small', 'Use');
       use.type = 'button';
       use.addEventListener('click', () => {
@@ -3234,13 +3272,13 @@ async function showSSHConfigModal() {
   }
 }
 
-function keyPathField(parent, value, configuredKeys = []) {
-  const wrapper = el('label', 'field', 'Key path');
+function keyPathField(parent, value, configuredKeys = [], options = {}) {
+  const wrapper = el('label', 'field', options.label || 'Key path');
   const row = el('div', 'input-with-button');
   const input = el('input');
-  input.name = 'key_path';
+  input.name = options.name || 'key_path';
   input.type = 'text';
-  input.placeholder = '/home/ops/.ssh/id_ed25519';
+  input.placeholder = options.placeholder || '/home/ops/.ssh/id_ed25519';
   input.autocomplete = 'off';
   input.spellcheck = false;
   const keys = [...new Set(configuredKeys.filter((key) => key && !/\.pub$/i.test(key)))];

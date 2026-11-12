@@ -261,6 +261,57 @@ Host *
 	}
 }
 
+func TestLoadResolvesProxyJump(t *testing.T) {
+	home := t.TempDir()
+	sshDir := filepath.Join(home, ".ssh")
+	path := filepath.Join(sshDir, "config")
+	writeConfig(t, path, `Host jump
+  HostName jump.example.com
+  Port 2200
+  User admin
+  IdentityFile ~/.ssh/jump_key
+
+Host web
+  HostName web.example.com
+  ProxyJump jump
+
+Host direct
+  HostName direct.example.com
+  ProxyJump ops@edge.example.com:2222
+
+Host chain
+  HostName chain.example.com
+  ProxyJump jump,extra
+
+Host nojump
+  HostName nojump.example.com
+  ProxyJump none
+`)
+	hosts, err := loadWithHome(path, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	web := findHost(t, hosts, "web")
+	if web.ProxyJump == nil || web.ProxyJump.Alias != "jump" || web.ProxyJump.Address != "jump.example.com" ||
+		web.ProxyJump.Port != 2200 || web.ProxyJump.User != "admin" ||
+		web.ProxyJump.KeyPath != filepath.Join(sshDir, "jump_key") {
+		t.Fatalf("unexpected resolved jump: %#v", web.ProxyJump)
+	}
+	direct := findHost(t, hosts, "direct")
+	if direct.ProxyJump == nil || direct.ProxyJump.Address != "edge.example.com" ||
+		direct.ProxyJump.Port != 2222 || direct.ProxyJump.User != "ops" {
+		t.Fatalf("unexpected direct jump: %#v", direct.ProxyJump)
+	}
+	chain := findHost(t, hosts, "chain")
+	if chain.ProxyJump != nil || chain.ProxyJumpRaw != "jump,extra" {
+		t.Fatalf("multi-hop jump should stay unresolved: %#v %q", chain.ProxyJump, chain.ProxyJumpRaw)
+	}
+	nojump := findHost(t, hosts, "nojump")
+	if nojump.ProxyJump != nil || nojump.ProxyJumpRaw != "" {
+		t.Fatalf("ProxyJump none should be cleared: %#v %q", nojump.ProxyJump, nojump.ProxyJumpRaw)
+	}
+}
+
 func TestLoadWildcardOnlyReturnsEmpty(t *testing.T) {
 	home := t.TempDir()
 	path := filepath.Join(home, ".ssh", "config")
