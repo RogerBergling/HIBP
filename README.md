@@ -1614,6 +1614,15 @@ runs the fixed `reboot` helper action as root. The helper uses
 `shutdown -r now`. HIBP never reboots automatically. Later/scheduled reboots are
 part of the scheduler work.
 
+### Delete host
+
+The host row has a **Delete** button. It asks for confirmation and permanently
+removes the host together with its facts, metrics, Docker inventory and check
+status, trusted host key, and run history. The audit log entry for the deletion
+is retained. Deleting a host in HIBP does **not** uninstall the helper, remove
+the sudoers rule, or delete anything else on the target; do that separately when
+decommissioning a server.
+
 ### If the SSH account is not `hibp`
 
 Use the actual account name. For example, if the controller logs in as `roger`:

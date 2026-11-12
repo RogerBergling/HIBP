@@ -596,6 +596,7 @@ function hostRow(host) {
   actions.append(actionButton('Facts', () => collectFacts(host)));
   actions.append(actionButton('Patch', () => showPatchModal(host)));
   actions.append(actionButton('Reboot', () => rebootHost(host), 'danger'));
+  actions.append(actionButton('Delete', () => deleteHost(host), 'danger'));
   actionsTd.append(actions);
 
   tr.append(selectTd, hostTd, osTd, agentTd, pendingTd, checkTd, uptimeTd, rebootTd, statusTd, actionsTd);
@@ -1957,6 +1958,21 @@ async function testHost(host) {
       showTrustModal(host, error.data.key, state.passwords.get(host.id) || '');
       return;
     }
+    toast(error.message, 'error');
+  }
+}
+
+async function deleteHost(host) {
+  const ok = confirm('Delete host "' + host.name + '"? This permanently removes its facts, metrics, Docker inventory, trusted host key, and run history. The helper and sudoers rule on the target are not removed. This cannot be undone.');
+  if (!ok) return;
+  try {
+    await api('/api/v1/hosts/' + encodeURIComponent(host.id), { method: 'DELETE' });
+    state.selectedHosts.delete(host.id);
+    state.passwords.delete(host.id);
+    state.sudoPasswords.delete(host.id);
+    toast('Host deleted: ' + host.name, 'ok');
+    await loadAll();
+  } catch (error) {
     toast(error.message, 'error');
   }
 }

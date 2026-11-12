@@ -509,6 +509,77 @@ func TestUpdateHost(t *testing.T) {
 	}
 }
 
+func TestDeleteHostEndpoint(t *testing.T) {
+	ts, db := testServer(t)
+	body := `{"name":"web01","address":"10.0.0.10","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519"}`
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/hosts", "test-token", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, data)
+	}
+	var host store.Host
+	if err := json.NewDecoder(resp.Body).Decode(&host); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveFacts(host.ID, store.Facts{CollectedAt: "2026-11-12T07:00:00Z", OSPrettyName: "Ubuntu 24.04"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveDockerInventory(host.ID,
+		[]store.DockerProject{{Name: "web", Status: "running(1)"}},
+		[]store.DockerContainer{{ContainerID: "abc", Name: "web-1", Project: "web", State: "running"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveDockerProjectCheck(store.DockerProjectCheck{HostID: host.ID, Project: "web", Status: "update-available"}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp = request(t, http.MethodDelete, ts.URL+"/api/v1/hosts/"+host.ID, "test-token", "")
+	var deleted struct {
+		Deleted bool `json:"deleted"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&deleted); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !deleted.Deleted {
+		t.Fatalf("delete failed: %d %+v", resp.StatusCode, deleted)
+	}
+
+	resp = request(t, http.MethodGet, ts.URL+"/api/v1/hosts/"+host.ID, "test-token", "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected deleted host to be missing, got %d", resp.StatusCode)
+	}
+	resp = request(t, http.MethodDelete, ts.URL+"/api/v1/hosts/"+host.ID, "test-token", "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected second delete to be 404, got %d", resp.StatusCode)
+	}
+	projects, containers, err := db.GetDockerInventory(host.ID)
+	if err != nil || len(projects) != 0 || len(containers) != 0 {
+		t.Fatalf("docker inventory not cascaded: %+v %+v %v", projects, containers, err)
+	}
+	checks, err := db.ListDockerProjectChecks(host.ID)
+	if err != nil || len(checks) != 0 {
+		t.Fatalf("docker checks not cascaded: %+v %v", checks, err)
+	}
+	audit, err := db.ListAudit(20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, entry := range audit {
+		if entry.Action == "delete" && entry.EntityType == "host" && entry.EntityID == host.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("host delete audit entry missing")
+	}
+}
+
 func TestListSSHKeys(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "id_ed25519"), []byte("not a real key"), 0o600); err != nil {
