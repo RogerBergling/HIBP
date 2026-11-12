@@ -49,23 +49,25 @@ func DefaultOptions() Options {
 
 // Host is a managed Linux host.
 type Host struct {
-	ID         string   `json:"id"`
-	Name       string   `json:"name"`
-	Address    string   `json:"address"`
-	Port       int      `json:"port"`
-	Username   string   `json:"username"`
-	AuthType   string   `json:"auth_type"`
-	KeyPath    string   `json:"key_path"`
-	OSFamily   string   `json:"os_family"`
-	OSVersion  string   `json:"os_version"`
-	Status     string   `json:"status"`
-	Tags       string   `json:"tags"`
-	GroupName  string   `json:"group_name"`
-	CMDBCIID   string   `json:"cmdb_ci_id"`
-	CreatedAt  string   `json:"created_at"`
-	UpdatedAt  string   `json:"updated_at"`
-	Facts      *Facts   `json:"facts,omitempty"`
-	TrustedKey *HostKey `json:"trusted_key,omitempty"`
+	ID                   string   `json:"id"`
+	Name                 string   `json:"name"`
+	Address              string   `json:"address"`
+	Port                 int      `json:"port"`
+	Username             string   `json:"username"`
+	AuthType             string   `json:"auth_type"`
+	KeyPath              string   `json:"key_path"`
+	OSFamily             string   `json:"os_family"`
+	OSVersion            string   `json:"os_version"`
+	Status               string   `json:"status"`
+	Tags                 string   `json:"tags"`
+	GroupName            string   `json:"group_name"`
+	CMDBCIID             string   `json:"cmdb_ci_id"`
+	CreatedAt            string   `json:"created_at"`
+	UpdatedAt            string   `json:"updated_at"`
+	DockerProjectCount   int      `json:"docker_project_count"`
+	DockerContainerCount int      `json:"docker_container_count"`
+	Facts                *Facts   `json:"facts,omitempty"`
+	TrustedKey           *HostKey `json:"trusted_key,omitempty"`
 }
 
 // Facts is the latest collected host state.
@@ -695,7 +697,9 @@ func (s *Store) ListHosts() ([]Host, error) {
 		f.collected_at,f.uptime_seconds,f.boot_time,f.kernel,f.os_pretty_name,f.package_manager,
 		f.reboot_required,f.disk_free_bytes,f.time_sync_ok,f.pending_updates,
 		f.agent_version,f.agent_build_number,f.agent_build_commit,f.agent_build_date,
-		f.agent_build_target,f.agent_build_type
+		f.agent_build_target,f.agent_build_type,
+		(SELECT COUNT(*) FROM docker_projects dp WHERE dp.host_id=h.id),
+		(SELECT COUNT(*) FROM docker_containers dc WHERE dc.host_id=h.id)
 		FROM hosts h LEFT JOIN host_facts f ON f.host_id=h.id ORDER BY h.name`)
 	if err != nil {
 		return nil, err
@@ -719,7 +723,9 @@ func (s *Store) FindHostByAddress(address string, port int) (Host, error) {
 		f.collected_at,f.uptime_seconds,f.boot_time,f.kernel,f.os_pretty_name,f.package_manager,
 		f.reboot_required,f.disk_free_bytes,f.time_sync_ok,f.pending_updates,
 		f.agent_version,f.agent_build_number,f.agent_build_commit,f.agent_build_date,
-		f.agent_build_target,f.agent_build_type
+		f.agent_build_target,f.agent_build_type,
+		(SELECT COUNT(*) FROM docker_projects dp WHERE dp.host_id=h.id),
+		(SELECT COUNT(*) FROM docker_containers dc WHERE dc.host_id=h.id)
 		FROM hosts h LEFT JOIN host_facts f ON f.host_id=h.id WHERE h.address=? AND h.port=?`, address, port)
 	return scanHost(row)
 }
@@ -731,7 +737,9 @@ func (s *Store) GetHost(id string) (Host, error) {
 		f.collected_at,f.uptime_seconds,f.boot_time,f.kernel,f.os_pretty_name,f.package_manager,
 		f.reboot_required,f.disk_free_bytes,f.time_sync_ok,f.pending_updates,
 		f.agent_version,f.agent_build_number,f.agent_build_commit,f.agent_build_date,
-		f.agent_build_target,f.agent_build_type
+		f.agent_build_target,f.agent_build_type,
+		(SELECT COUNT(*) FROM docker_projects dp WHERE dp.host_id=h.id),
+		(SELECT COUNT(*) FROM docker_containers dc WHERE dc.host_id=h.id)
 		FROM hosts h LEFT JOIN host_facts f ON f.host_id=h.id WHERE h.id=?`, id)
 	return scanHost(row)
 }
@@ -750,7 +758,8 @@ func scanHost(row scanner) (Host, error) {
 	err := row.Scan(&host.ID, &host.Name, &host.Address, &host.Port, &host.Username, &host.AuthType, &host.KeyPath,
 		&host.OSFamily, &host.OSVersion, &host.Status, &host.Tags, &host.GroupName, &host.CMDBCIID, &host.CreatedAt, &host.UpdatedAt,
 		&collectedAt, &uptime, &bootTime, &kernel, &pretty, &pkg, &reboot, &disk, &timeSync, &pending,
-		&agentVersion, &agentBuildNumber, &agentBuildCommit, &agentBuildDate, &agentBuildTarget, &agentBuildType)
+		&agentVersion, &agentBuildNumber, &agentBuildCommit, &agentBuildDate, &agentBuildTarget, &agentBuildType,
+		&host.DockerProjectCount, &host.DockerContainerCount)
 	if err != nil {
 		return Host{}, err
 	}

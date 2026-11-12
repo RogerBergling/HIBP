@@ -517,7 +517,20 @@ function hostRow(host) {
   const hostIcon = el('div', 'host-ico');
   hostIcon.append(icon('host'));
   const hostText = el('div');
-  hostText.append(el('div', 'host-name', host.name), el('div', 'host-ip', host.address + ':' + host.port));
+  const hostName = el('div', 'host-name');
+  hostName.append(document.createTextNode(host.name));
+  if (Number(host.docker_project_count || 0) > 0 || Number(host.docker_container_count || 0) > 0) {
+    const dockerToggle = el('button', 'host-docker-toggle', '+');
+    dockerToggle.type = 'button';
+    dockerToggle.title = 'Open Docker containers for ' + host.name;
+    dockerToggle.setAttribute('aria-label', dockerToggle.title);
+    dockerToggle.addEventListener('click', (event) => {
+      event.stopPropagation();
+      showHostDetails(host, 'containers');
+    });
+    hostName.append(dockerToggle);
+  }
+  hostText.append(hostName, el('div', 'host-ip', host.address + ':' + host.port));
   hostText.classList.add('host-open');
   hostText.title = 'Open host details';
   hostText.tabIndex = 0;
@@ -2592,6 +2605,83 @@ async function applyDockerProject(host, project, reload) {
   }
 }
 
+async function checkAllDockerProjects(host, reload) {
+  if (!confirm('Pull the latest images for all Compose projects on "' + host.name + '"? Running containers will not be restarted.')) return;
+  toast('Checking all Docker Compose projects on ' + host.name + '…');
+  try {
+    const password = await passwordFor(host);
+    const response = await requestWithSudo(
+      host,
+      '/api/v1/hosts/' + encodeURIComponent(host.id) + '/docker/check-all',
+      (sudoPassword) => ({ password, sudo_password: sudoPassword }),
+      { method: 'POST' },
+    );
+    const result = response || {};
+    const body = el('div', 'modal-body');
+    body.append(el('p', 'muted', 'Images were pulled and compared. No containers were restarted by this check.'));
+    const summary = el('div', 'status-list');
+    const row = (label, value) => {
+      const div = el('div');
+      div.append(el('span', '', label), el('b', '', value));
+      return div;
+    };
+    summary.append(row('Projects checked', String(result.checked || 0)), row('Updates available', String(result.updates || 0)), row('Failed', String(result.failed || 0)));
+    body.append(summary);
+    const wrap = el('div', 'scroll-list');
+    const table = el('table');
+    const head = el('tr');
+    for (const label of ['Project', 'Status', 'Summary']) head.append(el('th', '', label));
+    table.append(head);
+    for (const project of result.results || []) {
+      const tr = el('tr');
+      const statusClass = project.status === 'update-available' ? 'review'
+        : project.status === 'up-to-date' ? 'reachable'
+          : project.status === 'failed' ? 'unreachable' : 'unknown';
+      const statusCell = el('td');
+      statusCell.append(el('span', 'pill ' + statusClass, project.status || 'unknown'));
+      tr.append(el('td', '', project.project || '—'), statusCell, el('td', '', project.summary || project.error || '—'));
+      table.append(tr);
+    }
+    if (!(result.results || []).length) wrap.append(el('div', '', 'No Compose projects were found.'));
+    else wrap.append(table);
+    body.append(wrap);
+    const actions = el('div', 'modal-actions');
+    const close = el('button', 'btn', 'Close');
+    close.type = 'button';
+    actions.append(close);
+    body.append(actions);
+    const closeFn = openModal('Docker check all — ' + ((result.results || []).length) + ' projects', body, null, 'wide');
+    close.addEventListener('click', closeFn);
+    await reload();
+  } catch (error) {
+    if (error.message !== 'cancelled') toast(error.message, 'error');
+  }
+}
+
+async function updateSelectedDockerProjects(host, projects, reload) {
+  const selected = projects.slice();
+  if (!selected.length) {
+    toast('Select at least one Compose project', 'error');
+    return;
+  }
+  const answer = prompt('Type UPDATE to pull images and recreate the ' + selected.length + ' selected Compose project(s) on "' + host.name + '":');
+  if (answer !== 'UPDATE') return;
+  toast('Updating selected Docker Compose projects on ' + host.name + '…');
+  try {
+    const password = await passwordFor(host);
+    const response = await requestWithSudo(
+      host,
+      '/api/v1/hosts/' + encodeURIComponent(host.id) + '/docker/update-selected',
+      (sudoPassword) => ({ projects: selected, confirm: 'update', password, sudo_password: sudoPassword }),
+      { method: 'POST' },
+    );
+    showDockerUpdateAllResult(response, 'Docker update selected');
+    await reload();
+  } catch (error) {
+    if (error.message !== 'cancelled') toast(error.message, 'error');
+  }
+}
+
 async function updateAllDockerProjects(host, reload) {
   const answer = prompt('Type UPDATE to pull images and recreate only changed Compose projects on "' + host.name + '":');
   if (answer !== 'UPDATE') return;
@@ -2611,7 +2701,7 @@ async function updateAllDockerProjects(host, reload) {
   }
 }
 
-function showDockerUpdateAllResult(result) {
+function showDockerUpdateAllResult(result, title = 'Docker update all') {
   const body = el('div', 'modal-body');
   body.append(el('p', 'muted', 'Only Compose projects whose pulled image changed are recreated. Containers in unchanged projects are left running.'));
   const summary = el('div', 'status-list');
@@ -2632,7 +2722,7 @@ function showDockerUpdateAllResult(result) {
   const head = el('tr');
   for (const label of ['Project', 'Action', 'Changed services', 'Detail']) head.append(el('th', '', label));
   table.append(head);
-  for (const project of result.projects || []) {
+  for (const project of (result.projects || result.results || [])) {
     const row = el('tr');
     const statusClass = project.action === 'updated' ? 'reachable'
       : project.action === 'failed' ? 'unreachable' : 'unknown';
@@ -2651,7 +2741,8 @@ function showDockerUpdateAllResult(result) {
     );
     table.append(row);
   }
-  if (!(result.projects || []).length) {
+  const projects = result.projects || result.results || [];
+  if (!projects.length) {
     wrap.append(el('div', '', 'No Compose projects were found.'));
   } else {
     wrap.append(table);
@@ -2662,7 +2753,7 @@ function showDockerUpdateAllResult(result) {
   close.type = 'button';
   actions.append(close);
   body.append(actions);
-  const closeFn = openModal('Docker update all — ' + ((result.projects || []).length) + ' projects', body, null, 'wide');
+  const closeFn = openModal(title + ' — ' + projects.length + ' projects', body, null, 'wide');
   close.addEventListener('click', closeFn);
 }
 
@@ -2671,19 +2762,45 @@ function renderContainersPanel(panel, data, host, reload) {
   const info = (data.system_info && data.system_info.docker) || {};
   const projects = data.docker_projects || [];
   const containers = data.docker_containers || [];
+  const checks = new Map((data.docker_checks || []).map((check) => [check.project, check]));
+  const selectedProjects = new Set();
   panel.append(el('p', 'muted', info.available
     ? 'Docker Engine ' + (info.version || 'unknown') + ' · Compose ' + (info.compose_version || 'unknown')
     : 'Docker inventory has not been collected or Docker is not installed.'));
 
   const projectWrap = el('div', 'detail-grid');
   if (projects.length === 0) {
-    const empty = el('p', 'muted', 'No Compose projects cached.');
+    const empty = el('p', 'muted', 'No Compose projects cached. Use Collect Docker inventory to discover them.');
     projectWrap.append(empty);
   } else {
     for (const project of projects) {
       const card = el('div', 'detail-card');
-      card.append(el('h3', '', project.name));
+      const checkState = checks.get(project.name) || {};
+      const head = el('div', 'project-head');
+      const select = el('input', 'row-select project-select');
+      select.type = 'checkbox';
+      select.title = 'Select ' + project.name + ' for update';
+      select.setAttribute('aria-label', select.title);
+      select.addEventListener('change', () => {
+        if (select.checked) selectedProjects.add(project.name);
+        else selectedProjects.delete(project.name);
+        syncUpdateSelected();
+      });
+      head.append(select, el('h3', '', project.name));
+      card.append(head);
       card.append(el('p', 'muted', (project.status || 'unknown') + (project.config_files ? ' · ' + project.config_files : '')));
+      const statusText = checkState.status === 'update-available' ? 'update available'
+        : checkState.status === 'up-to-date' ? 'up to date'
+          : checkState.status === 'updated' ? 'updated'
+            : checkState.status === 'failed' ? 'failed' : 'not checked';
+      const statusClass = checkState.status === 'update-available' ? 'review'
+        : checkState.status === 'up-to-date' || checkState.status === 'updated' ? 'reachable'
+          : checkState.status === 'failed' ? 'unreachable' : 'unknown';
+      const status = el('p', 'project-status');
+      status.append(el('span', 'pill ' + statusClass, statusText));
+      if (checkState.summary) status.append(document.createTextNode(' · ' + checkState.summary));
+      if (checkState.checked_at) status.title = 'Checked ' + new Date(checkState.checked_at).toLocaleString();
+      card.append(status);
       const projectActions = el('div', 'modal-actions');
       const check = el('button', 'btn small', 'Check updates');
       check.type = 'button';
@@ -2710,11 +2827,24 @@ function renderContainersPanel(panel, data, host, reload) {
   }
   const projectContent = el('div');
   const bulkActions = el('div', 'modal-actions');
+  const checkAll = el('button', 'btn', 'Check all projects');
+  checkAll.type = 'button';
+  checkAll.title = 'Pull images and compare all Compose projects without restarting containers';
+  checkAll.addEventListener('click', () => checkAllDockerProjects(host, reload));
+  const updateSelected = el('button', 'btn primary', 'Update selected');
+  updateSelected.type = 'button';
+  updateSelected.disabled = true;
+  updateSelected.title = 'Pull and recreate only the selected Compose projects';
+  const syncUpdateSelected = () => {
+    updateSelected.disabled = selectedProjects.size === 0;
+    updateSelected.textContent = selectedProjects.size ? 'Update selected (' + selectedProjects.size + ')' : 'Update selected';
+  };
+  updateSelected.addEventListener('click', () => updateSelectedDockerProjects(host, [...selectedProjects], reload));
   const updateAll = el('button', 'btn danger', 'Update all Compose projects');
   updateAll.type = 'button';
   updateAll.title = 'Pull images and recreate only projects whose image changed';
   updateAll.addEventListener('click', () => updateAllDockerProjects(host, reload));
-  bulkActions.append(updateAll);
+  bulkActions.append(checkAll, updateSelected, updateAll);
   projectContent.append(bulkActions, projectWrap);
   panel.append(detailSection('Compose projects', projectContent));
 
@@ -2773,13 +2903,13 @@ function renderContainersPanel(panel, data, host, reload) {
   panel.append(actions);
 }
 
-async function showHostDetails(host) {
+async function showHostDetails(host, initialTab = 'overview') {
   const body = el('div', 'modal-body');
   const tabs = el('div', 'tabs');
   const panels = el('div');
   const buttons = new Map();
   const panelNodes = new Map();
-  let active = 'overview';
+  let active = initialTab === 'containers' ? 'containers' : 'overview';
   for (const [id, label] of [['overview', 'Overview'], ['system', 'System'], ['containers', 'Containers']]) {
     const button = el('button', 'tab', label);
     button.type = 'button';

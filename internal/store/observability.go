@@ -54,6 +54,51 @@ type DockerContainer struct {
 	LastSeen    string `json:"last_seen"`
 }
 
+// DockerProjectCheck is the latest pull/compare result for a Compose project.
+type DockerProjectCheck struct {
+	HostID    string `json:"host_id"`
+	Project   string `json:"project"`
+	Status    string `json:"status"`
+	CheckedAt string `json:"checked_at"`
+	Summary   string `json:"summary"`
+	Error     string `json:"error,omitempty"`
+}
+
+func (s *Store) SaveDockerProjectCheck(check DockerProjectCheck) error {
+	if check.HostID == "" || check.Project == "" {
+		return errors.New("host id and Docker project are required")
+	}
+	if check.CheckedAt == "" {
+		check.CheckedAt = crypto.Now()
+	}
+	_, err := s.db.Exec(`INSERT INTO docker_project_checks(host_id,project,status,checked_at,summary,error)
+		VALUES(?,?,?,?,?,?)
+		ON CONFLICT(host_id,project) DO UPDATE SET
+			status=excluded.status, checked_at=excluded.checked_at,
+			summary=excluded.summary, error=excluded.error`,
+		check.HostID, check.Project, check.Status, check.CheckedAt, check.Summary, check.Error)
+	return err
+}
+
+func (s *Store) ListDockerProjectChecks(hostID string) ([]DockerProjectCheck, error) {
+	rows, err := s.db.Query(`SELECT host_id,project,status,checked_at,summary,error
+		FROM docker_project_checks WHERE host_id=? ORDER BY project`, hostID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var checks []DockerProjectCheck
+	for rows.Next() {
+		var check DockerProjectCheck
+		if err := rows.Scan(&check.HostID, &check.Project, &check.Status, &check.CheckedAt,
+			&check.Summary, &check.Error); err != nil {
+			return nil, err
+		}
+		checks = append(checks, check)
+	}
+	return checks, rows.Err()
+}
+
 func (s *Store) SaveSystemInfo(hostID, collectedAt, payloadJSON string) error {
 	if hostID == "" || payloadJSON == "" {
 		return errors.New("host id and system info payload are required")

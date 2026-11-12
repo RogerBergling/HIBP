@@ -358,3 +358,9 @@ label.field.checkbox-field input { width: auto; accent-color: #14b8a6; }
 .integration-error { color: #fca5a5; }
 .integration-card .modal-actions { margin-top: auto; }
 @media (max-width: 1100px) { .integration-grid { grid-template-columns: 1fr; } }
+.project-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.project-head h3 { margin: 0; }
+.project-status { margin: 4px 0 8px; font-size: 10.5px; color: var(--muted); }
+.project-status .pill { margin-right: 4px; }
+.host-docker-toggle { display: inline-grid; place-items: center; width: 16px; height: 16px; margin-left: 6px; padding: 0; border: 1px solid rgba(94, 234, 212, .45); border-radius: 4px; background: rgba(20, 184, 166, .12); color: #5eead4; font-size: 12px; line-height: 1; cursor: pointer; vertical-align: middle; }
+.host-docker-toggle:hover { background: rgba(20, 184, 166, .24); }

@@ -16,6 +16,7 @@ import (
 
 	"github.com/RogerBergling/hibp/internal/auth"
 	"github.com/RogerBergling/hibp/internal/buildinfo"
+	"github.com/RogerBergling/hibp/internal/helper"
 	"github.com/RogerBergling/hibp/internal/store"
 	"github.com/go-webauthn/webauthn/webauthn"
 )
@@ -779,6 +780,11 @@ func TestHostDetailsEndpoint(t *testing.T) {
 		[]store.DockerContainer{{ContainerID: "abc", Name: "web-1", Project: "web", Service: "frontend", Image: "nginx", State: "running", Health: "healthy"}}); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.SaveDockerProjectCheck(store.DockerProjectCheck{
+		HostID: host.ID, Project: "web", Status: "update-available", Summary: "Update available: frontend",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	resp = request(t, http.MethodGet, ts.URL+"/api/v1/hosts/"+host.ID+"/details", "test-token", "")
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -786,16 +792,24 @@ func TestHostDetailsEndpoint(t *testing.T) {
 		t.Fatalf("details failed: %d %s", resp.StatusCode, data)
 	}
 	var details struct {
-		SystemInfo map[string]any          `json:"system_info"`
-		Metrics    []store.MetricSample    `json:"metrics"`
-		Projects   []store.DockerProject   `json:"docker_projects"`
-		Containers []store.DockerContainer `json:"docker_containers"`
+		Host       store.Host                 `json:"host"`
+		SystemInfo map[string]any             `json:"system_info"`
+		Metrics    []store.MetricSample       `json:"metrics"`
+		Projects   []store.DockerProject      `json:"docker_projects"`
+		Containers []store.DockerContainer    `json:"docker_containers"`
+		Checks     []store.DockerProjectCheck `json:"docker_checks"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&details); err != nil {
 		t.Fatal(err)
 	}
 	if details.SystemInfo["hostname"] != "web01" || len(details.Metrics) != 1 || len(details.Projects) != 1 || len(details.Containers) != 1 {
 		t.Fatalf("unexpected details: %+v", details)
+	}
+	if len(details.Checks) != 1 || details.Checks[0].Status != "update-available" {
+		t.Fatalf("unexpected docker checks: %+v", details.Checks)
+	}
+	if details.Host.DockerProjectCount != 1 || details.Host.DockerContainerCount != 1 {
+		t.Fatalf("unexpected docker counts: %+v", details.Host)
 	}
 }
 
@@ -818,6 +832,77 @@ func TestDockerActionValidation(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected missing apply confirmation rejection, got %d", resp.StatusCode)
+	}
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/hosts/"+host.ID+"/docker/update-selected", "test-token", `{"projects":[],"confirm":"update"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected empty selection rejection, got %d", resp.StatusCode)
+	}
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/hosts/"+host.ID+"/docker/update-selected", "test-token", `{"projects":["bad project"],"confirm":"update"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected invalid selected project rejection, got %d", resp.StatusCode)
+	}
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/hosts/"+host.ID+"/docker/update-selected", "test-token", `{"projects":["web"],"confirm":"update"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected unknown selected project rejection, got %d", resp.StatusCode)
+	}
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/hosts/"+host.ID+"/docker/check-all", "test-token", ``)
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
+		t.Fatalf("check-all route is not registered: %d", resp.StatusCode)
+	}
+}
+
+func TestDockerCheckStatusAndPersistence(t *testing.T) {
+	_, db, app := testServerWithApp(t, true)
+	host, err := db.CreateHost(store.Host{
+		Name: "web01", Address: "10.0.0.10", Port: 22, Username: "ubuntu",
+		AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	status, summary := dockerCheckStatus(helper.DockerCheckResult{OK: true, Services: []helper.DockerServiceUpdate{
+		{Service: "frontend", Status: "new-image"},
+		{Service: "db", Status: "unchanged"},
+	}})
+	if status != "update-available" || summary != "Update available: frontend" {
+		t.Fatalf("unexpected update status: %s %s", status, summary)
+	}
+	status, summary = dockerCheckStatus(helper.DockerCheckResult{OK: true})
+	if status != "up-to-date" || summary != "Up to date" {
+		t.Fatalf("unexpected up-to-date status: %s %s", status, summary)
+	}
+	status, summary = dockerCheckStatus(helper.DockerCheckResult{OK: false, Error: "pull failed"})
+	if status != "failed" || summary != "pull failed" {
+		t.Fatalf("unexpected failed status: %s %s", status, summary)
+	}
+
+	app.saveDockerProjectUpdate(host.ID, helper.DockerProjectUpdateResult{
+		Name: "web", Action: "updated", OK: true,
+		Check: &helper.DockerCheckResult{OK: true, Services: []helper.DockerServiceUpdate{{Service: "frontend", Status: "new-image"}}},
+	})
+	checks, err := db.ListDockerProjectChecks(host.ID)
+	if err != nil || len(checks) != 1 {
+		t.Fatalf("docker checks: %+v %v", checks, err)
+	}
+	if checks[0].Status != "updated" || checks[0].Summary != "Recreated: frontend" {
+		t.Fatalf("updated status not persisted: %+v", checks[0])
+	}
+
+	app.saveDockerProjectUpdate(host.ID, helper.DockerProjectUpdateResult{Name: "web", Action: "no-change", OK: true})
+	checks, _ = db.ListDockerProjectChecks(host.ID)
+	if checks[0].Status != "up-to-date" || checks[0].Summary != "Up to date" {
+		t.Fatalf("no-change status not persisted: %+v", checks[0])
+	}
+
+	app.saveDockerProjectUpdate(host.ID, helper.DockerProjectUpdateResult{Name: "web", Action: "failed", Error: "apply failed"})
+	checks, _ = db.ListDockerProjectChecks(host.ID)
+	if checks[0].Status != "failed" || checks[0].Error != "apply failed" {
+		t.Fatalf("failed status not persisted: %+v", checks[0])
 	}
 }
 

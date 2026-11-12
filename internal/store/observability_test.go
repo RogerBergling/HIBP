@@ -46,6 +46,22 @@ func TestObservabilitySnapshotsAndSettings(t *testing.T) {
 	if projects[0].Name != "web" || containers[0].Health != "healthy" {
 		t.Fatalf("unexpected docker inventory: %+v %+v", projects, containers)
 	}
+	if err := s.SaveDockerProjectCheck(DockerProjectCheck{
+		HostID: host.ID, Project: "web", Status: "update-available", Summary: "Update available: frontend",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	checks, err := s.ListDockerProjectChecks(host.ID)
+	if err != nil || len(checks) != 1 || checks[0].Status != "update-available" || checks[0].CheckedAt == "" {
+		t.Fatalf("docker checks: %+v %v", checks, err)
+	}
+	hosts, err := s.ListHosts()
+	if err != nil || len(hosts) != 1 {
+		t.Fatalf("hosts: %+v %v", hosts, err)
+	}
+	if hosts[0].DockerProjectCount != 1 || hosts[0].DockerContainerCount != 1 {
+		t.Fatalf("docker counts: %+v", hosts[0])
+	}
 
 	if err := s.SetSetting("fleet", "collector.metrics_interval", "5m"); err != nil {
 		t.Fatal(err)

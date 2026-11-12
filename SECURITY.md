@@ -139,6 +139,11 @@ cron-based patch schedules are implemented.
   exactly one validated project argument for check/apply, and a separate
   argument-free `docker-update-all` action for the bulk path. The `docker-check *`
   and `docker-apply *` sudoers wildcards are constrained by that validation.
+  **Check all projects** and **Update selected** are controller-side loops over
+  the same fixed per-project actions; they add no new privileged operation.
+- Per-project Docker status is stored in `docker_project_checks` inside the
+  encrypted database. It contains project names, status, timestamps, and a
+  bounded summary or helper error, never Compose file contents or secrets.
 - Compose files and their parent directory chain must be root-owned and not
   group/world-writable. `.env` files and build contexts must be protected by the
   operator. No automatic updates, no `down -v`, and no volume pruning. Check,

@@ -206,7 +206,7 @@ func dockerApply(ctx context.Context, args []string) (DockerApplyResult, error) 
 	return result, nil
 }
 
-func dockerCheckNeedsApply(result DockerCheckResult) bool {
+func DockerCheckNeedsApply(result DockerCheckResult) bool {
 	for _, service := range result.Services {
 		switch service.Status {
 		case "new-image", "image-updated", "container-stale":
@@ -246,7 +246,7 @@ func dockerUpdateAll(ctx context.Context) (DockerUpdateAllResult, error) {
 			result.Projects = append(result.Projects, entry)
 			continue
 		}
-		if !dockerCheckNeedsApply(check) {
+		if !DockerCheckNeedsApply(check) {
 			entry.Action = "no-change"
 			entry.OK = true
 			result.Skipped++
