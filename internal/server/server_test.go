@@ -884,6 +884,60 @@ func TestHostDetailsEndpoint(t *testing.T) {
 	}
 }
 
+func TestHostDetailsMetricsRange(t *testing.T) {
+	ts, db := testServer(t)
+	body := `{"name":"web01","address":"10.0.0.10","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519"}`
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/hosts", "test-token", body)
+	defer resp.Body.Close()
+	var host store.Host
+	if err := json.NewDecoder(resp.Body).Decode(&host); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := db.SaveMetrics(host.ID, store.MetricSample{
+		CollectedAt: now.Add(-2 * time.Hour).Format(time.RFC3339Nano), CPUPercent: 20,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveMetrics(host.ID, store.MetricSample{
+		CollectedAt: now.Add(-40 * 24 * time.Hour).Format(time.RFC3339Nano), CPUPercent: 80,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	type details struct {
+		Metrics     []store.MetricSample `json:"metrics"`
+		MetricsDays int                  `json:"metrics_days"`
+	}
+	fetch := func(query string) details {
+		resp := request(t, http.MethodGet, ts.URL+"/api/v1/hosts/"+host.ID+"/details"+query, "test-token", "")
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			data, _ := io.ReadAll(resp.Body)
+			t.Fatalf("details%s failed: %d %s", query, resp.StatusCode, data)
+		}
+		var payload details
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		return payload
+	}
+	defaults := fetch("")
+	if defaults.MetricsDays != 30 || len(defaults.Metrics) != 1 || defaults.Metrics[0].CPUPercent != 20 {
+		t.Fatalf("unexpected default range: %+v", defaults)
+	}
+	wide := fetch("?metrics_days=90")
+	if wide.MetricsDays != 90 || len(wide.Metrics) != 2 {
+		t.Fatalf("unexpected 90-day range: %+v", wide)
+	}
+	for _, query := range []string{"?metrics_days=0", "?metrics_days=abc", "?metrics_days=3651"} {
+		resp := request(t, http.MethodGet, ts.URL+"/api/v1/hosts/"+host.ID+"/details"+query, "test-token", "")
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("expected %s to be rejected, got %d", query, resp.StatusCode)
+		}
+	}
+}
+
 func TestDockerActionValidation(t *testing.T) {
 	ts, _ := testServer(t)
 	body := `{"name":"web01","address":"10.0.0.10","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519"}`

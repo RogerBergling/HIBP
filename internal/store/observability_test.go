@@ -33,6 +33,14 @@ func TestObservabilitySnapshotsAndSettings(t *testing.T) {
 	if metrics[0].CPUPercent != 10 || metrics[1].CPUPercent != 50 {
 		t.Fatalf("metrics not oldest-first: %+v", metrics)
 	}
+	recent, err := s.ListMetricsSince(host.ID, "2026-11-11T07:03:00Z", 100)
+	if err != nil || len(recent) != 1 || recent[0].CPUPercent != 50 {
+		t.Fatalf("metrics since cutoff: %+v %v", recent, err)
+	}
+	limited, err := s.ListMetricsSince(host.ID, "2026-11-11T00:00:00Z", 1)
+	if err != nil || len(limited) != 1 || limited[0].CPUPercent != 50 {
+		t.Fatalf("limited metrics since cutoff: %+v %v", limited, err)
+	}
 
 	if err := s.SaveDockerInventory(host.ID,
 		[]DockerProject{{Name: "web", Status: "running(2)", ConfigFiles: "/opt/web/compose.yaml", WorkingDir: "/opt/web"}},

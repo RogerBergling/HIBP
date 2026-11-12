@@ -1255,7 +1255,11 @@ Full facts/system information runs twice a day by default. Lightweight
 are 5 minutes for metrics, 12 hours for full facts, and 30 days of metric
 retention; all three are configurable per fleet or per host. Ten seconds is
 allowed but discouraged for large fleets. The host detail **System** tab shows
-the current snapshot and the last 10 days of metric history.
+the current snapshot and metric history with selectable **24-hour, 7-day,
+10-day, 30-day, and 90-day** windows; 30 days is the default. The view queries
+metrics by timestamp, so a 30-day window at the default 5-minute interval shows
+the full month instead of stopping at a fixed sample count. Retention pruning
+still determines how far back data exists.
 
 ### Monitoring and email
 

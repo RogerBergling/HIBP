@@ -690,6 +690,15 @@ func (s *Server) handleHostDetails(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "host not found")
 		return
 	}
+	metricsDays := 30
+	if raw := strings.TrimSpace(r.URL.Query().Get("metrics_days")); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > 3650 {
+			writeError(w, http.StatusBadRequest, "metrics_days must be between 1 and 3650")
+			return
+		}
+		metricsDays = value
+	}
 	key, _ := s.store.GetHostKey(host.ID)
 	host.TrustedKey = key
 	snapshot, _ := s.store.GetSystemInfo(host.ID)
@@ -697,7 +706,8 @@ func (s *Server) handleHostDetails(w http.ResponseWriter, r *http.Request) {
 	if snapshot.PayloadJSON != "" {
 		_ = json.Unmarshal([]byte(snapshot.PayloadJSON), &systemInfo)
 	}
-	metrics, _ := s.store.ListMetrics(host.ID, 2880)
+	since := time.Now().UTC().Add(-time.Duration(metricsDays) * 24 * time.Hour).Format(time.RFC3339Nano)
+	metrics, _ := s.store.ListMetricsSince(host.ID, since, 100000)
 	projects, containers, _ := s.store.GetDockerInventory(host.ID)
 	checks, _ := s.store.ListDockerProjectChecks(host.ID)
 	settings := s.resolveSettings(host.ID)
@@ -705,6 +715,7 @@ func (s *Server) handleHostDetails(w http.ResponseWriter, r *http.Request) {
 		"host":              host,
 		"system_info":       systemInfo,
 		"metrics":           metrics,
+		"metrics_days":      metricsDays,
 		"docker_projects":   projects,
 		"docker_containers": containers,
 		"docker_checks":     checks,

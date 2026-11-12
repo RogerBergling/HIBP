@@ -168,6 +168,36 @@ func (s *Store) DeleteMetricsBeforeForHost(hostID, cutoff string) error {
 	return err
 }
 
+// ListMetricsSince returns metric samples at or after the supplied RFC3339
+// timestamp, oldest first. The limit is a safety cap for very dense collection
+// intervals; when it is reached, the newest samples in the range are kept.
+func (s *Store) ListMetricsSince(hostID, since string, limit int) ([]MetricSample, error) {
+	if limit <= 0 || limit > 100000 {
+		limit = 100000
+	}
+	rows, err := s.db.Query(`SELECT collected_at,cpu_percent,memory_percent,swap_percent,disk_percent,
+		load1,load5,load15,uptime_seconds FROM (
+			SELECT id,collected_at,cpu_percent,memory_percent,swap_percent,disk_percent,
+				load1,load5,load15,uptime_seconds FROM host_metrics
+			WHERE host_id=? AND collected_at>=? ORDER BY id DESC LIMIT ?
+		) ORDER BY id ASC`, hostID, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	samples := make([]MetricSample, 0, 1024)
+	for rows.Next() {
+		var sample MetricSample
+		if err := rows.Scan(&sample.CollectedAt, &sample.CPUPercent, &sample.MemoryPercent,
+			&sample.SwapPercent, &sample.DiskPercent, &sample.Load1, &sample.Load5,
+			&sample.Load15, &sample.UptimeSeconds); err != nil {
+			return nil, err
+		}
+		samples = append(samples, sample)
+	}
+	return samples, rows.Err()
+}
+
 func (s *Store) SaveDockerInventory(hostID string, projects []DockerProject, containers []DockerContainer) error {
 	tx, err := s.db.Begin()
 	if err != nil {

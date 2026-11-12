@@ -2330,9 +2330,36 @@ function renderOverviewPanel(panel, data, host) {
   panel.append(grid);
 }
 
-function renderSystemPanel(panel, data, host, reload) {
+function renderSystemPanel(panel, data, host, reload, onMetricsDaysChange = async () => {}) {
   panel.replaceChildren();
   const metrics = data.metrics || [];
+  const metricsDays = Number(data.metrics_days) || 30;
+  const metricHead = el('div', 'metric-head');
+  const metricSummary = el('div', 'muted');
+  if (metrics.length) {
+    const first = new Date(metrics[0].collected_at).toLocaleString();
+    const last = new Date(metrics[metrics.length - 1].collected_at).toLocaleString();
+    metricSummary.textContent = 'Last ' + metricsDays + ' days · ' + metrics.length.toLocaleString() + ' samples · ' + first + ' → ' + last;
+  } else {
+    metricSummary.textContent = 'No samples in the last ' + metricsDays + ' days.';
+  }
+  const range = el('select', 'metric-range');
+  range.setAttribute('aria-label', 'Metric history range');
+  for (const [days, label] of [[1, '24 hours'], [7, '7 days'], [10, '10 days'], [30, '30 days'], [90, '90 days']]) {
+    const option = el('option', '', label);
+    option.value = String(days);
+    option.selected = days === metricsDays;
+    range.append(option);
+  }
+  range.addEventListener('change', async () => {
+    try {
+      await onMetricsDaysChange(Number(range.value));
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  });
+  metricHead.append(metricSummary, range);
+  panel.append(metricHead);
   const metricGrid = el('div', 'metric-grid');
   metricGrid.append(
     metricCard('CPU', metrics, 'cpu_percent', '#5eead4'),
@@ -2926,6 +2953,7 @@ async function showHostDetails(host, initialTab = 'overview') {
   const buttons = new Map();
   const panelNodes = new Map();
   let active = initialTab === 'containers' ? 'containers' : 'overview';
+  let metricsDays = 30;
   for (const [id, label] of [['overview', 'Overview'], ['system', 'System'], ['containers', 'Containers']]) {
     const button = el('button', 'tab', label);
     button.type = 'button';
@@ -2944,9 +2972,12 @@ async function showHostDetails(host, initialTab = 'overview') {
   openModal('Host — ' + host.name, body, null, 'wide');
   let data = null;
   const reload = async () => {
-    data = await api('/api/v1/hosts/' + encodeURIComponent(host.id) + '/details');
+    data = await api('/api/v1/hosts/' + encodeURIComponent(host.id) + '/details?metrics_days=' + metricsDays);
     renderOverviewPanel(panelNodes.get('overview'), data, host);
-    renderSystemPanel(panelNodes.get('system'), data, host, reload);
+    renderSystemPanel(panelNodes.get('system'), data, host, reload, async (days) => {
+      metricsDays = days;
+      await reload();
+    });
     renderContainersPanel(panelNodes.get('containers'), data, host, reload);
     for (const [key, node] of buttons) node.classList.toggle('active', key === active);
     for (const [key, node] of panelNodes) node.classList.toggle('hidden', key !== active);

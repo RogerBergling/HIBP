@@ -233,7 +233,7 @@ th:last-child, td:last-child { padding-right: 15px; }
 .pill.review { color: #fcd34d; background: var(--amber-bg); border-color: rgba(244, 183, 64, .18); }
 .reboot-yes { color: var(--amber); font-weight: 650; }
 .reboot-no { color: var(--muted-2); }
-.actions { display: grid; grid-template-columns: repeat(3, max-content); gap: 3px; align-items: center; }
+.actions { display: grid; grid-template-columns: repeat(4, max-content); gap: 3px; align-items: center; }
 .actions .btn.small { height: 24px; padding: 0 4px; font-size: 9.5px; white-space: nowrap; }
 .empty-state { padding: 44px 24px; text-align: center; color: var(--muted); }
 .empty-state h3 { color: var(--text); margin: 0 0 6px; font-size: 15px; }
@@ -276,6 +276,10 @@ th:last-child, td:last-child { padding-right: 15px; }
 .mfa-qr { display: block; width: 180px; height: 180px; margin: 10px 0; border-radius: 6px; background: #fff; padding: 6px; }
 .mfa-secret { margin-bottom: 10px; letter-spacing: .14em; }
 .mfa-form { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+.metric-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.metric-head .muted { font-size: 10px; }
+.metric-range { border-radius: 6px; border: 1px solid var(--border); background: #0a1220; color: var(--text); padding: 4px 6px; font-size: 10px; outline: none; }
+.metric-range:focus { border-color: rgba(45, 212, 191, .5); box-shadow: 0 0 0 3px rgba(45, 212, 191, .07); }
 .metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
 .metric-card { background: #08101d; border: 1px solid var(--border-soft); border-radius: 8px; padding: 9px; }
 .metric-card .metric-value { font-size: 18px; font-weight: 750; color: #e7eef9; }
