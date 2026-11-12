@@ -59,10 +59,11 @@ Out of scope:
   it. Production artifacts must be built with `make production`, which uses
   current SQLCipher 4.20 and the patched `third_party/go-sqlite3` driver.
 - Password SSH and sudo password fallbacks are manual-run only and never
-  stored. `ssh-agent`, hardware-backed keys, SSH certificates, and
-  passphrase-protected key files are not implemented. Host create, update, CSV
-  import, and CMDB import reject `agent` and `certificate`; scheduled
-  collection only processes `auth_type=key`.
+  stored. Bulk patch reuses the first entered sudo password in browser memory
+  for that batch only; it is never persisted. `ssh-agent`, hardware-backed keys,
+  SSH certificates, and passphrase-protected key files are not implemented.
+  Host create, update, CSV import, and CMDB import reject `agent` and
+  `certificate`; scheduled collection only processes `auth_type=key`.
 - `ProxyJump` is single-hop only. Multi-hop chains, interactive bastion
   authentication, SSH agent forwarding, and a jump host behind another jump are
   not supported.

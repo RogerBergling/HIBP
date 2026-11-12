@@ -523,7 +523,7 @@ func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	result := helper.Result{Action: action, OK: code == 0, ExitCode: code, Output: output}
+	result := helper.Result{Action: action, OK: code == 0 || (action == "check" && code == 100), ExitCode: code, Output: output}
 	if err := s.store.AddAudit(s.auditActor(r), "patch-"+action, "host", host.ID, fmt.Sprintf("exit=%d", code)); err != nil {
 		_ = err
 	}

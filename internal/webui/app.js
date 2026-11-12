@@ -19,6 +19,7 @@ const state = {
 };
 
 let fleetUpdateRunning = false;
+let fleetPatchRunning = false;
 
 const modalStack = [];
 
@@ -83,6 +84,12 @@ function syncHostSelection() {
     if (!node) continue;
     node.disabled = count === 0;
     node.textContent = count ? 'Update selected (' + count + ')' : 'Update selected';
+  }
+  for (const id of ['table-patch-selected', 'fleet-patch-selected']) {
+    const node = $(id);
+    if (!node) continue;
+    node.disabled = count === 0;
+    node.textContent = count ? 'Patch selected (' + count + ')' : 'Patch selected';
   }
 }
 
@@ -1929,19 +1936,27 @@ async function sudoPasswordFor(host) {
   return value;
 }
 
-async function requestWithSudo(host, path, payloadFor, options = {}) {
+async function requestWithSudo(host, path, payloadFor, options = {}, sudoCache = null) {
   const request = (sudoPassword) => api(path, {
     ...options,
     body: JSON.stringify(payloadFor(sudoPassword)),
   });
   try {
-    return await request('');
+    const cachedSudo = (sudoCache && sudoCache.value) || state.sudoPasswords.get(host.id) || '';
+    return await request(cachedSudo);
   } catch (error) {
     if (error.status === 409 && error.data && error.data.code === 'sudo_password_required') {
-      return request(await sudoPasswordFor(host));
+      let sudoPassword = sudoCache && sudoCache.value ? sudoCache.value : '';
+      if (!sudoPassword) {
+        sudoPassword = await sudoPasswordFor(host);
+        if (sudoCache) sudoCache.value = sudoPassword;
+      }
+      state.sudoPasswords.set(host.id, sudoPassword);
+      return request(sudoPassword);
     }
     if (error.status === 400 && error.data && error.data.code === 'sudo_password_invalid') {
       state.sudoPasswords.delete(host.id);
+      if (sudoCache) sudoCache.value = '';
     }
     throw error;
   }
@@ -2052,8 +2067,8 @@ async function bootstrapHost(host) {
 }
 
 async function fleetUpdateHelpers(hosts = null) {
-  if (fleetUpdateRunning) {
-    toast('A fleet helper update is already running', 'error');
+  if (fleetUpdateRunning || fleetPatchRunning) {
+    toast('Another fleet operation is already running', 'error');
     return;
   }
   const targets = Array.isArray(hosts) ? hosts.slice() : state.hosts.slice();
@@ -2229,6 +2244,186 @@ async function patchHost(host, dryRun) {
     await loadAll();
   } catch (error) {
     if (error.message !== 'cancelled') toast(error.message, 'error');
+  }
+}
+
+function showFleetPatchModal(hosts) {
+  const targets = hosts.slice();
+  if (!targets.length) {
+    toast('Select at least one host', 'error');
+    return;
+  }
+  if (fleetUpdateRunning || fleetPatchRunning) {
+    toast('Another fleet operation is already running', 'error');
+    return;
+  }
+  const body = el('div', 'modal-body');
+  body.append(el('p', 'muted', 'Dry-run shows what would change. Apply runs the root-owned helper on each selected host, one at a time. Keep this tab open.'));
+  const summary = el('div', 'status-list');
+  const row = (label, value) => {
+    const div = el('div');
+    div.append(el('span', '', label), el('b', '', value));
+    return div;
+  };
+  const pending = targets.reduce((sum, host) => sum + Number((host.facts || {}).pending_updates || 0), 0);
+  const reboots = targets.filter((host) => (host.facts || {}).reboot_required).length;
+  summary.append(
+    row('Selected hosts', String(targets.length)),
+    row('Pending updates', String(pending)),
+    row('Reboot required', String(reboots)),
+  );
+  body.append(summary);
+  const wrap = el('div', 'scroll-list');
+  const table = el('table');
+  const head = el('tr');
+  for (const label of ['Host', 'Pending', 'Reboot']) head.append(el('th', '', label));
+  table.append(head);
+  for (const host of targets) {
+    const facts = host.facts || {};
+    const tr = el('tr');
+    tr.append(
+      el('td', '', host.name),
+      el('td', '', String(facts.pending_updates || 0)),
+      el('td', '', facts.reboot_required ? 'yes' : 'no'),
+    );
+    table.append(tr);
+  }
+  wrap.append(table);
+  body.append(wrap);
+  body.append(el('p', 'muted', 'Hosts with an untrusted key, missing helper, or failed SSH connection are reported individually and do not stop the rest of the batch.'));
+  const actions = el('div', 'modal-actions');
+  const cancel = el('button', 'btn', 'Cancel');
+  cancel.type = 'button';
+  const dry = el('button', 'btn', 'Dry run');
+  dry.type = 'button';
+  const apply = el('button', 'btn danger', 'Apply updates');
+  apply.type = 'button';
+  actions.append(cancel, dry, apply);
+  body.append(actions);
+  const close = openModal((targets.length === 1 ? 'Patch selected host' : 'Patch ' + targets.length + ' selected hosts'), body);
+  cancel.addEventListener('click', close);
+  dry.addEventListener('click', () => { close(); fleetPatchHosts(targets, true); });
+  apply.addEventListener('click', () => {
+    if (!confirm('Apply updates on ' + targets.length + ' selected host(s)? This runs the root-owned helper on each target.')) return;
+    close();
+    fleetPatchHosts(targets, false);
+  });
+}
+
+async function fleetPatchHosts(hosts, dryRun) {
+  if (fleetUpdateRunning || fleetPatchRunning) {
+    toast('Another fleet operation is already running', 'error');
+    return;
+  }
+  const targets = hosts.slice();
+  if (!targets.length) return;
+
+  fleetPatchRunning = true;
+  let cancelled = false;
+  const body = el('div', 'modal-body');
+  body.append(el('p', 'muted', (dryRun ? 'Checking' : 'Applying updates') + ' sequentially. Keep this tab open.'));
+  const summary = el('div', 'muted', 'Preparing…');
+  const wrap = el('div', 'fleet-update-list');
+  const table = el('table');
+  const head = el('tr');
+  for (const label of ['Host', 'Status', 'Detail']) head.append(el('th', '', label));
+  table.append(head);
+  wrap.append(table);
+  body.append(summary, wrap);
+  const actions = el('div', 'modal-actions');
+  const stop = el('button', 'btn danger', 'Stop after current host');
+  stop.type = 'button';
+  actions.append(stop);
+  body.append(actions);
+  const close = openModal(dryRun ? 'Selected patch check' : 'Selected patch run', body, () => { cancelled = true; });
+  const rows = new Map();
+  const rowFor = (host) => {
+    let row = rows.get(host.id);
+    if (row) return row;
+    const status = el('span', 'pill unknown', 'pending');
+    const statusCell = el('td');
+    statusCell.append(status);
+    const detail = el('td', 'muted', '—');
+    row = el('tr');
+    row.append(el('td', '', host.name), statusCell, detail);
+    table.append(row);
+    row.status = status;
+    row.detail = detail;
+    rows.set(host.id, row);
+    return row;
+  };
+  const setStatus = (host, label, cls, detail) => {
+    const row = rowFor(host);
+    row.status.textContent = label;
+    row.status.className = 'pill ' + cls;
+    row.detail.textContent = detail || '—';
+  };
+  let stopping = false;
+  stop.addEventListener('click', () => {
+    if (fleetPatchRunning) {
+      stopping = true;
+      cancelled = true;
+      stop.disabled = true;
+      stop.textContent = 'Stopping…';
+      summary.textContent = 'Stopping after the current host…';
+      return;
+    }
+    close();
+  });
+
+  const sharedSudo = { value: '' };
+  let ok = 0;
+  let failed = 0;
+  let skipped = 0;
+  try {
+    for (let index = 0; index < targets.length; index++) {
+      if (cancelled) break;
+      const host = targets[index];
+      setStatus(host, 'running', 'unknown', 'connecting…');
+      summary.textContent = (dryRun ? 'Checking ' : 'Updating ') + (index + 1) + ' of ' + targets.length + '…';
+      try {
+        const password = await passwordFor(host);
+        if (cancelled) break;
+        const result = await requestWithSudo(
+          host,
+          '/api/v1/hosts/' + encodeURIComponent(host.id) + '/patch',
+          (sudoPassword) => ({ dry_run: dryRun, confirm: dryRun ? '' : 'apply', password, sudo_password: sudoPassword }),
+          { method: 'POST' },
+          sharedSudo,
+        );
+        const exitCode = Number(result.exit_code ?? 0);
+        const detail = dryRun
+          ? (exitCode === 100 ? 'updates available' : 'up to date')
+          : (result.ok ? 'patched' : 'exit ' + exitCode);
+        if (result.ok) {
+          setStatus(host, dryRun ? 'checked' : 'patched', 'reachable', detail);
+          ok++;
+        } else {
+          setStatus(host, 'failed', 'unreachable', detail);
+          failed++;
+        }
+      } catch (error) {
+        if (error.message === 'cancelled') {
+          setStatus(host, 'skipped', 'review', 'credential prompt cancelled');
+          skipped++;
+        } else if (error.status === 409 && error.data && error.data.code === 'host_busy') {
+          setStatus(host, 'failed', 'unreachable', 'another operation is running');
+          failed++;
+        } else {
+          setStatus(host, 'failed', 'unreachable', error.message);
+          failed++;
+        }
+      }
+    }
+  } finally {
+    fleetPatchRunning = false;
+    stop.disabled = false;
+    stop.textContent = 'Close';
+    stop.classList.remove('danger');
+    summary.textContent = (cancelled || stopping)
+      ? 'Stopped. Succeeded ' + ok + ', failed ' + failed + ', skipped ' + skipped + '.'
+      : 'Finished. Succeeded ' + ok + ', failed ' + failed + ', skipped ' + skipped + '.';
+    await loadAll();
   }
 }
 
@@ -3955,6 +4150,8 @@ function bind() {
   $('fleet-update-helpers').addEventListener('click', () => fleetUpdateHelpers());
   $('table-update-selected').addEventListener('click', () => fleetUpdateHelpers(selectedHosts()));
   $('fleet-update-selected').addEventListener('click', () => fleetUpdateHelpers(selectedHosts()));
+  $('table-patch-selected').addEventListener('click', () => showFleetPatchModal(selectedHosts()));
+  $('fleet-patch-selected').addEventListener('click', () => showFleetPatchModal(selectedHosts()));
   for (const id of ['hosts-select-all', 'hosts-select-all-full']) {
     $(id).addEventListener('change', (event) => setAllHostSelection(event.target.checked));
   }
