@@ -139,6 +139,29 @@ func (s *Store) EnableTOTP(userID, secret string, lastStep int64) error {
 	return requireRow(res)
 }
 
+// EnableTOTPIfNoPasskeys atomically enrolls the pending TOTP secret only when
+// the account still has no passkey, TOTP is not already enabled and the pending
+// secret is unchanged. It closes the window where a password-only session could
+// enroll TOTP on an account that was passkey-only when the request started.
+func (s *Store) EnableTOTPIfNoPasskeys(userID, pendingSecret string, lastStep int64) (bool, error) {
+	if pendingSecret == "" {
+		return false, errors.New("pending TOTP secret is required")
+	}
+	res, err := s.db.Exec(`UPDATE users SET totp_secret=?, totp_pending_secret='', totp_enabled=1,
+		totp_last_step=?, updated_at=?
+		WHERE id=? AND totp_enabled=0 AND totp_pending_secret=?
+		AND NOT EXISTS (SELECT 1 FROM user_passkeys WHERE user_id=?)`,
+		pendingSecret, lastStep, crypto.Now(), userID, pendingSecret, userID)
+	if err != nil {
+		return false, err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows == 1, nil
+}
+
 func (s *Store) SetTOTPLastStep(userID string, step int64) error {
 	res, err := s.db.Exec("UPDATE users SET totp_last_step=?, updated_at=? WHERE id=?", step, crypto.Now(), userID)
 	if err != nil {

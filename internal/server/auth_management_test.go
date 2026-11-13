@@ -2,11 +2,14 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/RogerBergling/hibp/internal/auth"
 	"github.com/RogerBergling/hibp/internal/store"
 	"github.com/go-webauthn/webauthn/webauthn"
 )
@@ -74,6 +77,103 @@ func TestMFAManagementPreventsRemovingLastFactor(t *testing.T) {
 	}
 	if loaded.TOTPEnabled {
 		t.Fatal("TOTP remained enabled after removal")
+	}
+}
+
+func TestPasskeyOnlyAccountCannotEnrollTOTPWithPassword(t *testing.T) {
+	ts, db := testServer(t)
+	user, err := db.GetUserByUsername("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addTestPasskey(t, db, user.ID, "Laptop")
+
+	// Obtain a password-only (MFA pending) session.
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/auth/login", "",
+		`{"username":"test","password":"test-password-123"}`)
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("password login failed: %d %s", resp.StatusCode, body)
+	}
+	pending := findSessionCookie(t, resp).Value
+	resp.Body.Close()
+
+	// The normal enrollment endpoint must refuse to start.
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/auth/totp/begin", pending, `{}`)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("passkey-only account started TOTP enrollment: %d %s", resp.StatusCode, body)
+	}
+
+	// Even if a pending secret already exists (for example from an older build
+	// or a race), verification must not enable it without an MFA-verified
+	// session.
+	const secret = "JBSWY3DPEHPK3PXP"
+	if err := db.SetTOTPPendingSecret(user.ID, secret); err != nil {
+		t.Fatal(err)
+	}
+	code, _, err := auth.TOTPCode(secret, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/auth/totp/verify", pending,
+		fmt.Sprintf(`{"code":%q}`, code))
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("passkey-only account enabled TOTP from a password-only session: %d %s", resp.StatusCode, body)
+	}
+	loaded, err := db.GetUserByID(user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.TOTPEnabled {
+		t.Fatal("TOTP was enabled on a passkey-only account without MFA")
+	}
+}
+
+func TestMFAVerifiedSessionCanAddTOTPWithPasskey(t *testing.T) {
+	ts, db := testServer(t)
+	user, err := db.GetUserByUsername("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addTestPasskey(t, db, user.ID, "Laptop")
+
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/auth/totp/begin", "test-token", `{}`)
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("MFA-verified session could not start TOTP enrollment: %d %s", resp.StatusCode, body)
+	}
+	var totp struct {
+		Secret string `json:"secret"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&totp); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	code, _, err := auth.TOTPCode(totp.Secret, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/auth/totp/verify", "test-token",
+		fmt.Sprintf(`{"code":%q}`, code))
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("MFA-verified session could not enable TOTP: %d %s", resp.StatusCode, body)
+	}
+	loaded, err := db.GetUserByID(user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.TOTPEnabled {
+		t.Fatal("TOTP was not enabled for an MFA-verified session")
 	}
 }
 

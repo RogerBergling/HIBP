@@ -361,9 +361,30 @@ type totpCodeRequest struct {
 	Code string `json:"code"`
 }
 
+// totpEnrollmentAllowed reports whether a session that has not completed MFA
+// may enroll a new TOTP factor. A password-only session may enroll TOTP only
+// when the account has no other MFA factor. Without this check, a stolen
+// password could add an attacker-controlled authenticator to a passkey-only
+// account and then complete MFA with it.
+func (s *Server) totpEnrollmentAllowed(value *authContextValue) (bool, error) {
+	if value.session.MFAVerified {
+		return true, nil
+	}
+	count, err := s.store.CountPasskeys(value.user.ID)
+	if err != nil {
+		return false, err
+	}
+	return count == 0 && !value.user.TOTPEnabled, nil
+}
+
 func (s *Server) handleTOTPBegin(w http.ResponseWriter, r *http.Request) {
 	value := authFrom(r)
-	if !value.session.MFAVerified && value.user.TOTPEnabled {
+	allowed, err := s.totpEnrollmentAllowed(value)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !allowed {
 		writeError(w, http.StatusForbidden, "complete MFA before changing TOTP")
 		return
 	}
@@ -441,9 +462,24 @@ func (s *Server) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if pendingSecret {
-		if err := s.store.EnableTOTP(value.user.ID, target, step); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
+		if value.session.MFAVerified {
+			if err := s.store.EnableTOTP(value.user.ID, target, step); err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+		} else {
+			// Re-check atomically: a passkey may have been added after
+			// /auth/totp/begin, and an older build may have left a pending
+			// secret on a passkey-only account.
+			enabled, err := s.store.EnableTOTPIfNoPasskeys(value.user.ID, target, step)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			if !enabled {
+				writeError(w, http.StatusForbidden, "complete MFA before enrolling a new authenticator")
+				return
+			}
 		}
 	} else if err := s.store.SetTOTPLastStep(value.user.ID, step); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
