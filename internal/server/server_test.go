@@ -852,6 +852,24 @@ func TestSSHConfigEndpoint(t *testing.T) {
 	}
 }
 
+func TestPatchResponseIncludesRebootOutcome(t *testing.T) {
+	payload, err := json.Marshal(patchResponse{
+		Result:          helper.Result{Action: "apply", OK: true, ExitCode: 0, Output: "patched"},
+		RebootRequired:  true,
+		RebootRequested: true,
+		RebootOutput:    "reboot requested",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(payload)
+	for _, expected := range []string{`"action":"apply"`, `"ok":true`, `"output":"patched"`, `"reboot_required":true`, `"reboot_requested":true`} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("patch response %s does not contain %s", text, expected)
+		}
+	}
+}
+
 func TestRebootRequiresConfirmation(t *testing.T) {
 	ts, _ := testServer(t)
 	body := `{"name":"web01","address":"10.0.0.10","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519"}`

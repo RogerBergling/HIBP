@@ -365,7 +365,7 @@ func looksLikeSudoAuthFailure(output string) bool {
 
 func (s *Server) runHelper(ctx context.Context, host store.Host, action, sshPassword, sudoPassword string, timeout time.Duration, args ...string) (string, int, error) {
 	switch action {
-	case "facts", "check", "apply", "reboot", "system-info", "metrics", "docker-list", "docker-check", "docker-apply", "docker-update-all":
+	case "facts", "check", "apply", "reboot", "reboot-check", "system-info", "metrics", "docker-list", "docker-check", "docker-apply", "docker-update-all":
 	default:
 		return "", 0, errors.New("invalid helper action")
 	}
@@ -467,10 +467,21 @@ func (s *Server) handleFacts(w http.ResponseWriter, r *http.Request) {
 }
 
 type patchRequest struct {
-	DryRun       bool   `json:"dry_run"`
-	Confirm      string `json:"confirm"`
-	Password     string `json:"password"`
-	SudoPassword string `json:"sudo_password"`
+	DryRun           bool   `json:"dry_run"`
+	Confirm          string `json:"confirm"`
+	Password         string `json:"password"`
+	SudoPassword     string `json:"sudo_password"`
+	RebootAfterPatch bool   `json:"reboot_after_patch"`
+}
+
+// patchResponse keeps the existing helper.Result fields and adds the optional
+// post-patch reboot outcome. Older clients ignore the extra fields.
+type patchResponse struct {
+	helper.Result
+	RebootRequired  bool   `json:"reboot_required,omitempty"`
+	RebootRequested bool   `json:"reboot_requested,omitempty"`
+	RebootOutput    string `json:"reboot_output,omitempty"`
+	RebootError     string `json:"reboot_error,omitempty"`
 }
 
 func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
@@ -527,7 +538,80 @@ func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.AddAudit(s.auditActor(r), "patch-"+action, "host", host.ID, fmt.Sprintf("exit=%d", code)); err != nil {
 		_ = err
 	}
-	writeJSON(w, http.StatusOK, result)
+	response := patchResponse{Result: result}
+	// A reboot is only considered after a successful apply run. Dry runs never
+	// change a host. The operator opts in per request; existing callers that do
+	// not send reboot_after_patch keep the old behavior.
+	if action == "apply" && code == 0 && request.RebootAfterPatch {
+		// The patch already completed. Do not let a closing browser tab cancel
+		// the explicit post-patch reboot check, but keep a bounded timeout.
+		rebootCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Minute)
+		defer cancel()
+		required, requested, rebootOutput, rebootErr := s.checkAndReboot(rebootCtx, host, password, request.SudoPassword)
+		response.RebootRequired = required
+		response.RebootRequested = requested
+		response.RebootOutput = rebootOutput
+		if rebootErr != nil {
+			response.RebootError = rebootErr.Error()
+			s.auditHostActionFailure(r, "reboot-after-patch", host.ID, rebootErr)
+		} else if requested {
+			_ = s.store.AddAudit(s.auditActor(r), "reboot", "host", host.ID, "requested after patch")
+		}
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+// checkAndReboot asks the fixed helper whether the target needs a reboot after
+// a successful patch and, when it does, requests that reboot through the same
+// restricted helper action. It never uses a shell or an arbitrary command.
+func (s *Server) checkAndReboot(ctx context.Context, host store.Host, sshPassword, sudoPassword string) (bool, bool, string, error) {
+	checkOutput, checkCode, err := s.runHelper(ctx, host, "reboot-check", sshPassword, sudoPassword, 2*time.Minute)
+	if err != nil {
+		return false, false, checkOutput, fmt.Errorf("reboot check failed: %w", err)
+	}
+	if checkCode != 0 {
+		return false, false, checkOutput, fmt.Errorf("reboot check exited with code %d", checkCode)
+	}
+	required, err := rebootRequiredFromHelperOutput(checkOutput)
+	if err != nil {
+		return false, false, checkOutput, err
+	}
+	if !required {
+		return false, false, "no reboot required", nil
+	}
+	rebootOutput, rebootCode, err := s.runHelper(ctx, host, "reboot", sshPassword, sudoPassword, 2*time.Minute)
+	if err != nil {
+		return true, false, rebootOutput, fmt.Errorf("reboot failed: %w", err)
+	}
+	if rebootCode != 0 {
+		return true, false, rebootOutput, fmt.Errorf("reboot exited with code %d", rebootCode)
+	}
+	_ = s.store.SetHostStatus(host.ID, "unknown")
+	return true, true, rebootOutput, nil
+}
+
+// rebootRequiredFromHelperOutput parses the JSON contract returned by the
+// helper's reboot-check action. Anything unexpected is treated as an error so
+// an automatic reboot is never requested from ambiguous output.
+func rebootRequiredFromHelperOutput(output string) (bool, error) {
+	var result helper.Result
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		return false, fmt.Errorf("invalid reboot-check output: %w", err)
+	}
+	if !result.OK {
+		if result.Error != "" {
+			return false, fmt.Errorf("reboot check failed: %s", result.Error)
+		}
+		return false, errors.New("reboot check failed")
+	}
+	switch strings.TrimSpace(result.Output) {
+	case "reboot required":
+		return true, nil
+	case "no reboot required":
+		return false, nil
+	default:
+		return false, fmt.Errorf("unexpected reboot-check output %q", strings.TrimSpace(result.Output))
+	}
 }
 
 type rebootRequest struct {

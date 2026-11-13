@@ -55,7 +55,7 @@ func TestScheduleCRUDAndValidation(t *testing.T) {
 	payload := scheduleRequest{
 		Name: "Nightly patches", Mode: "apply", Enabled: true, Cron: "0 3 * * *",
 		Timezone: "Europe/Stockholm", WindowMinutes: 120, JitterSeconds: 60,
-		MaxConcurrency: 3, Retries: 2, Notify: "failures",
+		MaxConcurrency: 3, Retries: 2, RebootAfterApply: true, Notify: "failures",
 		Assignments: []store.ScheduleAssignment{
 			{Scope: "host", Target: host.ID},
 			{Scope: "group", Target: "web"},
@@ -77,6 +77,9 @@ func TestScheduleCRUDAndValidation(t *testing.T) {
 	}
 	if created.Retries != 2 {
 		t.Fatalf("created retries = %d, want 2", created.Retries)
+	}
+	if !created.RebootAfterApply {
+		t.Fatalf("created reboot_after_apply = false, want true")
 	}
 
 	resp = request(t, http.MethodGet, base+"/api/v1/schedules", "test-token", "")
@@ -124,6 +127,21 @@ func TestScheduleCRUDAndValidation(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(responseBody), `"runs"`) {
 		t.Fatalf("list runs failed: %d %s", resp.StatusCode, responseBody)
+	}
+}
+
+func TestCheckScheduleIgnoresRebootAfterApply(t *testing.T) {
+	_, _, app := testServerWithApp(t, true)
+	schedule, err := app.validateScheduleRequest("", scheduleRequest{
+		Name: "Check only", Mode: "check", Cron: "0 3 * * *", Timezone: "UTC",
+		RebootAfterApply: true,
+		Assignments:      []store.ScheduleAssignment{{Scope: "fleet"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if schedule.RebootAfterApply {
+		t.Fatal("check-only schedule must not enable reboot_after_apply")
 	}
 }
 
@@ -231,6 +249,35 @@ func TestScheduleRunSkipsHostWithOperationLock(t *testing.T) {
 	}
 	if len(runs) != 0 {
 		t.Fatalf("busy host should not start a run, got %+v", runs)
+	}
+}
+
+func TestRebootRequiredFromHelperOutput(t *testing.T) {
+	cases := []struct {
+		name    string
+		output  string
+		want    bool
+		wantErr bool
+	}{
+		{name: "required", output: `{"action":"reboot-check","ok":true,"exit_code":0,"output":"reboot required"}`, want: true},
+		{name: "not required", output: `{"action":"reboot-check","ok":true,"exit_code":0,"output":"no reboot required"}`, want: false},
+		{name: "helper error", output: `{"action":"reboot-check","ok":false,"exit_code":0,"error":"boom"}`, wantErr: true},
+		{name: "unexpected text", output: `{"action":"reboot-check","ok":true,"exit_code":0,"output":"maybe"}`, wantErr: true},
+		{name: "invalid json", output: `reboot required`, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := rebootRequiredFromHelperOutput(tc.output)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got %v", got)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("got %v, %v; want %v, nil", got, err, tc.want)
+			}
+		})
 	}
 }
 

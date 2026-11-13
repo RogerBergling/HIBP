@@ -10,26 +10,27 @@ import (
 )
 
 type Schedule struct {
-	ID             string               `json:"id"`
-	Name           string               `json:"name"`
-	Mode           string               `json:"mode"`
-	Enabled        bool                 `json:"enabled"`
-	Cron           string               `json:"cron"`
-	Timezone       string               `json:"timezone"`
-	WindowMinutes  int                  `json:"window_minutes"`
-	JitterSeconds  int                  `json:"jitter_seconds"`
-	MaxConcurrency int                  `json:"max_concurrency"`
-	Retries        int                  `json:"retries"`
-	RunIfMissed    bool                 `json:"run_if_missed"`
-	Notify         string               `json:"notify"`
-	Recipients     string               `json:"recipients"`
-	LastRunAt      string               `json:"last_run_at"`
-	LastStatus     string               `json:"last_status"`
-	LastSummary    string               `json:"last_summary"`
-	CreatedAt      string               `json:"created_at"`
-	UpdatedAt      string               `json:"updated_at"`
-	Assignments    []ScheduleAssignment `json:"assignments,omitempty"`
-	NextRunAt      string               `json:"next_run_at,omitempty"`
+	ID               string               `json:"id"`
+	Name             string               `json:"name"`
+	Mode             string               `json:"mode"`
+	Enabled          bool                 `json:"enabled"`
+	Cron             string               `json:"cron"`
+	Timezone         string               `json:"timezone"`
+	WindowMinutes    int                  `json:"window_minutes"`
+	JitterSeconds    int                  `json:"jitter_seconds"`
+	MaxConcurrency   int                  `json:"max_concurrency"`
+	Retries          int                  `json:"retries"`
+	RunIfMissed      bool                 `json:"run_if_missed"`
+	RebootAfterApply bool                 `json:"reboot_after_apply"`
+	Notify           string               `json:"notify"`
+	Recipients       string               `json:"recipients"`
+	LastRunAt        string               `json:"last_run_at"`
+	LastStatus       string               `json:"last_status"`
+	LastSummary      string               `json:"last_summary"`
+	CreatedAt        string               `json:"created_at"`
+	UpdatedAt        string               `json:"updated_at"`
+	Assignments      []ScheduleAssignment `json:"assignments,omitempty"`
+	NextRunAt        string               `json:"next_run_at,omitempty"`
 }
 
 type ScheduleAssignment struct {
@@ -76,12 +77,16 @@ func (s *Store) CreateSchedule(schedule Schedule) (Schedule, error) {
 	if schedule.RunIfMissed {
 		missed = 1
 	}
+	rebootAfterApply := 0
+	if schedule.RebootAfterApply {
+		rebootAfterApply = 1
+	}
 	_, err = tx.Exec(`INSERT INTO schedules(id,name,mode,enabled,cron,timezone,window_minutes,jitter_seconds,
-		max_concurrency,retries,run_if_missed,notify,recipients,last_run_at,last_status,last_summary,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		max_concurrency,retries,run_if_missed,reboot_after_apply,notify,recipients,last_run_at,last_status,last_summary,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		schedule.ID, schedule.Name, schedule.Mode, enabled, schedule.Cron, schedule.Timezone,
 		schedule.WindowMinutes, schedule.JitterSeconds, schedule.MaxConcurrency, schedule.Retries, missed,
-		schedule.Notify, schedule.Recipients, now, "", "", now, now)
+		rebootAfterApply, schedule.Notify, schedule.Recipients, now, "", "", now, now)
 	if err != nil {
 		_ = tx.Rollback()
 		return Schedule{}, err
@@ -113,11 +118,15 @@ func (s *Store) UpdateSchedule(schedule Schedule) error {
 	if schedule.RunIfMissed {
 		missed = 1
 	}
+	rebootAfterApply := 0
+	if schedule.RebootAfterApply {
+		rebootAfterApply = 1
+	}
 	now := crypto.Now()
 	res, err := tx.Exec(`UPDATE schedules SET name=?,mode=?,enabled=?,cron=?,timezone=?,window_minutes=?,
-		jitter_seconds=?,max_concurrency=?,retries=?,run_if_missed=?,notify=?,recipients=?,updated_at=? WHERE id=?`,
+		jitter_seconds=?,max_concurrency=?,retries=?,run_if_missed=?,reboot_after_apply=?,notify=?,recipients=?,updated_at=? WHERE id=?`,
 		schedule.Name, schedule.Mode, enabled, schedule.Cron, schedule.Timezone, schedule.WindowMinutes,
-		schedule.JitterSeconds, schedule.MaxConcurrency, schedule.Retries, missed, schedule.Notify, schedule.Recipients, now, schedule.ID)
+		schedule.JitterSeconds, schedule.MaxConcurrency, schedule.Retries, missed, rebootAfterApply, schedule.Notify, schedule.Recipients, now, schedule.ID)
 	if err != nil {
 		_ = tx.Rollback()
 		return err
@@ -172,14 +181,14 @@ func (s *Store) DeleteSchedule(id string) error {
 
 func (s *Store) GetSchedule(id string) (Schedule, error) {
 	row := s.db.QueryRow(`SELECT id,name,mode,enabled,cron,timezone,window_minutes,jitter_seconds,
-		max_concurrency,retries,run_if_missed,notify,recipients,last_run_at,last_status,last_summary,created_at,updated_at
+		max_concurrency,retries,run_if_missed,reboot_after_apply,notify,recipients,last_run_at,last_status,last_summary,created_at,updated_at
 		FROM schedules WHERE id=?`, id)
 	return scanSchedule(row)
 }
 
 func (s *Store) ListSchedules() ([]Schedule, error) {
 	rows, err := s.db.Query(`SELECT id,name,mode,enabled,cron,timezone,window_minutes,jitter_seconds,
-		max_concurrency,retries,run_if_missed,notify,recipients,last_run_at,last_status,last_summary,created_at,updated_at
+		max_concurrency,retries,run_if_missed,reboot_after_apply,notify,recipients,last_run_at,last_status,last_summary,created_at,updated_at
 		FROM schedules ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -202,13 +211,14 @@ type scheduleScanner interface {
 
 func scanSchedule(row scheduleScanner) (Schedule, error) {
 	var schedule Schedule
-	var enabled, missed int
+	var enabled, missed, rebootAfterApply int
 	err := row.Scan(&schedule.ID, &schedule.Name, &schedule.Mode, &enabled, &schedule.Cron,
 		&schedule.Timezone, &schedule.WindowMinutes, &schedule.JitterSeconds, &schedule.MaxConcurrency,
-		&schedule.Retries, &missed, &schedule.Notify, &schedule.Recipients, &schedule.LastRunAt, &schedule.LastStatus,
+		&schedule.Retries, &missed, &rebootAfterApply, &schedule.Notify, &schedule.Recipients, &schedule.LastRunAt, &schedule.LastStatus,
 		&schedule.LastSummary, &schedule.CreatedAt, &schedule.UpdatedAt)
 	schedule.Enabled = enabled == 1
 	schedule.RunIfMissed = missed == 1
+	schedule.RebootAfterApply = rebootAfterApply == 1
 	return schedule, err
 }
 

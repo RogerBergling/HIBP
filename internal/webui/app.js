@@ -14,12 +14,15 @@ const state = {
   view: 'dashboard',
   passwords: new Map(),
   sudoPasswords: new Map(),
+  sharedSudoPassword: '',
+  sharedSudoUsername: '',
   auth: { user: null, setupRequired: false, authenticated: false, mfaRequired: false, enrollmentRequired: false, webauthnAvailable: false },
   totpSetup: null,
 };
 
 let fleetUpdateRunning = false;
 let fleetPatchRunning = false;
+let fleetRebootRunning = false;
 
 const modalStack = [];
 
@@ -90,6 +93,12 @@ function syncHostSelection() {
     if (!node) continue;
     node.disabled = count === 0;
     node.textContent = count ? 'Patch selected (' + count + ')' : 'Patch selected';
+  }
+  for (const id of ['table-reboot-selected', 'fleet-reboot-selected']) {
+    const node = $(id);
+    if (!node) continue;
+    node.disabled = count === 0;
+    node.textContent = count ? 'Reboot selected (' + count + ')' : 'Reboot selected';
   }
 }
 
@@ -398,6 +407,8 @@ async function signOut() {
   }
   state.passwords.clear();
   state.sudoPasswords.clear();
+  state.sharedSudoPassword = '';
+  state.sharedSudoUsername = '';
   state.totpSetup = null;
   state.auth = { user: null, setupRequired: false, authenticated: false, mfaRequired: false, enrollmentRequired: false, webauthnAvailable: false };
   await showAuthScreen();
@@ -1533,7 +1544,7 @@ function renderSchedules() {
     const row = el('tr');
     const nameTd = el('td');
     nameTd.append(el('div', 'host-name', schedule.name));
-    nameTd.append(el('div', 'host-ip', (schedule.enabled ? 'enabled' : 'disabled') + (schedule.run_if_missed ? ' · catch up' : '') + (schedule.retries ? ' · ' + schedule.retries + ' retries' : '')));
+    nameTd.append(el('div', 'host-ip', (schedule.enabled ? 'enabled' : 'disabled') + (schedule.run_if_missed ? ' · catch up' : '') + (schedule.retries ? ' · ' + schedule.retries + ' retries' : '') + (schedule.reboot_after_apply ? ' · reboot if required' : '')));
     const modeTd = el('td');
     modeTd.append(el('span', 'badge ' + (schedule.mode === 'apply' ? 'red' : 'amber'), scheduleModeLabel(schedule.mode)));
     const cronTd = el('td');
@@ -1657,18 +1668,29 @@ function showScheduleModal(schedule = null) {
   const missed = el('input');
   missed.type = 'checkbox';
   runIfMissed.append(missed, document.createTextNode('Run the latest missed occurrence'));
+  const rebootAfterApply = el('label', 'field checkbox-field');
+  const rebootCheck = el('input');
+  rebootCheck.type = 'checkbox';
+  rebootAfterApply.append(rebootCheck, document.createTextNode('Reboot if required after a successful apply'));
   form.append(limitsRow);
-  form.append(runIfMissed);
+  form.append(runIfMissed, rebootAfterApply);
   const recipients = inputField(form, 'Alert recipients (optional)', 'recipients', 'ops@example.com');
   recipients.spellcheck = false;
   const modeNote = el('p', 'field-note');
   form.append(modeNote);
   const syncModeNote = () => {
-    modeNote.textContent = mode.value === 'apply'
-      ? 'Apply mode runs the target package manager as root on every eligible host. Reboots are never automatic. Use a canary schedule first.'
-      : 'Check mode is a dry run using the target package manager. It records the result but does not install updates.';
+    rebootCheck.disabled = mode.value !== 'apply';
+    if (mode.value !== 'apply') rebootCheck.checked = false;
+    if (mode.value === 'apply') {
+      modeNote.textContent = rebootCheck.checked
+        ? 'Apply mode runs the target package manager as root. When enabled, HIBP asks the fixed helper for reboot state and reboots only when the target reports a reboot is required. Use a canary schedule first.'
+        : 'Apply mode runs the target package manager as root on every eligible host. Reboots are not automatic unless enabled below. Use a canary schedule first.';
+    } else {
+      modeNote.textContent = 'Check mode is a dry run using the target package manager. It records the result but does not install updates.';
+    }
   };
   mode.addEventListener('change', syncModeNote);
+  rebootCheck.addEventListener('change', syncModeNote);
   syncModeNote();
   preset.addEventListener('change', () => {
     if (preset.value !== 'custom') cron.value = preset.value;
@@ -1780,6 +1802,7 @@ function showScheduleModal(schedule = null) {
   notify.value = source.notify || 'failures';
   recipients.value = source.recipients || '';
   missed.checked = Boolean(source.run_if_missed);
+  rebootCheck.checked = Boolean(source.reboot_after_apply);
   preset.value = 'custom';
   syncModeNote();
   syncAssignmentTarget();
@@ -1808,8 +1831,8 @@ function showScheduleModal(schedule = null) {
       jitter_seconds: Number(jitter.value || 0),
       max_concurrency: Number(concurrency.value || 3),
       retries: Number(retries.value || 0),
-      run_if_missed: missed.checked, notify: notify.value,
-      recipients: recipients.value.trim(), assignments,
+      run_if_missed: missed.checked, reboot_after_apply: rebootCheck.checked,
+      notify: notify.value, recipients: recipients.value.trim(), assignments,
     };
     try {
       const url = editing ? '/api/v1/schedules/' + encodeURIComponent(schedule.id) : '/api/v1/schedules';
@@ -1930,9 +1953,17 @@ async function passwordFor(host) {
 
 async function sudoPasswordFor(host) {
   if (state.sudoPasswords.has(host.id)) return state.sudoPasswords.get(host.id);
-  const value = await askPassword('sudo password — ' + host.name, 'Used for this request only. It is not stored. Characters are shown as *.');
+  if (state.sharedSudoPassword && state.sharedSudoUsername === host.username) {
+    return state.sharedSudoPassword;
+  }
+  const value = await askPassword(
+    'sudo password — ' + host.name,
+    'Reused in browser memory for hosts with the same SSH username until the tab closes. It is not stored. Characters are shown as *.',
+  );
   if (value === null) throw new Error('cancelled');
   state.sudoPasswords.set(host.id, value);
+  state.sharedSudoPassword = value;
+  state.sharedSudoUsername = host.username;
   return value;
 }
 
@@ -1941,9 +1972,28 @@ async function requestWithSudo(host, path, payloadFor, options = {}, sudoCache =
     ...options,
     body: JSON.stringify(payloadFor(sudoPassword)),
   });
+  const remember = (value) => {
+    if (!value) return;
+    state.sudoPasswords.set(host.id, value);
+    state.sharedSudoPassword = value;
+    state.sharedSudoUsername = host.username;
+  };
+  const forget = () => {
+    state.sudoPasswords.delete(host.id);
+    if (state.sharedSudoUsername === host.username) {
+      state.sharedSudoPassword = '';
+      state.sharedSudoUsername = '';
+    }
+    if (sudoCache) sudoCache.value = '';
+  };
   try {
-    const cachedSudo = (sudoCache && sudoCache.value) || state.sudoPasswords.get(host.id) || '';
-    return await request(cachedSudo);
+    const cachedSudo = (sudoCache && sudoCache.value)
+      || state.sudoPasswords.get(host.id)
+      || (state.sharedSudoUsername === host.username ? state.sharedSudoPassword : '')
+      || '';
+    const result = await request(cachedSudo);
+    remember(cachedSudo);
+    return result;
   } catch (error) {
     if (error.status === 409 && error.data && error.data.code === 'sudo_password_required') {
       let sudoPassword = sudoCache && sudoCache.value ? sudoCache.value : '';
@@ -1951,12 +2001,11 @@ async function requestWithSudo(host, path, payloadFor, options = {}, sudoCache =
         sudoPassword = await sudoPasswordFor(host);
         if (sudoCache) sudoCache.value = sudoPassword;
       }
-      state.sudoPasswords.set(host.id, sudoPassword);
+      remember(sudoPassword);
       return request(sudoPassword);
     }
     if (error.status === 400 && error.data && error.data.code === 'sudo_password_invalid') {
-      state.sudoPasswords.delete(host.id);
-      if (sudoCache) sudoCache.value = '';
+      forget();
     }
     throw error;
   }
@@ -2067,7 +2116,7 @@ async function bootstrapHost(host) {
 }
 
 async function fleetUpdateHelpers(hosts = null) {
-  if (fleetUpdateRunning || fleetPatchRunning) {
+  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning) {
     toast('Another fleet operation is already running', 'error');
     return;
   }
@@ -2136,6 +2185,7 @@ async function fleetUpdateHelpers(hosts = null) {
     close();
   });
 
+  const sharedSudo = { value: '' };
   let ok = 0;
   let failed = 0;
   let skipped = 0;
@@ -2153,6 +2203,7 @@ async function fleetUpdateHelpers(hosts = null) {
           '/api/v1/hosts/' + encodeURIComponent(host.id) + '/bootstrap',
           (sudoPassword) => ({ password, sudo_password: sudoPassword }),
           { method: 'POST' },
+          sharedSudo,
         );
         setStatus(host, 'ok', 'reachable', 'helper updated');
         ok++;
@@ -2214,6 +2265,11 @@ function showPatchModal(host) {
     row('Reboot required', facts.reboot_required ? 'yes' : 'no')
   );
   body.append(summary);
+  const rebootAfterPatch = el('label', 'field checkbox-field');
+  const rebootCheck = el('input');
+  rebootCheck.type = 'checkbox';
+  rebootAfterPatch.append(rebootCheck, document.createTextNode('Reboot automatically after apply when the target reports a reboot is required'));
+  body.append(rebootAfterPatch);
   const actions = el('div', 'modal-actions');
   const cancel = el('button', 'btn', 'Cancel');
   cancel.type = 'button';
@@ -2226,10 +2282,10 @@ function showPatchModal(host) {
   const close = openModal('Patch — ' + host.name, body);
   cancel.addEventListener('click', close);
   dry.addEventListener('click', () => { close(); patchHost(host, true); });
-  apply.addEventListener('click', () => { close(); patchHost(host, false); });
+  apply.addEventListener('click', () => { close(); patchHost(host, false, rebootCheck.checked); });
 }
 
-async function patchHost(host, dryRun) {
+async function patchHost(host, dryRun, rebootAfterPatch = false) {
   if (!dryRun && !confirm('Apply updates on ' + host.name + '? This runs the root-owned helper on the target.')) return;
   toast((dryRun ? 'Checking' : 'Applying updates on') + ' ' + host.name + '…');
   try {
@@ -2237,10 +2293,15 @@ async function patchHost(host, dryRun) {
     const result = await requestWithSudo(
       host,
       '/api/v1/hosts/' + encodeURIComponent(host.id) + '/patch',
-      (sudoPassword) => ({ dry_run: dryRun, confirm: dryRun ? '' : 'apply', password, sudo_password: sudoPassword }),
+      (sudoPassword) => ({
+        dry_run: dryRun, confirm: dryRun ? '' : 'apply', password, sudo_password: sudoPassword,
+        reboot_after_patch: !dryRun && rebootAfterPatch,
+      }),
       { method: 'POST' },
     );
     showOutputModal((dryRun ? 'Patch check' : 'Patch run') + ' — ' + host.name, result);
+    if (!dryRun && result.reboot_requested) toast('Reboot requested on ' + host.name, 'ok');
+    if (!dryRun && result.reboot_error) toast('Patch applied, but reboot failed on ' + host.name + ': ' + result.reboot_error, 'error');
     await loadAll();
   } catch (error) {
     if (error.message !== 'cancelled') toast(error.message, 'error');
@@ -2253,7 +2314,7 @@ function showFleetPatchModal(hosts) {
     toast('Select at least one host', 'error');
     return;
   }
-  if (fleetUpdateRunning || fleetPatchRunning) {
+  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning) {
     toast('Another fleet operation is already running', 'error');
     return;
   }
@@ -2291,6 +2352,11 @@ function showFleetPatchModal(hosts) {
   wrap.append(table);
   body.append(wrap);
   body.append(el('p', 'muted', 'Hosts with an untrusted key, missing helper, or failed SSH connection are reported individually and do not stop the rest of the batch.'));
+  const rebootAfterPatch = el('label', 'field checkbox-field');
+  const rebootCheck = el('input');
+  rebootCheck.type = 'checkbox';
+  rebootAfterPatch.append(rebootCheck, document.createTextNode('Reboot automatically after apply when the target reports a reboot is required'));
+  body.append(rebootAfterPatch);
   const actions = el('div', 'modal-actions');
   const cancel = el('button', 'btn', 'Cancel');
   cancel.type = 'button';
@@ -2306,12 +2372,12 @@ function showFleetPatchModal(hosts) {
   apply.addEventListener('click', () => {
     if (!confirm('Apply updates on ' + targets.length + ' selected host(s)? This runs the root-owned helper on each target.')) return;
     close();
-    fleetPatchHosts(targets, false);
+    fleetPatchHosts(targets, false, rebootCheck.checked);
   });
 }
 
-async function fleetPatchHosts(hosts, dryRun) {
-  if (fleetUpdateRunning || fleetPatchRunning) {
+async function fleetPatchHosts(hosts, dryRun, rebootAfterPatch = false) {
+  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning) {
     toast('Another fleet operation is already running', 'error');
     return;
   }
@@ -2387,16 +2453,23 @@ async function fleetPatchHosts(hosts, dryRun) {
         const result = await requestWithSudo(
           host,
           '/api/v1/hosts/' + encodeURIComponent(host.id) + '/patch',
-          (sudoPassword) => ({ dry_run: dryRun, confirm: dryRun ? '' : 'apply', password, sudo_password: sudoPassword }),
+          (sudoPassword) => ({
+            dry_run: dryRun, confirm: dryRun ? '' : 'apply', password, sudo_password: sudoPassword,
+            reboot_after_patch: !dryRun && rebootAfterPatch,
+          }),
           { method: 'POST' },
           sharedSudo,
         );
         const exitCode = Number(result.exit_code ?? 0);
-        const detail = dryRun
+        let detail = dryRun
           ? (exitCode === 100 ? 'updates available' : 'up to date')
           : (result.ok ? 'patched' : 'exit ' + exitCode);
+        if (!dryRun && result.reboot_requested) detail += ' · reboot requested';
+        if (!dryRun && result.reboot_required && !result.reboot_requested) detail += ' · reboot still required';
+        if (!dryRun && result.reboot_error) detail += ' · reboot failed: ' + result.reboot_error;
         if (result.ok) {
-          setStatus(host, dryRun ? 'checked' : 'patched', 'reachable', detail);
+          const needsReview = !dryRun && (result.reboot_error || (result.reboot_required && !result.reboot_requested));
+          setStatus(host, dryRun ? 'checked' : 'patched', needsReview ? 'review' : 'reachable', detail);
           ok++;
         } else {
           setStatus(host, 'failed', 'unreachable', detail);
@@ -2423,6 +2496,193 @@ async function fleetPatchHosts(hosts, dryRun) {
     summary.textContent = (cancelled || stopping)
       ? 'Stopped. Succeeded ' + ok + ', failed ' + failed + ', skipped ' + skipped + '.'
       : 'Finished. Succeeded ' + ok + ', failed ' + failed + ', skipped ' + skipped + '.';
+    await loadAll();
+  }
+}
+
+function showFleetRebootModal(hosts) {
+  const targets = hosts.slice();
+  if (!targets.length) {
+    toast('Select at least one host', 'error');
+    return;
+  }
+  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning) {
+    toast('Another fleet operation is already running', 'error');
+    return;
+  }
+  const body = el('div', 'modal-body');
+  body.append(el('p', 'muted', 'This is a destructive action. The selected hosts will reboot immediately and their SSH connections may drop. Reboots run sequentially, one host at a time. Keep this tab open.'));
+  const summary = el('div', 'status-list');
+  const row = (label, value) => {
+    const div = el('div');
+    div.append(el('span', '', label), el('b', '', value));
+    return div;
+  };
+  const rebootRequired = targets.filter((host) => (host.facts || {}).reboot_required).length;
+  summary.append(
+    row('Selected hosts', String(targets.length)),
+    row('Reboot required', String(rebootRequired)),
+  );
+  body.append(summary);
+  const wrap = el('div', 'scroll-list');
+  const table = el('table');
+  const head = el('tr');
+  for (const label of ['Host', 'Reboot required', 'Address']) head.append(el('th', '', label));
+  table.append(head);
+  for (const host of targets) {
+    const tr = el('tr');
+    tr.append(
+      el('td', '', host.name),
+      el('td', '', (host.facts || {}).reboot_required ? 'yes' : 'no'),
+      el('td', '', host.address),
+    );
+    table.append(tr);
+  }
+  wrap.append(table);
+  body.append(wrap);
+  const confirmWrap = el('label', 'field');
+  confirmWrap.append(el('span', '', 'Type REBOOT to confirm'));
+  const confirmInput = el('input');
+  confirmInput.type = 'text';
+  confirmInput.autocomplete = 'off';
+  confirmInput.placeholder = 'REBOOT';
+  confirmWrap.append(confirmInput);
+  body.append(confirmWrap);
+  const actions = el('div', 'modal-actions');
+  const cancel = el('button', 'btn', 'Cancel');
+  cancel.type = 'button';
+  const reboot = el('button', 'btn danger', 'Reboot now');
+  reboot.type = 'button';
+  reboot.disabled = true;
+  actions.append(cancel, reboot);
+  body.append(actions);
+  const close = openModal('Reboot ' + targets.length + ' selected host' + (targets.length === 1 ? '' : 's'), body);
+  cancel.addEventListener('click', close);
+  confirmInput.addEventListener('input', () => {
+    reboot.disabled = confirmInput.value.trim() !== 'REBOOT';
+  });
+  reboot.addEventListener('click', () => {
+    if (confirmInput.value.trim() !== 'REBOOT') return;
+    close();
+    fleetRebootHosts(targets);
+  });
+  confirmInput.focus();
+}
+
+async function fleetRebootHosts(hosts) {
+  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning) {
+    toast('Another fleet operation is already running', 'error');
+    return;
+  }
+  const targets = hosts.slice();
+  if (!targets.length) return;
+
+  fleetRebootRunning = true;
+  let cancelled = false;
+  const body = el('div', 'modal-body');
+  body.append(el('p', 'muted', 'Requesting reboots sequentially. Keep this tab open. A host may disconnect before its result is displayed.'));
+  const summary = el('div', 'muted', 'Preparing…');
+  const wrap = el('div', 'fleet-update-list');
+  const table = el('table');
+  const head = el('tr');
+  for (const label of ['Host', 'Status', 'Detail']) head.append(el('th', '', label));
+  table.append(head);
+  wrap.append(table);
+  body.append(summary, wrap);
+  const actions = el('div', 'modal-actions');
+  const stop = el('button', 'btn danger', 'Stop after current host');
+  stop.type = 'button';
+  actions.append(stop);
+  body.append(actions);
+  const close = openModal('Reboot selected hosts', body, () => { cancelled = true; });
+  const rows = new Map();
+  const rowFor = (host) => {
+    let row = rows.get(host.id);
+    if (row) return row;
+    const status = el('span', 'pill unknown', 'pending');
+    const statusCell = el('td');
+    statusCell.append(status);
+    const detail = el('td', 'muted', '—');
+    row = el('tr');
+    row.append(el('td', '', host.name), statusCell, detail);
+    table.append(row);
+    row.status = status;
+    row.detail = detail;
+    rows.set(host.id, row);
+    return row;
+  };
+  const setStatus = (host, label, cls, detail) => {
+    const row = rowFor(host);
+    row.status.textContent = label;
+    row.status.className = 'pill ' + cls;
+    row.detail.textContent = detail || '—';
+  };
+  let stopping = false;
+  stop.addEventListener('click', () => {
+    if (fleetRebootRunning) {
+      stopping = true;
+      cancelled = true;
+      stop.disabled = true;
+      stop.textContent = 'Stopping…';
+      summary.textContent = 'Stopping after the current host…';
+      return;
+    }
+    close();
+  });
+
+  const sharedSudo = { value: '' };
+  let ok = 0;
+  let failed = 0;
+  let skipped = 0;
+  let unconfirmed = 0;
+  try {
+    for (let index = 0; index < targets.length; index++) {
+      if (cancelled) break;
+      const host = targets[index];
+      setStatus(host, 'running', 'unknown', 'connecting…');
+      summary.textContent = 'Rebooting ' + (index + 1) + ' of ' + targets.length + '…';
+      try {
+        const password = await passwordFor(host);
+        if (cancelled) break;
+        const result = await requestWithSudo(
+          host,
+          '/api/v1/hosts/' + encodeURIComponent(host.id) + '/reboot',
+          (sudoPassword) => ({ confirm: 'reboot', password, sudo_password: sudoPassword }),
+          { method: 'POST' },
+          sharedSudo,
+        );
+        if (result.ok) {
+          setStatus(host, 'reboot requested', 'review', result.output || 'host may disconnect now');
+          ok++;
+        } else {
+          setStatus(host, 'failed', 'unreachable', 'exit ' + Number(result.exit_code ?? 0));
+          failed++;
+        }
+      } catch (error) {
+        if (error.message === 'cancelled') {
+          setStatus(host, 'skipped', 'review', 'credential prompt cancelled');
+          skipped++;
+        } else if (error.status === 409 && error.data && error.data.code === 'host_busy') {
+          setStatus(host, 'failed', 'unreachable', 'another operation is running');
+          failed++;
+        } else if (!error.status) {
+          setStatus(host, 'unconfirmed', 'review', 'connection dropped; verify the host state');
+          unconfirmed++;
+        } else {
+          setStatus(host, 'failed', 'unreachable', error.message);
+          failed++;
+        }
+      }
+    }
+  } finally {
+    fleetRebootRunning = false;
+    stop.disabled = false;
+    stop.textContent = 'Close';
+    stop.classList.remove('danger');
+    const suffix = unconfirmed ? ', unconfirmed ' + unconfirmed : '';
+    summary.textContent = (cancelled || stopping)
+      ? 'Stopped. Requested ' + ok + ', failed ' + failed + ', skipped ' + skipped + suffix + '.'
+      : 'Finished. Requested ' + ok + ', failed ' + failed + ', skipped ' + skipped + suffix + '.';
     await loadAll();
   }
 }
@@ -4152,6 +4412,8 @@ function bind() {
   $('fleet-update-selected').addEventListener('click', () => fleetUpdateHelpers(selectedHosts()));
   $('table-patch-selected').addEventListener('click', () => showFleetPatchModal(selectedHosts()));
   $('fleet-patch-selected').addEventListener('click', () => showFleetPatchModal(selectedHosts()));
+  $('table-reboot-selected').addEventListener('click', () => showFleetRebootModal(selectedHosts()));
+  $('fleet-reboot-selected').addEventListener('click', () => showFleetRebootModal(selectedHosts()));
   for (const id of ['hosts-select-all', 'hosts-select-all-full']) {
     $(id).addEventListener('change', (event) => setAllHostSelection(event.target.checked));
   }

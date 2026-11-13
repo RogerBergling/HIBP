@@ -1,6 +1,7 @@
 # HIBP - Have I Been Patched
 
-> **Status: v0.7.1 production-hardening feature set with a production build path.**
+> **Status: v0.7.1 production-hardening feature set, plus current main-line
+> selected-host reboot and opt-in reboot-after-patch work.**
 > The repository contains a working Go server, browser UI, SQLCipher storage,
 > host CRUD/import, password + TOTP/passkey authentication with post-enrollment
 > MFA management, SSH host-key approval, remote helper installation, fact
@@ -8,10 +9,11 @@
 > updates, metric history,
 > monitoring, SMTP email alerts, vCenter/HAProxy/OPNsense integrations, CMDB
 > import, cron-based patch schedules with per-host retries and run history,
-> reboot control, SSH config import, audit chain, backup/restore with
-> configurable retention, audit-chain verification, per-host helper build
-> reporting, selected-host helper updates, build identity, and automatic
-> pre-migration backups, helper actions, tests, and CI. `make production`
+> per-host and selected-host reboot control, optional automatic reboot after
+> patching, SSH config import, audit chain, backup/restore with configurable
+> retention, audit-chain verification, per-host helper build reporting,
+> selected-host helper updates, build identity, and automatic pre-migration
+> backups, helper actions, tests, and CI. `make production`
 > builds against current SQLCipher 4.20 in an Alpine/musl image; the development
 > build still uses the 2020 spike driver and prints a warning. SSH password and
 > sudo fallbacks are manual-run only.
@@ -32,9 +34,11 @@ always-on server that owns the encrypted database and performs collection,
 monitoring, scheduled checks/applies, and explicit patch operations. The
 operator uses a laptop browser through an SSH tunnel. The current release
 inventories hosts, checks for pending updates using each distribution's native
-package manager, applies updates on demand or through cron schedules, and
-records audit events and per-host run history. It does not yet provide a
-durable job queue, approvals, or package-level diff evidence.
+package manager, applies updates on demand or through cron schedules, reboots
+one or many selected hosts on explicit confirmation, and can reboot
+automatically after a successful patch when the target reports that a reboot is
+required. It records audit events and per-host run history. It does not yet
+provide a durable job queue, approvals, or package-level diff evidence.
 
 ## Screenshots
 
@@ -60,6 +64,7 @@ them. Alert history is recorded even when email delivery is disabled or fails.
 - [Install prerequisites](#install-prerequisites)
 - [Quick start (source build)](#quick-start-source-build)
 - [Command-line reference](#command-line-reference)
+- [Windows client](#windows-client)
 - [100-host go-live gate](#100-host-go-live-gate)
 - [Production deployment checklist](#production-deployment-checklist)
 - [Authentication and MFA](#authentication-and-mfa)
@@ -103,10 +108,12 @@ updates, reboot state, evidence, and the safe execution of those updates across
 different Linux distributions.
 
 HIBP is designed for **self-hosted, single-operator** use. It is not a
-multi-tenant SaaS product. The browser UI can be used from Windows, Linux, or
-macOS over an SSH tunnel, but the controller and target helper must run on
-Linux. There is no native Windows client/controller and no Windows target
-support.
+multi-tenant SaaS product. The browser UI is the client and can be used from
+Windows, Linux, or macOS over an SSH tunnel, so a Windows administrator gets the
+same UI and actions as a Linux administrator. The controller and target helper
+must run on Linux. There is no native desktop client on any operating system,
+no Windows controller, and no Windows target support. See
+[Windows client](#windows-client).
 
 ## Install a release (recommended)
 
@@ -527,6 +534,30 @@ make build VERSION=0.7.1 BUILD_NUMBER=1234 BUILD_COMMIT=abc123def456
 the build type as `release`. The release workflow supplies the Git tag, GitHub
 run number, commit, date, and `linux/amd64` explicitly.
 
+## Windows client
+
+There is no native Windows client binary and no native Linux desktop client
+either. The client is the embedded browser UI. That is intentional: the
+controller owns the database, SSH keys, scheduler, and audit log, while the
+administrator workstation only needs a browser and an SSH tunnel.
+
+Windows 10/11 includes the OpenSSH client. From PowerShell or Windows Terminal:
+
+```powershell
+ssh -N -o ExitOnForwardFailure=yes -L 8443:127.0.0.1:8443 <user>@<linux-controller>
+```
+
+Keep that window open, then browse to <http://localhost:8443/>. The UI, host
+actions, patch and reboot controls, monitoring, schedules, and account security
+are the same as on Linux. Use `localhost`, not `127.0.0.1`, if you want to enroll
+or use a passkey; TOTP works with either name. If your SSH config already has an
+alias for the controller, use the alias in place of `<user>@<linux-controller>`.
+
+The Windows client needs no HIBP installation and no database access. It never
+holds the controller SSH keys. Do not expose port 8443 directly; the supported
+remote-access model remains an SSH tunnel to the loopback listener. Native
+Windows controller support and Windows target patching are not implemented.
+
 ## 100-host go-live gate
 
 This is the short gate for the intended deployment: one controller, roughly 100
@@ -646,9 +677,13 @@ This profile still requires the canary and restore tests below.
 - Schedule apply jobs with a window longer than the expected run. A single host
   has a 45-minute apply timeout; 100 hosts at 20-way concurrency can take several
   hours in the worst case. HIBP does not stop or cancel work at the window end.
-- Reboots are never automatic. Plan a separate reboot/verify step, especially
-  for kernel updates. The `reboot-check` result and the host uptime are
-  evidence, not an enforcement mechanism.
+- Reboots are not automatic by default. A manual run or a schedule can opt in to
+  **reboot after apply when required**; HIBP then runs the fixed `reboot-check`
+  helper action and reboots only when the target reports that a reboot is
+  required. It does not wait for the host to return or verify the new boot ID,
+  kernel, or service health. Plan a separate verification step, especially for
+  kernel updates. The `reboot-check` result and the host uptime are evidence,
+  not an enforcement mechanism.
 - There is no package-level old/new diff. If you need per-package evidence,
   capture the bounded run output or use distribution-side history until a
   package diff is implemented.
@@ -1333,20 +1368,26 @@ stopped controller.
   installs updates through the fixed root-owned helper using the
   distribution's normal upgrade action; security-only filtering is not
   implemented. On apt, the helper uses `upgrade`, so held-back packages remain.
-  Reboots are never automatic.
+  Reboots are not automatic unless **Reboot if required after a successful
+  apply** is enabled for that schedule. HIBP then runs `reboot-check` and issues
+  the fixed reboot action only when the target reports it is required; it does
+  not wait for or verify the rebooted host. Treat this as a destructive schedule
+  policy: use a canary assignment and low concurrency first.
 - Assignments support the fleet, groups, tags, and individual hosts. Only hosts
   with key-file authentication, a trusted host key, and the restricted
   `NOPASSWD` helper are eligible; others are counted as skipped.
 - Each schedule has a late-start window, jitter, maximum host concurrency
-  (1–20), a per-host retry count (0–5), and an optional “run the latest missed
-  occurrence” mode. Cron presets are available in the UI for daily, weekly,
+  (1–20), a per-host retry count (0–5), an optional reboot-after-apply
+  when-required mode, and an optional “run the latest missed occurrence” mode.
+  Cron presets are available in the UI for daily, weekly,
   six-hourly, and monthly runs. The controller-wide scheduler cap is 20
   concurrent host operations.
 - The scheduler runs in the controller process. A missed window is skipped
   unless catch-up is enabled. Failed host attempts are retried up to the
   configured count with a short backoff. There is no durable job queue or
-  resume across a controller restart, no approval gate, and no automatic
-  reboot.
+  resume across a controller restart and no approval gate. A schedule can opt
+  in to a reboot after a successful apply when `reboot-check` reports it is
+  required; the default remains no reboot.
 - Manual patch, reboot, bootstrap, and scheduled patch operations share a
   process-local per-host lock. A second operation on the same host is rejected
   or skipped instead of overlapping. The lock does not coordinate multiple
@@ -1525,8 +1566,9 @@ Security notes:
 - The uploaded binary is run as the unprivileged SSH account before it replaces
   an existing helper. A dynamically linked or incompatible binary is rejected
   without touching the working helper.
-- The sudo password is used only for this setup request, sent over SSH stdin,
-  and never stored.
+- The sudo password is sent over SSH stdin and never stored. In a selected-host
+  helper update it can be reused from browser memory for hosts with the same SSH
+  username; a wrong password is discarded and prompted again.
 - The final verification always uses `sudo -n`. If the restricted rule does not
   work, Setup fails instead of reporting success.
 - The temporary sudoers file is dot-named, so sudo ignores it while `visudo`
@@ -1550,10 +1592,17 @@ host in the inventory. Both actions show the same sequential progress table.
 
 **Patch selected (N)** works on the same checkbox selection. It opens a summary
 with pending updates and reboot flags, then offers **Dry run** or **Apply
-updates**. The batch runs sequentially, isolates per-host failures, and allows
-**Stop after current host**. If sudo asks for a password, it is prompted once
-per batch and reused from browser memory for the remaining selected hosts; it is
-never persisted.
+updates**. Apply can opt in to **reboot automatically after apply when
+required**. The batch runs sequentially, isolates per-host failures, and allows
+**Stop after current host**. If sudo asks for a password, it is prompted once and
+reused from browser memory for the remaining selected hosts with the same SSH
+username; it is never persisted.
+
+**Reboot selected (N)** uses the same selection. It summarizes the hosts and
+reboot-required flags, requires typing `REBOOT`, and requests the fixed reboot
+action sequentially with per-host results and **Stop after current host**. A
+successful request marks the host status `unknown` until a later check
+reconnects. Keep the tab open for the progress table.
 
 Use **Add host** for either an IP address or a hostname. The address is the SSH
 target; the name is the display label. Host-key trust still happens on the first
@@ -1564,8 +1613,10 @@ connection test.
   running process uploads its old binary.
 - Hosts with untrusted host keys are skipped with a clear result. Run **Test**
   and trust the key first.
-- Password-auth hosts and sudo prompts may ask per host. A working restricted
-  `NOPASSWD` rule makes fleet updates unattended.
+- Sudo prompts may ask once per SSH username and are then reused in browser
+  memory for the rest of the batch. Password-auth SSH hosts still prompt per
+  host; key authentication is preferred. A working restricted `NOPASSWD` rule
+  makes fleet updates unattended.
 - The operation is foreground: keep the tab open. **Stop after current host**
   cancels the remaining queue; the host currently being updated finishes.
 - Each successful host is recorded as `bootstrap-helper` in the audit log.
@@ -1635,8 +1686,25 @@ You should see the helper JSON, not a password prompt.
 The host row has a **Reboot** button. It asks for explicit confirmation and
 runs the fixed `reboot` helper action as root. The helper uses
 `systemctl reboot --no-block` when systemd is available and falls back to
-`shutdown -r now`. HIBP never reboots automatically. Later/scheduled reboots are
-part of the scheduler work.
+`shutdown -r now`.
+
+Use the host checkboxes and **Reboot selected (N)** to reboot several hosts. The
+confirmation lists the selected hosts and their reboot-required state, requires
+typing `REBOOT`, and then processes the hosts sequentially with per-host results
+and **Stop after current host**. It is a foreground browser operation and does
+not survive closing the tab. A rebooted host is marked `unknown` until a later
+check reconnects and reports facts.
+
+Manual patch runs can opt in to **Reboot automatically after apply when the
+target reports a reboot is required**. The server then runs the fixed
+`reboot-check` helper action and, only when it reports `reboot required`, issues
+the fixed `reboot` action through the same restricted helper rule. Schedules can
+enable the same behavior with **Reboot if required after a successful apply**.
+The target must have a helper build and sudoers rule that support `reboot-check`
+and `reboot`; run **Update helpers** after upgrading the controller. HIBP does
+not wait for the host to return, verify the new boot ID or kernel, or check
+service health after the reboot. See [Scheduling and job semantics](#scheduling-and-job-semantics) for
+the limits.
 
 ### Delete host
 
@@ -1675,8 +1743,8 @@ so an execution denial is reported instead of silently leaving a broken helper.
 ### Manual sudo password fallback
 
 If the target cannot use a `NOPASSWD` rule yet, the UI can prompt for the sudo
-password for **manual** Setup, Facts, Check, and Apply actions. **Setup** uses
-the password to install the restricted helper rule; after it succeeds, the
+password for **manual** Setup, Facts, Check, Apply, and Reboot actions. **Setup**
+uses the password to install the restricted helper rule; after it succeeds, the
 manual actions use `sudo -n` and no longer need the sudo password.
 
 - The server first tries `sudo -n`.
@@ -1687,9 +1755,14 @@ manual actions use `sudo -n` and no longer need the sudo password.
 - It is held in browser/server memory for the tab/session. Close the tab or
   restart the server to clear it.
 - A wrong password is rejected and the cached value is discarded.
-- During **Patch selected**, the first sudo prompt is reused in memory for the
-  rest of that batch. This avoids repeated prompts without persisting the
-  password.
+- The first accepted sudo password is reused in browser memory for other hosts
+  with the same SSH username, including **Patch selected**, **Reboot selected**,
+  and **Update selected**. This avoids repeated typing during interactive work
+  without persisting the password.
+- The batch reuse is deliberately memory-only. It is not written to the
+  database, `localStorage`, `sessionStorage`, a file, an environment variable,
+  or a command line. If the password is wrong for a later host, HIBP discards
+  the cached value and prompts again.
 
 The safe way to avoid sudo prompts entirely is to install the restricted
 `NOPASSWD` helper rule with **Setup** or **Update selected**. Do not store a sudo
@@ -1814,8 +1887,10 @@ as core features rather than afterthoughts.
   model should make them possible later.
 - A built-in CVE scanner. CVE correlation is better delegated to an existing
   scanner (Trivy, Grype, OSV, or a distro feed) and linked to patch results.
-- Automatic reboots. HIBP never reboots automatically; the operator chooses
-  **Reboot now** or **Reboot later** after a run.
+- Unconditional automatic reboots. HIBP never reboots merely because a patch
+  run finished. The operator can opt in to **reboot after apply when required**,
+  and the fixed helper decides from `reboot-check` whether a reboot is actually
+  needed. Reboots without that explicit opt-in remain manual.
 - A native desktop window with zero shared libraries. A browser-based UI served
   by the binary is the practical route to a truly static executable; a native
   webview requires GTK3/WebKitGTK. See
@@ -1926,8 +2001,10 @@ as core features rather than afterthoughts.
 - Allow cancellation. Cancellation must terminate the process group, record the
   cancellation, and leave the host in a known state where possible.
 - Detect whether a reboot is required after the run. Offer **Reboot now** from
-  the host row. Later/scheduled reboots are part of the scheduler work; HIBP
-  never reboots automatically.
+  the host row, **Reboot selected** for a checked batch, and an explicit
+  **reboot after apply when required** option for manual runs and schedules.
+  HIBP does not reboot unconditionally; it asks the fixed helper for reboot
+  state first. Post-reboot verification remains a separate step.
 
 ### Scheduling
 
@@ -2527,10 +2604,15 @@ Current status:
   a replacement dialog showing the previously trusted and newly presented
   fingerprints.
 - Manual SSH and sudo password fallbacks with per-run prompts; no password
-  storage. Bulk patch operations reuse an entered sudo password in browser
-  memory for the current batch only.
+  storage. The first accepted sudo password is reused in browser memory for
+  hosts with the same SSH username across selected-host patch, reboot, and
+  helper-update batches. It is discarded on a wrong password, sign-out, or tab
+  close.
 - Selected-host **Patch selected** dry-run and apply workflows with sequential
   per-host progress, failure isolation, and stop-after-current-host control.
+- Selected-host **Reboot selected** workflow with a typed confirmation, host
+  summary, sequential per-host progress, failure isolation, and
+  stop-after-current-host control.
 - SSH key browser limited to configured directories; it never returns key
   contents. Public `*.pub` files are filtered because they cannot be used as
   client keys.
@@ -2560,7 +2642,13 @@ Current status:
   by default) backed by time-based queries. A 30-day view at the default
   5-minute interval now shows the full retained month instead of stopping at a
   fixed sample count.
-- Explicit-confirmation reboot action through the fixed helper.
+- Explicit-confirmation per-host reboot and **Reboot selected** for a checked
+  host batch, both through the fixed helper with per-host progress, failure
+  isolation, and stop-after-current control.
+- Optional **reboot after apply when required** for manual patch runs and patch
+  schedules. HIBP runs the fixed `reboot-check` helper action and only then
+  requests the fixed reboot action; there is no unconditional reboot and no
+  post-reboot verification.
 - Per-host, selected-host, and fleet-wide helper installation/update with
   per-host results. The Hosts table reports each installed helper build and
   highlights a build that differs from the running controller.
@@ -2576,7 +2664,8 @@ Current status:
 - Read-only CMDB CSV/JSON import with preview and merge/overwrite modes.
 - Cron-based check/apply schedules with fleet/group/tag/host assignments,
   maintenance windows, jitter, concurrency limits, bounded per-host retries,
-  catch-up, email summaries, manual run-now, and per-host run history.
+  optional reboot after a successful apply when required, catch-up, email
+  summaries, manual run-now, and per-host run history.
 - Process-local per-host operation locking shared by manual patch, reboot,
   helper bootstrap, and scheduled patch operations.
 - Authenticated usernames recorded as audit actors for host and import
@@ -2619,10 +2708,13 @@ Current status:
   Per-host retries are bounded (0–5) and exist only within one schedule run.
   There is no approval gate, resume across a controller restart, package-level
   old/new diff, security-only filtering, package excludes/held-package policy,
-  automatic reboot, host disabled/maintenance state, or global queue across
-  schedules. A controller stop interrupts work; runs only happen while the
-  database is unlocked and the process is alive. Per-host output is bounded to
-  16 KiB in run history. Only key-auth hosts with a trusted key are eligible.
+  post-reboot verification, host disabled/maintenance state, or global queue
+  across schedules. A schedule can opt in to a reboot after a successful apply
+  when `reboot-check` reports it is required, but HIBP does not wait for or
+  verify the rebooted host. A controller stop interrupts work; runs only happen
+  while the database is unlocked and the process is alive. Per-host output is
+  bounded to 16 KiB in run history. Only key-auth hosts with a trusted key are
+  eligible.
 - The audit chain is tamper-evident, not tamper-proof, and has no external
   anchor. Authenticated host/import actions now record the username; internal
   collection records `collector`, and scheduler records `scheduler`. There is no
@@ -2710,6 +2802,11 @@ Current status:
   `dnf-plugins-core`/`dnf-utils`. Alpine has no systemd/timedatectl, and its
   reboot-required detection is heuristic and may not detect kernel changes.
   Verify reboot state independently on those distributions.
+- Bulk reboot and optional reboot-after-patch are foreground/request-time
+  operations. A successful reboot request marks the host `unknown`; HIBP does
+  not wait for SSH to return, verify the boot ID/kernel, or check service health.
+  The browser progress table for **Reboot selected** is not durable and stops
+  when the tab closes.
 - Manual patch, reboot, helper-install, and host-key approval failures now write
   audit entries before returning the error. The audit log is still local only
   and has no external anchor; ship controller stderr/journald to a persistent
@@ -2747,7 +2844,7 @@ Current status:
 ## Data model
 
 The current schema is implemented in `internal/store/migrations/001_init.sql`
-through `008_agent_version.sql`. Domain objects use UUIDs, timestamps are UTC
+through `011_schedule_reboot.sql`. Domain objects use UUIDs, timestamps are UTC
 ISO 8601, and durations are stored in seconds.
 
 > **Implemented:** `schema_migrations`, `app_meta`, `hosts`, `host_facts`,
@@ -2787,7 +2884,7 @@ ISO 8601, and durations are stored in seconds.
 | `jobs` | A requested patch operation. | `id`, `trigger`, `requested_by`, `policy_snapshot`, `created_at`, `started_at`, `finished_at`, `status`, `cancel_requested` |
 | `job_targets` | Per-host state within a job. | `job_id`, `host_id`, `status`, `started_at`, `finished_at`, `exit_code`, `error`, `run_id` |
 | `runs` | Scheduled per-host execution history; populated by the scheduler, not yet by manual patch actions. | `id`, `schedule_id`, `host_id`, `action`, `started_at`, `finished_at`, `status`, `exit_code`, `output`, `error` |
-| `schedules`, `schedule_assignments` | Cron patch definitions and fleet/group/tag/host assignments. | `id`, `name`, `mode`, `cron`, `timezone`, `window_minutes`, `jitter_seconds`, `max_concurrency`, `retries`, `notify`, `recipients`, `scope`, `target` |
+| `schedules`, `schedule_assignments` | Cron patch definitions and fleet/group/tag/host assignments. | `id`, `name`, `mode`, `cron`, `timezone`, `window_minutes`, `jitter_seconds`, `max_concurrency`, `retries`, `reboot_after_apply`, `notify`, `recipients`, `scope`, `target` |
 | `run_packages` | Package-level diff for a run. | `run_id`, `package`, `old_version`, `new_version`, `action`, `status`, `security`, `repository` |
 | `pending_updates` | Latest known pending updates. | `host_id`, `package`, `current_version`, `candidate_version`, `security`, `repository`, `first_seen`, `last_seen` |
 | `playbooks` | Approved custom actions. | `id`, `name`, `version`, `sha256`, `signature`, `content`, `approved_by`, `approved_at`, `enabled` |
@@ -2819,8 +2916,9 @@ Schema rules:
 > This section is the target semantics. v0.7.1 implements five-field cron,
 > per-schedule time zones, jitter, a late-start window, skip/latest-missed
 > catch-up, per-schedule concurrency, a controller-wide cap, bounded retries,
-> run history, and email summaries. It does not implement systemd `OnCalendar`,
-> a window-end abort policy, per-group concurrency, cancellation,
+> an optional reboot after a successful apply when `reboot-check` reports it is
+> required, run history, and email summaries. It does not implement systemd
+> `OnCalendar`, a window-end abort policy, per-group concurrency, cancellation,
 > post-reboot verification, EOL/stale-host notifications, or package diffs.
 
 - Schedule syntax: five-field cron for simple cases, systemd `OnCalendar` for
@@ -2840,10 +2938,12 @@ Schema rules:
   attempt instead of creating duplicate package operations.
 - Cancellation: request, signal the process group, wait for a grace period, then
   force-terminate if necessary. Record the final state and verify the host.
-- Reboot behavior: never automatic. After a run that requires a reboot, the
-  operator chooses **Reboot now** or **Reboot later**. Scheduled runs record the
-  requirement and notify; they do not reboot. A reboot must be visible in the
-  plan and in the result.
+- Reboot behavior: manual by default. The operator can choose **Reboot now** or
+  **Reboot selected**, or explicitly enable **reboot after apply when required**
+  for a manual run or schedule. In that mode the fixed helper runs
+  `reboot-check` and HIBP reboots only when the target reports a reboot is
+  required. A reboot must be visible in the plan and in the result. HIBP does
+  not currently wait for or verify the rebooted host.
 - Post-reboot verification: reconnect, check uptime and boot ID, confirm the
   kernel, and re-check pending updates and service health.
 - Notifications: failure, reboot required, long-running job, host stale, EOL
@@ -3299,7 +3399,8 @@ Still missing:
 
 - **Implemented:** cron schedules with maintenance windows, jitter, missed-run
   policy, concurrency, bounded per-host retries, per-host operation locks,
-  check/apply modes, run-now, run history, audit entries, and email summaries.
+  check/apply modes, optional reboot after a successful apply when required,
+  run-now, run history, audit entries, and email summaries.
 - The scheduler runs inside the controller process; no agent is required.
 - The database must be unlocked and the server running. There is no suspended
   UI state or durable queue across process restarts; an interrupted run is not
@@ -3307,7 +3408,7 @@ Still missing:
 - Notifications via email are implemented for monitoring and schedules;
   webhook/ntfy channels and scheduler-driven reboot notifications remain.
 - **Still missing:** durable queue, resume across restarts, approval gates,
-  package-level diffs, reboot orchestration, and host maintenance state.
+  package-level diffs, post-reboot verification, and host maintenance state.
 
 ### M4 - Security hardening
 
@@ -3434,10 +3535,12 @@ These are settled unless you explicitly change them:
   (Fedora/RHEL family), zypper (SUSE), pacman (Arch), and apk (Alpine). Real
   target validation is still required; Alpine is a target, not a documented
   controller baseline.
-- **Reboot behavior:** never automatic. Manual **Reboot now** is available from
-  the host row. Scheduled apply runs do not reboot and do not currently run a
-  post-apply reboot check; the next facts collection may report
-  `reboot_required`. Plan reboot/verification separately.
+- **Reboot behavior:** manual by default. **Reboot now** is available from the
+  host row and **Reboot selected** for a checked batch. Manual apply runs and
+  schedules can opt in to **reboot after apply when required**; HIBP then runs
+  the fixed `reboot-check` helper action and reboots only when the target says a
+  reboot is required. There is no unconditional automatic reboot and no
+  post-reboot verification yet. Plan reboot verification separately.
 - **Notifications:** SMTP email alerting is implemented for host monitoring and
   external integrations. Webhook, ntfy, Slack, and Teams remain later phases.
 - **CMDB integration:** separate application, integrated through read-only
@@ -3457,7 +3560,8 @@ Prioritized, with an eye on value versus complexity:
 - Dry-run and package diff before every patch.
 - Preflight checks: disk space, time sync, repository reachability, package
   manager lock, EOL detection.
-- Reboot-required detection and a visible **Reboot now / Reboot later** choice.
+- Post-reboot verification (reconnect, boot ID, kernel, service health) and a
+  durable **Reboot later** queue.
 - Maintenance windows, jitter, and missed-run policy.
 - Notifications for failure and reboot-required.
 - Host key verification UI with fingerprint approval and rotation.
@@ -3513,8 +3617,9 @@ No architecture-blocking decisions remain. These are intentionally deferred:
 - **Slack and Teams** notification channels; SMTP email alerting is
   implemented.
 - **Real-target validation** for the implemented Arch and Alpine helper paths.
-- **Native desktop client** — browser UI is the chosen path. A native Windows
-  client/controller is a requested future enhancement, not implemented.
+- **Native desktop client** — browser UI is the chosen path on every OS. A
+  Windows browser is the supported Windows client; a native Windows wrapper or
+  controller is a future enhancement, not implemented.
 - **Windows/macOS targets** — not planned for v1.
 
 ## Validation
@@ -3545,6 +3650,10 @@ Current validation status:
 - `go vet ./...` passes.
 - `go test -race ./...` passes.
 - `make static` produces a development ELF with no dynamic dependencies.
+- The post-v0.7.1 selected-host reboot and reboot-after-patch changes were
+  validated with the Go test, race, vet, development static build, README
+  validator, Python validator, and JavaScript syntax checks. The production
+  Docker image was not rebuilt in that local validation environment.
 - The current-SQLCipher production Docker build and release pipeline passed for
   `v0.7.1`; the published archive checksum, installed binary, and SQLCipher
   production driver were verified.
@@ -3559,6 +3668,11 @@ Current validation status:
 - SSH config tests cover multiple identity files, `Host *` defaults, `*.pub`
   filtering, and `ProxyJump` alias/direct resolution. Remote tests run a command
   through a real nested SSH jump connection and verify jump-host key errors.
+- Store/server tests cover the `reboot_after_apply` schedule field and reject
+  ambiguous `reboot-check` output before requesting an automatic reboot.
+  `app.js` passes a syntax check; browser interaction tests, including the new
+  **Reboot selected** and reboot-after-patch flows, remain out of tree and need
+  manual validation.
 - README validator and Python validator tests pass.
 - `govulncheck` with Go 1.27.4 and `golang.org/x/crypto` v0.59.0 reports no
   reachable vulnerabilities in source or the production binary.

@@ -59,8 +59,10 @@ Out of scope:
   it. Production artifacts must be built with `make production`, which uses
   current SQLCipher 4.20 and the patched `third_party/go-sqlite3` driver.
 - Password SSH and sudo password fallbacks are manual-run only and never
-  stored. Bulk patch reuses the first entered sudo password in browser memory
-  for that batch only; it is never persisted. `ssh-agent`, hardware-backed keys,
+  stored. The first accepted sudo password is reused in browser memory for
+  interactive actions and selected-host patch, reboot, and helper-update
+  batches on hosts with the same SSH username; it is never persisted and is
+  discarded after a wrong password, sign-out, or tab close. `ssh-agent`, hardware-backed keys,
   SSH certificates, and passphrase-protected key files are not implemented.
   Host create, update, CSV import, and CMDB import reject `agent` and
   `certificate`; scheduled collection only processes `auth_type=key`.
@@ -105,8 +107,10 @@ Out of scope:
   single-process, has bounded per-host retries but no resume/security-only
   filter, and runs only while the controller is unlocked and running.
 - Patch schedules accept only key-auth hosts with a trusted host key and the
-  restricted `NOPASSWD` helper. Non-eligible hosts are skipped. Apply jobs never
-  reboot automatically. Per-host output in run history is capped at 16 KiB.
+  restricted `NOPASSWD` helper. Non-eligible hosts are skipped. A schedule can
+  opt in to a reboot after a successful apply when the fixed `reboot-check`
+  reports it is required; the default is no reboot. HIBP does not wait for or
+  verify the rebooted host. Per-host output in run history is capped at 16 KiB.
 - Fleet monitors can emit one email per host; there is no aggregation or global
   rate limit. Audit, alert, and integration-event retention is not implemented.
   Integration poll failures are visible on the source card but not emailed.
@@ -179,7 +183,12 @@ cron-based patch schedules are implemented.
   timezone and maintenance window, and only target hosts with key auth and a
   trusted host key. Concurrency is bounded per schedule, failed hosts can be
   retried a configured number of times, and every host attempt is written to
-  run history and the audit log. Apply jobs do not reboot automatically. The
+  run history and the audit log. A schedule can opt in to a reboot after a
+  successful apply when the fixed `reboot-check` reports it is required; the
+  default is no reboot and there is no post-reboot verification. Treat that
+  policy as destructive: use a canary assignment and low concurrency first. The
+  target must run a helper and sudoers rule that support `reboot-check` and
+  `reboot`. The
   scheduler is not a durable job queue: an interrupted run is not resumed, and
   the process must be unlocked and running. Manual patch, reboot, helper
   bootstrap, and scheduled patch operations share a process-local per-host
@@ -231,9 +240,12 @@ cron-based patch schedules are implemented.
 - If using interactive unlock, keep the server in a persistent console/tmux
   session. Schedules, collection, and monitoring stop when the process stops.
 - Do not use `NOPASSWD: ALL`; use the narrow helper rule.
-- The reboot action is destructive. HIBP requires explicit confirmation in the
-  API and UI and runs only the fixed helper action. It never reboots
-  automatically; later/scheduled reboots are part of the scheduler work.
+- The reboot action is destructive. Per-host and selected-host reboots require
+  explicit confirmation in the API and UI, and selected-host reboots require
+  typing `REBOOT`. A manual patch run or schedule can opt in to a reboot after a
+  successful apply when the fixed `reboot-check` reports it is required; the
+  default is no reboot. HIBP does not wait for or verify the rebooted host, so
+  check kernel, boot ID, uptime, package state, and service health afterward.
 - The local SSH config reader returns aliases, hostnames, users, ports, and key
   paths only. It never returns private key contents. Treat the config path and
   the imported metadata as sensitive.

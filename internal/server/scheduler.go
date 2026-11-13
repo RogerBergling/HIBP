@@ -20,19 +20,20 @@ import (
 )
 
 type scheduleRequest struct {
-	Name           string                     `json:"name"`
-	Mode           string                     `json:"mode"`
-	Enabled        bool                       `json:"enabled"`
-	Cron           string                     `json:"cron"`
-	Timezone       string                     `json:"timezone"`
-	WindowMinutes  int                        `json:"window_minutes"`
-	JitterSeconds  int                        `json:"jitter_seconds"`
-	MaxConcurrency int                        `json:"max_concurrency"`
-	Retries        int                        `json:"retries"`
-	RunIfMissed    bool                       `json:"run_if_missed"`
-	Notify         string                     `json:"notify"`
-	Recipients     string                     `json:"recipients"`
-	Assignments    []store.ScheduleAssignment `json:"assignments"`
+	Name             string                     `json:"name"`
+	Mode             string                     `json:"mode"`
+	Enabled          bool                       `json:"enabled"`
+	Cron             string                     `json:"cron"`
+	Timezone         string                     `json:"timezone"`
+	WindowMinutes    int                        `json:"window_minutes"`
+	JitterSeconds    int                        `json:"jitter_seconds"`
+	MaxConcurrency   int                        `json:"max_concurrency"`
+	Retries          int                        `json:"retries"`
+	RunIfMissed      bool                       `json:"run_if_missed"`
+	RebootAfterApply bool                       `json:"reboot_after_apply"`
+	Notify           string                     `json:"notify"`
+	Recipients       string                     `json:"recipients"`
+	Assignments      []store.ScheduleAssignment `json:"assignments"`
 }
 
 func (s *Server) tryLockHost(hostID string) bool {
@@ -148,7 +149,8 @@ func (s *Server) validateScheduleRequest(scheduleID string, request scheduleRequ
 	return store.Schedule{
 		ID: scheduleID, Name: name, Mode: mode, Enabled: request.Enabled, Cron: cronSpec,
 		Timezone: timezone, WindowMinutes: window, JitterSeconds: request.JitterSeconds,
-		MaxConcurrency: concurrency, Retries: retries, RunIfMissed: request.RunIfMissed, Notify: notify,
+		MaxConcurrency: concurrency, Retries: retries, RunIfMissed: request.RunIfMissed,
+		RebootAfterApply: request.RebootAfterApply && mode == "apply", Notify: notify,
 		Recipients: strings.Join(recipients, ", "), Assignments: assignments,
 	}, nil
 }
@@ -372,6 +374,8 @@ func (s *Server) runSchedule(ctx context.Context, schedule store.Schedule, occur
 	var mu sync.Mutex
 	succeeded := 0
 	failed := 0
+	rebootRequested := 0
+	rebootFailed := 0
 	var failures []string
 	for _, host := range eligible {
 		host := host
@@ -439,8 +443,59 @@ func (s *Server) runSchedule(ctx context.Context, schedule store.Schedule, occur
 					}
 				}
 			}
+			rebootNote := ""
+			rebootErrText := ""
+			rebootDidFail := false
+			if success && action == "apply" && schedule.RebootAfterApply {
+				required, requested, rebootOutput, rebootErr := s.checkAndReboot(ctx, host, "", "")
+				switch {
+				case rebootErr != nil:
+					rebootDidFail = true
+					rebootErrText = rebootErr.Error()
+					rebootNote = "reboot after patch failed: " + shortRunSummary(rebootErrText)
+					_ = s.store.AddAudit("scheduler", "scheduled-reboot-failed", "host", host.ID,
+						fmt.Sprintf("schedule=%s %s", schedule.Name, shortRunSummary(rebootErrText)))
+				case requested:
+					rebootNote = "reboot requested after patch"
+					if summary := shortRunSummary(rebootOutput); summary != "" {
+						rebootNote += ": " + summary
+					}
+					_ = s.store.AddAudit("scheduler", "scheduled-reboot", "host", host.ID,
+						fmt.Sprintf("schedule=%s requested", schedule.Name))
+				case required:
+					rebootNote = "reboot was required but was not requested"
+				default:
+					rebootNote = "no reboot required after patch"
+				}
+				if required {
+					mu.Lock()
+					if requested {
+						rebootRequested++
+					}
+					if rebootDidFail {
+						rebootFailed++
+						if len(failures) < 20 {
+							failures = append(failures, fmt.Sprintf("%s: reboot failed: %s", host.Name, shortRunSummary(rebootErrText)))
+						}
+					}
+					mu.Unlock()
+				} else if rebootDidFail {
+					mu.Lock()
+					rebootFailed++
+					if len(failures) < 20 {
+						failures = append(failures, fmt.Sprintf("%s: %s", host.Name, shortRunSummary(rebootErrText)))
+					}
+					mu.Unlock()
+				}
+				if rebootNote != "" {
+					detail = strings.TrimSpace(detail + "\n" + rebootNote)
+				}
+				if rebootErrText != "" {
+					errorText = rebootErrText
+				}
+			}
 			status := "success"
-			if !success {
+			if !success || rebootDidFail {
 				status = "failed"
 			}
 			_ = s.store.FinishRun(run.ID, status, exitCode, truncateRunOutput(detail), truncateRunOutput(errorText), time.Now().UTC().Format(time.RFC3339Nano))
@@ -461,13 +516,16 @@ func (s *Server) runSchedule(ctx context.Context, schedule store.Schedule, occur
 	wg.Wait()
 	finished := time.Now().UTC()
 	status := "success"
-	if failed > 0 {
+	if failed > 0 || rebootFailed > 0 {
 		status = "failed"
 	}
 	summary := fmt.Sprintf("%d succeeded, %d failed, %d skipped", succeeded, failed, skipped)
+	if schedule.RebootAfterApply {
+		summary += fmt.Sprintf(", %d reboot requested, %d reboot failed", rebootRequested, rebootFailed)
+	}
 	_ = s.store.SetScheduleResult(schedule.ID, status, summary)
 	s.auditScheduledRun(schedule, status, summary, started)
-	if schedule.Notify == "always" || (schedule.Notify == "failures" && failed > 0) {
+	if schedule.Notify == "always" || (schedule.Notify == "failures" && (failed > 0 || rebootFailed > 0)) {
 		body := fmt.Sprintf("HIBP scheduled patch run\n\nSchedule: %s\nMode: %s\nOccurrence: %s\nStarted: %s\nFinished: %s\nResult: %s\n\n%s\n",
 			schedule.Name, schedule.Mode, occurrence.UTC().Format(time.RFC3339), started.Format(time.RFC3339),
 			finished.Format(time.RFC3339), summary, strings.Join(failures, "\n"))
