@@ -206,6 +206,30 @@ func (s *Server) evaluateMonitor(ctx context.Context, monitor store.Monitor, hos
 	}
 }
 
+func (s *Server) metricsFreshness(hostID string) time.Duration {
+	freshness := 15 * time.Minute
+	interval := durationSetting(
+		s.store.ResolveSetting(hostID, "collector.metrics_interval", "5m"),
+		5*time.Minute,
+	)
+	if interval*3 > freshness {
+		freshness = interval * 3
+	}
+	return freshness
+}
+
+func (s *Server) factsFreshness(hostID string) time.Duration {
+	freshness := 30 * time.Hour
+	interval := durationSetting(
+		s.store.ResolveSetting(hostID, "collector.facts_interval", "12h"),
+		12*time.Hour,
+	)
+	if interval*2 > freshness {
+		freshness = interval * 2
+	}
+	return freshness
+}
+
 func (s *Server) evaluateHostMetric(monitor store.Monitor, host store.Host) monitorResult {
 	metrics, err := s.store.ListMetrics(host.ID, 1)
 	if err != nil || len(metrics) == 0 {
@@ -213,7 +237,7 @@ func (s *Server) evaluateHostMetric(monitor store.Monitor, host store.Host) moni
 	}
 	sample := metrics[len(metrics)-1]
 	collected, err := time.Parse(time.RFC3339Nano, sample.CollectedAt)
-	if err != nil || time.Since(collected) > 15*time.Minute {
+	if err != nil || time.Since(collected) > s.metricsFreshness(host.ID) {
 		return monitorResult{status: "unknown", message: "metrics are stale"}
 	}
 	value := 0.0
@@ -236,7 +260,7 @@ func (s *Server) evaluateHostMetric(monitor store.Monitor, host store.Host) moni
 			return monitorResult{status: "unknown", message: "no system information collected"}
 		}
 		infoCollected, err := time.Parse(time.RFC3339Nano, snapshot.CollectedAt)
-		if err != nil || time.Since(infoCollected) > 30*time.Hour {
+		if err != nil || time.Since(infoCollected) > s.factsFreshness(host.ID) {
 			return monitorResult{status: "unknown", message: "system information is stale"}
 		}
 		var info helper.SystemInfo
@@ -288,7 +312,7 @@ func (s *Server) evaluateDocker(monitor store.Monitor, host store.Host) monitorR
 			latest = project.LastSeen
 		}
 	}
-	if seen, err := time.Parse(time.RFC3339Nano, latest); err != nil || time.Since(seen) > 15*time.Minute {
+	if seen, err := time.Parse(time.RFC3339Nano, latest); err != nil || time.Since(seen) > s.metricsFreshness(host.ID) {
 		return monitorResult{status: "unknown", message: "Docker inventory is stale"}
 	}
 	if monitor.Type == "docker.project" {
@@ -357,7 +381,7 @@ func (s *Server) evaluateService(monitor store.Monitor, host store.Host) monitor
 	if err != nil {
 		return monitorResult{status: "critical", message: "service is not running or not installed"}
 	}
-	if seen, err := time.Parse(time.RFC3339Nano, state.LastSeen); err != nil || time.Since(seen) > 15*time.Minute {
+	if seen, err := time.Parse(time.RFC3339Nano, state.LastSeen); err != nil || time.Since(seen) > s.metricsFreshness(host.ID) {
 		return monitorResult{status: "unknown", message: "service state is stale"}
 	}
 	if state.State == "failed" {

@@ -286,6 +286,11 @@ func (s *Server) handleDockerCheck(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.tryLockHost(host.ID) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "another operation is already running for this host", "code": "host_busy"})
+		return
+	}
+	defer s.unlockHost(host.ID)
 	output, code, err := s.runHelper(r.Context(), host, "docker-check", request.Password, request.SudoPassword, 15*time.Minute, request.Project)
 	if errors.Is(err, errSudoPasswordInvalid) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "sudo_password_invalid"})
@@ -318,6 +323,11 @@ func (s *Server) handleDockerApply(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.tryLockHost(host.ID) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "another operation is already running for this host", "code": "host_busy"})
+		return
+	}
+	defer s.unlockHost(host.ID)
 	output, code, err := s.runHelper(r.Context(), host, "docker-apply", request.Password, request.SudoPassword, 15*time.Minute, request.Project)
 	if errors.Is(err, errSudoPasswordInvalid) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "sudo_password_invalid"})
@@ -711,16 +721,21 @@ func (s *Server) handleHostDetails(w http.ResponseWriter, r *http.Request) {
 	projects, containers, _ := s.store.GetDockerInventory(host.ID)
 	checks, _ := s.store.ListDockerProjectChecks(host.ID)
 	settings := s.resolveSettings(host.ID)
+	hostSettings, _ := s.store.ListSettings("host:" + host.ID)
+	fleetSettings, _ := s.store.ListSettings("fleet")
 	writeJSON(w, http.StatusOK, map[string]any{
-		"host":              host,
-		"system_info":       systemInfo,
-		"metrics":           metrics,
-		"metrics_days":      metricsDays,
-		"docker_projects":   projects,
-		"docker_containers": containers,
-		"docker_checks":     checks,
-		"settings":          settings,
-		"settings_defaults": settingDefaults,
+		"host":               host,
+		"system_info":        systemInfo,
+		"metrics":            metrics,
+		"metrics_days":       metricsDays,
+		"docker_projects":    projects,
+		"docker_containers":  containers,
+		"docker_checks":      checks,
+		"settings":           settings,
+		"host_settings":      hostSettings,
+		"fleet_settings":     fleetSettings,
+		"inherited_settings": s.resolveSettings(""),
+		"settings_defaults":  settingDefaults,
 	})
 }
 
@@ -774,6 +789,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "scope must be fleet or host")
 		return
 	}
+	updates := make(map[string]string, len(request.Settings))
 	for key, value := range request.Settings {
 		if _, ok := settingDefaults[key]; !ok {
 			writeError(w, http.StatusBadRequest, "unknown setting: "+key)
@@ -783,18 +799,22 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, key+" is a fleet-level backup setting")
 			return
 		}
-		if value == "" {
-			if err := s.store.DeleteSetting(scope, key); err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
+		if value != "" {
+			if err := validateSetting(key, value); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
-			continue
 		}
-		if err := validateSetting(key, value); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
+		updates[key] = value
+	}
+	for key, value := range updates {
+		var err error
+		if value == "" {
+			err = s.store.DeleteSetting(scope, key)
+		} else {
+			err = s.store.SetSetting(scope, key, value)
 		}
-		if err := s.store.SetSetting(scope, key, value); err != nil {
+		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}

@@ -15,9 +15,15 @@ import (
 
 	"github.com/RogerBergling/hibp/internal/helper"
 	"github.com/RogerBergling/hibp/internal/mailer"
+	"github.com/RogerBergling/hibp/internal/remote"
 	"github.com/RogerBergling/hibp/internal/store"
 	"github.com/robfig/cron/v3"
 )
+
+// maxScheduleLookback bounds catch-up scans after a long controller outage or
+// a long-disabled schedule. A per-minute cron over a week is already 10,080
+// occurrences; walking unbounded history would stall the scheduler.
+const maxScheduleLookback = 7 * 24 * time.Hour
 
 type scheduleRequest struct {
 	Name             string                     `json:"name"`
@@ -199,6 +205,9 @@ func dueScheduleOccurrence(schedule store.Schedule, now time.Time) (time.Time, b
 	if err != nil || base.IsZero() {
 		base = now.Add(-time.Duration(schedule.WindowMinutes+1) * time.Minute)
 	}
+	if earliest := now.Add(-maxScheduleLookback); base.Before(earliest) {
+		base = earliest
+	}
 	localNow := now.In(location)
 	next := spec.Next(base.In(location))
 	var candidate time.Time
@@ -214,6 +223,20 @@ func dueScheduleOccurrence(schedule store.Schedule, now time.Time) (time.Time, b
 		return candidate, true, time.Time{}
 	}
 	return time.Time{}, false, skipped
+}
+
+// scheduleWindowExpired reports whether jitter has pushed a non-catch-up run
+// past its maintenance window. Catch-up runs are explicitly allowed to start
+// late.
+func scheduleWindowExpired(schedule store.Schedule, occurrence, now time.Time) bool {
+	if schedule.RunIfMissed {
+		return false
+	}
+	window := time.Duration(schedule.WindowMinutes) * time.Minute
+	if window <= 0 {
+		return false
+	}
+	return now.Sub(occurrence) > window
 }
 
 func (s *Server) RunScheduler(ctx context.Context) {
@@ -308,6 +331,12 @@ func (s *Server) runSchedule(ctx context.Context, schedule store.Schedule, occur
 			return
 		case <-timer.C:
 		}
+	}
+	if !manual && scheduleWindowExpired(schedule, occurrence, time.Now().UTC()) {
+		summary := "jitter moved start outside the maintenance window"
+		_ = s.store.SetScheduleResult(schedule.ID, "skipped", summary)
+		s.auditScheduledRun(schedule, "skipped", summary, started)
+		return
 	}
 	assignments, err := s.store.ListScheduleAssignments(schedule.ID)
 	if err != nil {
@@ -431,7 +460,7 @@ func (s *Server) runSchedule(ctx context.Context, schedule store.Schedule, occur
 				attempts++
 				output, code, runErr := s.runHelper(ctx, host, action, "", "", timeout)
 				success, exitCode, detail, errorText = classifyHelperRun(output, code, runErr)
-				if success || ctx.Err() != nil {
+				if success || ctx.Err() != nil || !shouldRetryScheduledRun(runErr) {
 					break
 				}
 				if attempts < maxAttempts {
@@ -542,6 +571,36 @@ func (s *Server) runSchedule(ctx context.Context, schedule store.Schedule, occur
 func (s *Server) auditScheduledRun(schedule store.Schedule, status, summary string, started time.Time) {
 	_ = s.store.AddAudit("scheduler", "schedule-run", "schedule", schedule.ID,
 		fmt.Sprintf("name=%s status=%s %s started=%s", schedule.Name, status, summary, started.Format(time.RFC3339)))
+}
+
+// shouldRetryScheduledRun retries transport failures but not permanent
+// authentication, trust, or policy failures. Package-manager failures are
+// represented by a nil runErr plus a non-zero exit code and are not retried.
+func shouldRetryScheduledRun(runErr error) bool {
+	if runErr == nil {
+		return false
+	}
+	if errors.Is(runErr, context.Canceled) || errors.Is(runErr, errSudoPasswordRequired) ||
+		errors.Is(runErr, errSudoPasswordInvalid) || errors.Is(runErr, errHostKeyUntrusted) {
+		return false
+	}
+	var keyErr *remote.KeyError
+	if errors.As(runErr, &keyErr) {
+		return false
+	}
+	lower := strings.ToLower(runErr.Error())
+	for _, permanent := range []string{
+		"permission denied",
+		"unable to authenticate",
+		"no supported methods remain",
+		"host key is not trusted",
+		"host key changed",
+	} {
+		if strings.Contains(lower, permanent) {
+			return false
+		}
+	}
+	return true
 }
 
 func classifyHelperRun(output string, code int, runErr error) (bool, int, string, string) {

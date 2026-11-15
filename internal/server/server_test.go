@@ -779,6 +779,107 @@ func TestImportPreviewAndCommit(t *testing.T) {
 	}
 }
 
+func TestCSVUpdatePreservesUnmentionedFields(t *testing.T) {
+	ts, _ := testServer(t)
+	create := `{"name":"keepme","address":"10.9.9.9","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519","group_name":"prod","tags":"a,b","cmdb_ci_id":"CI-1"}`
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/hosts", "test-token", create)
+	if resp.StatusCode != http.StatusCreated {
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("create failed: %d %s", resp.StatusCode, data)
+	}
+	var host store.Host
+	if err := json.NewDecoder(resp.Body).Decode(&host); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	payload, _ := json.Marshal(map[string]any{
+		"csv":              "name,address,port,username,auth_type,key_path\nkeepme,10.9.9.9,22,ubuntu,key,/home/ops/.ssh/id_ed25519\n",
+		"commit":           true,
+		"duplicate_policy": "update",
+	})
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/import", "test-token", string(payload))
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("import failed: %d %s", resp.StatusCode, data)
+	}
+	var result importResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if result.Updated != 1 {
+		t.Fatalf("expected one updated host, got %+v", result)
+	}
+
+	resp = request(t, http.MethodGet, ts.URL+"/api/v1/hosts/"+host.ID, "test-token", "")
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("get host failed: %d", resp.StatusCode)
+	}
+	var updated store.Host
+	if err := json.NewDecoder(resp.Body).Decode(&updated); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if updated.GroupName != "prod" || updated.Tags != "a,b" || updated.CMDBCIID != "CI-1" {
+		t.Fatalf("CSV update erased unmentioned fields: %+v", updated)
+	}
+	if updated.Status != host.Status {
+		t.Fatalf("CSV update changed status from %q to %q", host.Status, updated.Status)
+	}
+}
+
+func TestCSVUpdatePreservesPasswordAuthWhenAuthColumnAbsent(t *testing.T) {
+	ts, _ := testServer(t)
+	create := `{"name":"legacy","address":"10.9.9.10","port":22,"username":"root","auth_type":"password"}`
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/hosts", "test-token", create)
+	if resp.StatusCode != http.StatusCreated {
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("create failed: %d %s", resp.StatusCode, data)
+	}
+	var host store.Host
+	if err := json.NewDecoder(resp.Body).Decode(&host); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	payload, _ := json.Marshal(map[string]any{
+		"csv":              "name,address,port,username\nlegacy,10.9.9.10,22,root\n",
+		"commit":           true,
+		"duplicate_policy": "update",
+	})
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/import", "test-token", string(payload))
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("import failed: %d %s", resp.StatusCode, data)
+	}
+	resp.Body.Close()
+
+	resp = request(t, http.MethodGet, ts.URL+"/api/v1/hosts/"+host.ID, "test-token", "")
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("get host failed: %d", resp.StatusCode)
+	}
+	var updated store.Host
+	if err := json.NewDecoder(resp.Body).Decode(&updated); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if updated.AuthType != "password" {
+		t.Fatalf("CSV update changed auth_type to %q", updated.AuthType)
+	}
+}
+
 func TestTXTImport(t *testing.T) {
 	ts, _ := testServer(t)
 	payload := map[string]any{
@@ -922,12 +1023,26 @@ func TestSettingsEndpoints(t *testing.T) {
 	if payload.Resolved["collector.metrics_interval"] != "1m" || payload.Resolved["metrics.retention_days"] != "14" {
 		t.Fatalf("unexpected settings: %#v", payload.Resolved)
 	}
-	resp = request(t, http.MethodPut, ts.URL+"/api/v1/settings", "test-token", `{"scope":"fleet","settings":{"collector.metrics_interval":"2s"}}`)
+	resp = request(t, http.MethodPut, ts.URL+"/api/v1/settings", "test-token", `{"scope":"fleet","settings":{"collector.metrics_interval":"2s","metrics.retention_days":"99"}}`)
 	if resp.StatusCode != http.StatusBadRequest {
 		resp.Body.Close()
 		t.Fatalf("expected invalid interval rejection, got %d", resp.StatusCode)
 	}
 	resp.Body.Close()
+
+	resp = request(t, http.MethodGet, ts.URL+"/api/v1/settings", "test-token", "")
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("get settings after rejected update failed: %d", resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if payload.Resolved["collector.metrics_interval"] != "1m" || payload.Resolved["metrics.retention_days"] != "14" {
+		t.Fatalf("rejected settings update was partially applied: %#v", payload.Resolved)
+	}
 }
 
 func TestHostTargetProxyJump(t *testing.T) {
@@ -1019,6 +1134,81 @@ func TestHostDetailsEndpoint(t *testing.T) {
 	}
 	if details.Host.DockerProjectCount != 1 || details.Host.DockerContainerCount != 1 {
 		t.Fatalf("unexpected docker counts: %+v", details.Host)
+	}
+}
+
+func TestHostDetailsIncludesSettingInheritance(t *testing.T) {
+	ts, _ := testServer(t)
+	body := `{"name":"web01","address":"10.0.0.10","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519"}`
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/hosts", "test-token", body)
+	if resp.StatusCode != http.StatusCreated {
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("create host failed: %d %s", resp.StatusCode, data)
+	}
+	var host store.Host
+	if err := json.NewDecoder(resp.Body).Decode(&host); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	resp = request(t, http.MethodPut, ts.URL+"/api/v1/settings", "test-token",
+		`{"scope":"fleet","settings":{"collector.metrics_interval":"1m"}}`)
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("fleet settings failed: %d %s", resp.StatusCode, data)
+	}
+	resp.Body.Close()
+
+	type details struct {
+		Settings          map[string]string `json:"settings"`
+		HostSettings      map[string]string `json:"host_settings"`
+		InheritedSettings map[string]string `json:"inherited_settings"`
+	}
+	resp = request(t, http.MethodGet, ts.URL+"/api/v1/hosts/"+host.ID+"/details", "test-token", "")
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("details failed: %d", resp.StatusCode)
+	}
+	var first details
+	if err := json.NewDecoder(resp.Body).Decode(&first); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if first.Settings["collector.metrics_interval"] != "1m" || first.InheritedSettings["collector.metrics_interval"] != "1m" {
+		t.Fatalf("unexpected inherited settings: %+v", first)
+	}
+	if _, ok := first.HostSettings["collector.metrics_interval"]; ok {
+		t.Fatal("host unexpectedly had an override before it was saved")
+	}
+
+	resp = request(t, http.MethodPut, ts.URL+"/api/v1/settings", "test-token",
+		`{"scope":"host","host_id":"`+host.ID+`","settings":{"collector.metrics_interval":"2m"}}`)
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("host settings failed: %d %s", resp.StatusCode, data)
+	}
+	resp.Body.Close()
+
+	resp = request(t, http.MethodGet, ts.URL+"/api/v1/hosts/"+host.ID+"/details", "test-token", "")
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("details after override failed: %d", resp.StatusCode)
+	}
+	var second details
+	if err := json.NewDecoder(resp.Body).Decode(&second); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if second.Settings["collector.metrics_interval"] != "2m" ||
+		second.HostSettings["collector.metrics_interval"] != "2m" ||
+		second.InheritedSettings["collector.metrics_interval"] != "1m" {
+		t.Fatalf("unexpected override/inherited split: %+v", second)
 	}
 }
 
@@ -1115,6 +1305,48 @@ func TestDockerActionValidation(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
 		t.Fatalf("check-all route is not registered: %d", resp.StatusCode)
+	}
+}
+
+func TestSudoClassifierIgnoresPackageManagerAuthOutput(t *testing.T) {
+	output := "Err:1 https://repo.example.com stable InRelease\n  401 Unauthorized\nAuthentication failed for repository\n"
+	if looksLikeSudoAuthFailure(output) || looksLikeSudoPasswordInvalid(output) {
+		t.Fatal("package-manager authentication output was misclassified as sudo")
+	}
+	if !looksLikeSudoAuthFailure("sudo: a password is required") {
+		t.Fatal("sudo password prompt was not recognized")
+	}
+	if !looksLikeSudoPasswordInvalid("sudo: Authentication failed, try again.") {
+		t.Fatal("sudo rejected password was not recognized")
+	}
+}
+
+func TestDockerActionsRespectHostLock(t *testing.T) {
+	ts, db, app := testServerWithApp(t, true)
+	host, err := db.CreateHost(store.Host{
+		Name: "web01", Address: "10.0.0.10", Port: 22, Username: "ubuntu",
+		AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !app.tryLockHost(host.ID) {
+		t.Fatal("test could not lock host")
+	}
+	defer app.unlockHost(host.ID)
+
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/hosts/"+host.ID+"/docker/check", "test-token", `{"project":"web"}`)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict || !strings.Contains(string(body), "host_busy") {
+		t.Fatalf("expected docker check host_busy, got %d %s", resp.StatusCode, body)
+	}
+
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/hosts/"+host.ID+"/docker/apply", "test-token", `{"project":"web","confirm":"apply"}`)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict || !strings.Contains(string(body), "host_busy") {
+		t.Fatalf("expected docker apply host_busy, got %d %s", resp.StatusCode, body)
 	}
 }
 

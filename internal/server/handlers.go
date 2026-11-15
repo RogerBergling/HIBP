@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -67,12 +68,29 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	controller := map[string]any{"hostname": "", "addresses": []string{}}
+	if hostname, err := os.Hostname(); err == nil {
+		controller["hostname"] = hostname
+	}
+	if addresses, err := net.InterfaceAddrs(); err == nil {
+		values := make([]string, 0, len(addresses))
+		for _, address := range addresses {
+			switch value := address.(type) {
+			case *net.IPNet:
+				values = append(values, value.IP.String())
+			case *net.IPAddr:
+				values = append(values, value.IP.String())
+			}
+		}
+		controller["addresses"] = values
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version":       s.build.Version,
 		"build":         s.build,
 		"hosts":         hosts,
 		"audit_entries": entries,
 		"time":          crypto.Now(),
+		"controller":    controller,
 	})
 }
 
@@ -327,40 +345,66 @@ func remoteHostKey(key *store.HostKey) *remote.HostKey {
 
 var errSudoPasswordRequired = errors.New("sudo requires a password on the target; use Setup in HIBP or enter the sudo password when prompted")
 var errSudoPasswordInvalid = errors.New("sudo password was rejected by the target")
+var errHostKeyUntrusted = errors.New("host key is not trusted; test and trust the host first")
 
 func looksLikeSudoPasswordInvalid(output string) bool {
-	lower := strings.ToLower(output)
-	for _, needle := range []string{
-		"sorry, try again",
-		"incorrect password",
-		"incorrect password attempt",
-		"authentication failure",
-		"authentication failed",
-	} {
-		if strings.Contains(lower, needle) {
-			return true
+	for _, line := range sudoOutputLines(output) {
+		for _, needle := range []string{
+			"sorry, try again",
+			"incorrect password",
+			"incorrect password attempt",
+			"authentication failure",
+			"authentication failed",
+		} {
+			if strings.Contains(line, needle) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
 func looksLikeSudoAuthFailure(output string) bool {
-	lower := strings.ToLower(output)
-	for _, needle := range []string{
-		"interactive authentication is required",
-		"a password is required",
-		"authentication required but not attempted",
-		"authentication failed, try again",
-		"no tty present",
-		"no askpass program specified",
-		"a terminal is required",
-		"must have a tty",
-	} {
-		if strings.Contains(lower, needle) {
-			return true
+	for _, line := range sudoOutputLines(output) {
+		for _, needle := range []string{
+			"interactive authentication is required",
+			"a password is required",
+			"authentication required but not attempted",
+			"authentication failed, try again",
+			"no tty present",
+			"no askpass program specified",
+			"a terminal is required",
+			"must have a tty",
+		} {
+			if strings.Contains(line, needle) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// sudoOutputLines returns only lines emitted by sudo itself. Package managers
+// can print generic phrases such as "Authentication failed" for repository or
+// proxy failures; those must not be mistaken for a sudo password prompt.
+func sudoOutputLines(output string) []string {
+	lines := make([]string, 0, 4)
+	for _, raw := range strings.Split(strings.ToLower(output), "\n") {
+		line := strings.TrimSpace(raw)
+		if strings.HasPrefix(line, "sudo:") || strings.HasPrefix(line, "[sudo]") {
+			lines = append(lines, line)
+			continue
+		}
+		// Some sudo builds print a bare diagnostic when -p '' is used. Accept
+		// only exact known diagnostics; package managers can contain similar
+		// phrases in longer repository/proxy error lines.
+		switch line {
+		case "sorry, try again.", "sorry, try again", "incorrect password",
+			"authentication failure", "authentication failed":
+			lines = append(lines, line)
+		}
+	}
+	return lines
 }
 
 func (s *Server) runHelper(ctx context.Context, host store.Host, action, sshPassword, sudoPassword string, timeout time.Duration, args ...string) (string, int, error) {
@@ -381,7 +425,7 @@ func (s *Server) runHelper(ctx context.Context, host store.Host, action, sshPass
 		return "", 0, err
 	}
 	if key == nil {
-		return "", 0, errors.New("host key is not trusted; test and trust the host first")
+		return "", 0, errHostKeyUntrusted
 	}
 	helperAction := action
 	if len(args) == 1 {

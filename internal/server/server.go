@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -231,8 +232,8 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 func (s *Server) hostCheck(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := r.Host
-		if h, _, ok := strings.Cut(host, ":"); ok {
-			host = h
+		if parsed, _, err := net.SplitHostPort(host); err == nil {
+			host = parsed
 		}
 		host = strings.Trim(host, "[]")
 		switch host {

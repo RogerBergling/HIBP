@@ -240,36 +240,55 @@ func randomSuffix() (string, error) {
 }
 
 func looksLikeSudoAuthFailure(output string) bool {
-	lower := strings.ToLower(output)
-	for _, needle := range []string{
-		"interactive authentication is required",
-		"a password is required",
-		"authentication required but not attempted",
-		"authentication failed, try again",
-		"no tty present",
-		"no askpass program specified",
-		"a terminal is required",
-		"must have a tty",
-	} {
-		if strings.Contains(lower, needle) {
-			return true
+	for _, line := range sudoOutputLines(output) {
+		for _, needle := range []string{
+			"interactive authentication is required",
+			"a password is required",
+			"authentication required but not attempted",
+			"authentication failed, try again",
+			"no tty present",
+			"no askpass program specified",
+			"a terminal is required",
+			"must have a tty",
+		} {
+			if strings.Contains(line, needle) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
 func looksLikeSudoPasswordInvalid(output string) bool {
-	lower := strings.ToLower(output)
-	for _, needle := range []string{
-		"sorry, try again",
-		"incorrect password",
-		"incorrect password attempt",
-		"authentication failure",
-		"authentication failed",
-	} {
-		if strings.Contains(lower, needle) {
-			return true
+	for _, line := range sudoOutputLines(output) {
+		for _, needle := range []string{
+			"sorry, try again",
+			"incorrect password",
+			"incorrect password attempt",
+			"authentication failure",
+			"authentication failed",
+		} {
+			if strings.Contains(line, needle) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+func sudoOutputLines(output string) []string {
+	lines := make([]string, 0, 4)
+	for _, raw := range strings.Split(strings.ToLower(output), "\n") {
+		line := strings.TrimSpace(raw)
+		if strings.HasPrefix(line, "sudo:") || strings.HasPrefix(line, "[sudo]") {
+			lines = append(lines, line)
+			continue
+		}
+		switch line {
+		case "sorry, try again.", "sorry, try again", "incorrect password",
+			"authentication failure", "authentication failed":
+			lines = append(lines, line)
+		}
+	}
+	return lines
 }

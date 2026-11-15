@@ -104,6 +104,13 @@ func (s *Server) handlePutSMTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	requestUsername := strings.TrimSpace(request.Username)
+	if !request.ClearPassword && request.Password == "" &&
+		requestUsername != "" && strings.TrimSpace(existing.Username) != "" &&
+		!strings.EqualFold(requestUsername, strings.TrimSpace(existing.Username)) {
+		writeError(w, http.StatusBadRequest, "SMTP password is required when changing username")
+		return
+	}
 	password := existing.Password
 	if request.Password != "" {
 		password = request.Password

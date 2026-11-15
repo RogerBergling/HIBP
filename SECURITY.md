@@ -181,9 +181,12 @@ cron-based patch schedules are implemented.
 - Patch schedules are administrator-only definitions. They run the same fixed
   `check`/`apply` helper actions as manual patching, use the configured cron
   timezone and maintenance window, and only target hosts with key auth and a
-  trusted host key. Concurrency is bounded per schedule, failed hosts can be
-  retried a configured number of times, and every host attempt is written to
-  run history and the audit log. A schedule can opt in to a reboot after a
+  trusted host key. Concurrency is bounded per schedule, only transient
+  transport failures are retried (not authentication, host-key, sudo-policy, or
+  package-manager failures), and every host attempt is written to run history
+  and the audit log. Catch-up scans are bounded to the most recent 7 days, and
+  jitter is re-checked against the maintenance window before starting. A
+  schedule can opt in to a reboot after a
   successful apply when the fixed `reboot-check` reports it is required; the
   default is no reboot and there is no post-reboot verification. Treat that
   policy as destructive: use a canary assignment and low concurrency first. The
@@ -191,9 +194,9 @@ cron-based patch schedules are implemented.
   `reboot`. The
   scheduler is not a durable job queue: an interrupted run is not resumed, and
   the process must be unlocked and running. Manual patch, reboot, helper
-  bootstrap, and scheduled patch operations share a process-local per-host
-  lock; a second operation on the same host is rejected or skipped. Multiple
-  controller processes must not share one database.
+  bootstrap, Docker check/apply, and scheduled patch operations share a
+  process-local per-host lock; a second operation on the same host is rejected
+  or skipped. Multiple controller processes must not share one database.
 - SMTP is also used for schedule summaries. A local Postfix relay with no
   authentication is supported over a reachable TCP socket, but must be
   restricted to trusted sources; plain SMTP has no transport encryption.
@@ -242,7 +245,8 @@ cron-based patch schedules are implemented.
 - Do not use `NOPASSWD: ALL`; use the narrow helper rule.
 - The reboot action is destructive. Per-host and selected-host reboots require
   explicit confirmation in the API and UI, and selected-host reboots require
-  typing `REBOOT`. A manual patch run or schedule can opt in to a reboot after a
+  typing `REBOOT`. The controller is detected from its hostname/local addresses
+  and excluded from bulk reboot. A manual patch run or schedule can opt in to a reboot after a
   successful apply when the fixed `reboot-check` reports it is required; the
   default is no reboot. HIBP does not wait for or verify the rebooted host, so
   check kernel, boot ID, uptime, package state, and service health afterward.

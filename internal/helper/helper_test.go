@@ -145,6 +145,37 @@ func TestRebootFallsBackToShutdown(t *testing.T) {
 	}
 }
 
+func TestRebootFallsBackWhenSystemctlFails(t *testing.T) {
+	restoreLook := SetLookPathForTest(func(name string) (string, error) {
+		switch name {
+		case "systemctl":
+			return "/usr/bin/systemctl", nil
+		case "shutdown":
+			return "/sbin/shutdown", nil
+		default:
+			return "", errors.New("not found")
+		}
+	})
+	defer restoreLook()
+	var gotName string
+	restoreRun := SetRunnerForTest(func(_ context.Context, name string, args ...string) ([]byte, int, error) {
+		gotName = name
+		if name == "/usr/bin/systemctl" {
+			return []byte("systemctl failed"), 1, nil
+		}
+		return []byte("shutdown requested"), 0, nil
+	})
+	defer restoreRun()
+
+	var output strings.Builder
+	if err := Run(context.Background(), "reboot", &output); err != nil {
+		t.Fatal(err)
+	}
+	if gotName != "/sbin/shutdown" {
+		t.Fatalf("expected shutdown fallback, got %s", gotName)
+	}
+}
+
 func TestDockerInventoryParsing(t *testing.T) {
 	restoreLook := SetLookPathForTest(func(name string) (string, error) {
 		if name == "docker" {
@@ -403,5 +434,17 @@ func TestDockerUpdateAllUpdatesOnlyChangedProjects(t *testing.T) {
 	}
 	if actions["web"] != "updated" || actions["db"] != "no-change" {
 		t.Fatalf("unexpected project actions: %+v", actions)
+	}
+}
+
+func TestCompareKernelVersions(t *testing.T) {
+	if compareKernelVersions("6.9.0", "6.12.0") >= 0 {
+		t.Fatal("6.9.0 should sort before 6.12.0")
+	}
+	if compareKernelVersions("6.12.0-1", "6.12.0-2") >= 0 {
+		t.Fatal("6.12.0-1 should sort before 6.12.0-2")
+	}
+	if compareKernelVersions("6.12.0", "6.12.0") != 0 {
+		t.Fatal("equal versions should compare equal")
 	}
 }

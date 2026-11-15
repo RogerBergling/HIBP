@@ -380,9 +380,12 @@ func applyUpdates(ctx context.Context) (string, int, error) {
 func rebootHost(ctx context.Context) ([]byte, int, error) {
 	// Prefer systemd's non-blocking request so the helper can return its JSON
 	// result before the SSH connection drops. Fall back to shutdown(8) on
-	// non-systemd targets.
+	// non-systemd targets, and also when systemctl exists but the request fails.
 	if _, err := lookPath("systemctl"); err == nil {
-		return runBinary(ctx, "systemctl", "reboot", "--no-block")
+		output, code, runErr := runBinary(ctx, "systemctl", "reboot", "--no-block")
+		if runErr == nil && code == 0 {
+			return output, code, nil
+		}
 	}
 	return runBinary(ctx, "shutdown", "-r", "now")
 }
@@ -438,8 +441,47 @@ func kernelChanged() bool {
 	if len(versions) == 0 {
 		return false
 	}
-	sort.Strings(versions)
+	sort.Slice(versions, func(i, j int) bool {
+		return compareKernelVersions(versions[i], versions[j]) < 0
+	})
 	return strings.TrimSpace(string(running)) != versions[len(versions)-1]
+}
+
+// compareKernelVersions compares dotted/dashed version strings numerically so
+// 6.12 sorts after 6.9. A lexical sort would report the wrong newest kernel.
+func compareKernelVersions(a, b string) int {
+	parts := func(value string) []string {
+		return strings.FieldsFunc(value, func(r rune) bool {
+			return r == '.' || r == '-' || r == '_' || r == '+'
+		})
+	}
+	left, right := parts(a), parts(b)
+	for index := 0; index < len(left) || index < len(right); index++ {
+		if index >= len(left) {
+			return -1
+		}
+		if index >= len(right) {
+			return 1
+		}
+		leftNumber, leftErr := strconv.Atoi(left[index])
+		rightNumber, rightErr := strconv.Atoi(right[index])
+		if leftErr == nil && rightErr == nil {
+			if leftNumber < rightNumber {
+				return -1
+			}
+			if leftNumber > rightNumber {
+				return 1
+			}
+			continue
+		}
+		if left[index] < right[index] {
+			return -1
+		}
+		if left[index] > right[index] {
+			return 1
+		}
+	}
+	return 0
 }
 
 func defaultRunner(ctx context.Context, name string, args ...string) ([]byte, int, error) {

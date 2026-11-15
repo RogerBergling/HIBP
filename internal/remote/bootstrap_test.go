@@ -235,6 +235,19 @@ func TestInstallHelperRejectsInvalidSudoPassword(t *testing.T) {
 	}
 }
 
+func TestSudoClassificationIgnoresRepositoryAuth(t *testing.T) {
+	output := "Err:1 https://repo.example.com stable InRelease\n  401 Unauthorized\nAuthentication failed for repository\n"
+	if looksLikeSudoAuthFailure(output) || looksLikeSudoPasswordInvalid(output) {
+		t.Fatal("package-manager authentication output was misclassified as sudo")
+	}
+	if !looksLikeSudoAuthFailure("sudo: a password is required") {
+		t.Fatal("sudo password prompt was not recognized")
+	}
+	if !looksLikeSudoPasswordInvalid("sudo: Authentication failed, try again.") {
+		t.Fatal("sudo rejected password was not recognized")
+	}
+}
+
 func TestInstallHelperRejectsArchitectureMismatch(t *testing.T) {
 	fake := &fakeRunner{handle: bootstrapHandler(t, "definitely-not-"+runtime.GOARCH)}
 	_, err := installHelper(context.Background(), Target{Username: "roger"}, nil, []byte("binary"), "", fake.run)

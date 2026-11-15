@@ -131,20 +131,6 @@ func (s *Server) importCSV(ctx context.Context, actor string, request importRequ
 			AuthType: row.AuthType, KeyPath: row.KeyPath, GroupName: row.GroupName,
 			Tags: row.Tags, CMDBCIID: row.CMDBCIID,
 		}
-		if err := store.ValidateHost(host); err != nil {
-			row.Error = err.Error()
-			result.Rows = append(result.Rows, row)
-			result.Errors = append(result.Errors, fmt.Sprintf("row %d: %s", rowNumber, row.Error))
-			continue
-		}
-		if row.KeyPath != "" {
-			if !filepath.IsAbs(row.KeyPath) {
-				row.Error = "key_path must be absolute"
-				result.Rows = append(result.Rows, row)
-				result.Errors = append(result.Errors, fmt.Sprintf("row %d: %s", rowNumber, row.Error))
-				continue
-			}
-		}
 
 		if request.Commit {
 			existing, err := s.store.FindHostByAddress(row.Address, row.Port)
@@ -167,19 +153,40 @@ func (s *Server) importCSV(ctx context.Context, actor string, request importRequ
 					result.Errors = append(result.Errors, fmt.Sprintf("row %d: %s", rowNumber, row.Error))
 					continue
 				case "update":
+					// A CSV update must not erase fields that the CSV does not
+					// mention. Start from the existing host and overlay only the
+					// columns present in this import.
+					host = mergeImportedHost(existing, header, row, request.DefaultKeyPath)
+					if err := validateImportedHost(host); err != nil {
+						row.Error = err.Error()
+						result.Rows = append(result.Rows, row)
+						result.Errors = append(result.Errors, fmt.Sprintf("row %d: %s", rowNumber, row.Error))
+						continue
+					}
 					host.ID = existing.ID
-					host.CreatedAt = existing.CreatedAt
 					if _, err := s.store.UpdateHostAs(actor, host); err != nil {
 						row.Error = err.Error()
 						result.Rows = append(result.Rows, row)
 						result.Errors = append(result.Errors, fmt.Sprintf("row %d: %s", rowNumber, row.Error))
 						continue
 					}
+					row.Name, row.Address, row.Port = host.Name, host.Address, host.Port
+					row.Username, row.AuthType, row.KeyPath = host.Username, host.AuthType, host.KeyPath
+					row.GroupName, row.Tags, row.CMDBCIID = host.GroupName, host.Tags, host.CMDBCIID
 					result.Updated++
 					result.Rows = append(result.Rows, row)
 					continue
 				}
 			}
+		}
+
+		if err := validateImportedHost(host); err != nil {
+			row.Error = err.Error()
+			result.Rows = append(result.Rows, row)
+			result.Errors = append(result.Errors, fmt.Sprintf("row %d: %s", rowNumber, row.Error))
+			continue
+		}
+		if request.Commit {
 			if _, err := s.store.CreateHostAs(actor, host); err != nil {
 				row.Error = err.Error()
 				result.Rows = append(result.Rows, row)
@@ -191,6 +198,62 @@ func (s *Server) importCSV(ctx context.Context, actor string, request importRequ
 		result.Rows = append(result.Rows, row)
 	}
 	return result, nil
+}
+
+func validateImportedHost(host store.Host) error {
+	if err := store.ValidateHost(host); err != nil {
+		return err
+	}
+	if strings.TrimSpace(host.KeyPath) != "" && !filepath.IsAbs(host.KeyPath) {
+		return errors.New("key_path must be absolute")
+	}
+	return nil
+}
+
+// mergeImportedHost overlays only the columns present in the CSV onto an
+// existing host. Optional columns that are absent preserve their current value;
+// optional columns that are present with an empty value intentionally clear the
+// field. Status, OS, and jump-host trust are never sourced from CSV input.
+func mergeImportedHost(existing store.Host, header map[string]int, row importRow, defaultKeyPath string) store.Host {
+	host := existing
+	has := func(name string) bool {
+		_, ok := header[name]
+		return ok
+	}
+	if has("name") {
+		host.Name = row.Name
+	}
+	if has("address") {
+		host.Address = row.Address
+	}
+	if has("port") {
+		host.Port = row.Port
+	}
+	if has("username") {
+		host.Username = row.Username
+	}
+	if has("auth_type") {
+		host.AuthType = row.AuthType
+		if strings.TrimSpace(host.AuthType) == "" {
+			host.AuthType = "key"
+		}
+	}
+	if has("key_path") {
+		host.KeyPath = row.KeyPath
+		if strings.TrimSpace(host.KeyPath) == "" {
+			host.KeyPath = strings.TrimSpace(defaultKeyPath)
+		}
+	}
+	if has("group") {
+		host.GroupName = row.GroupName
+	}
+	if has("tags") {
+		host.Tags = row.Tags
+	}
+	if has("cmdb_ci_id") {
+		host.CMDBCIID = row.CMDBCIID
+	}
+	return host
 }
 
 func field(record []string, header map[string]int, name string) string {

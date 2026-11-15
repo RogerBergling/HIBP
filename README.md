@@ -1329,6 +1329,11 @@ Implemented check types:
 - `tcp` — TCP connect and optional latency thresholds.
 - `ssl` — TLS handshake plus certificate expiry in days.
 
+Freshness thresholds scale with the configured collection intervals: metric,
+Docker, and service data use the host's metrics interval, while disk/system
+information uses the facts interval. A long collection interval therefore does
+not make otherwise healthy monitors permanently report `unknown`.
+
 Each monitor has an interval (minimum 30 seconds), a repeat interval for
 reminders while an alert remains active, and a cooldown that suppresses repeated
 reminders of the same state. **Check** queues an immediate evaluation; otherwise
@@ -1383,15 +1388,19 @@ stopped controller.
   six-hourly, and monthly runs. The controller-wide scheduler cap is 20
   concurrent host operations.
 - The scheduler runs in the controller process. A missed window is skipped
-  unless catch-up is enabled. Failed host attempts are retried up to the
-  configured count with a short backoff. There is no durable job queue or
-  resume across a controller restart and no approval gate. A schedule can opt
-  in to a reboot after a successful apply when `reboot-check` reports it is
-  required; the default remains no reboot.
-- Manual patch, reboot, bootstrap, and scheduled patch operations share a
-  process-local per-host lock. A second operation on the same host is rejected
-  or skipped instead of overlapping. The lock does not coordinate multiple
-  controller processes against one database.
+  unless catch-up is enabled. Catch-up scans are bounded to the most recent
+  7 days so a long outage cannot stall the scheduler; jitter is re-checked
+  against the maintenance window before work starts. Failed host attempts are
+  retried up to the configured count only for transient transport failures;
+  authentication, host-key, sudo-policy, and package-manager failures are not
+  retried. There is no durable job queue or resume across a controller restart
+  and no approval gate. A schedule can opt in to a reboot after a successful
+  apply when `reboot-check` reports it is required; the default remains no
+  reboot.
+- Manual patch, reboot, bootstrap, Docker check/apply, and scheduled patch
+  operations share a process-local per-host lock. A second operation on the same
+  host is rejected or skipped instead of overlapping. The lock does not
+  coordinate multiple controller processes against one database.
 - Every scheduled host attempt is written to **Recent runs** with action,
   status, exit code, duration, and a bounded output excerpt. The audit entry
   includes the attempt count. Manual patch actions are audited but do not create
@@ -1500,6 +1509,10 @@ override them in **Host detail → System → Collection settings**:
 
 Host overrides take precedence over fleet defaults; **Use fleet defaults**
 removes the host overrides. The collector reloads settings every minute.
+Saving a host settings form only creates overrides for values that differ from
+the inherited fleet/default value; opening and saving the form unchanged keeps
+the host inherited. A field that was already overridden remains an override
+until it is cleared or **Use fleet defaults** is selected.
 
 Backups use fleet-wide settings in the same **Settings** dialog:
 
@@ -1691,9 +1704,12 @@ runs the fixed `reboot` helper action as root. The helper uses
 Use the host checkboxes and **Reboot selected (N)** to reboot several hosts. The
 confirmation lists the selected hosts and their reboot-required state, requires
 typing `REBOOT`, and then processes the hosts sequentially with per-host results
-and **Stop after current host**. It is a foreground browser operation and does
-not survive closing the tab. A rebooted host is marked `unknown` until a later
-check reconnects and reports facts.
+and **Stop after current host**. The controller host is detected from its
+hostname and local addresses and is excluded from the bulk selection; use the
+per-host **Reboot** button only when deliberately rebooting the controller. It
+is a foreground browser operation and does not survive closing the tab. A
+rebooted host is marked `unknown` until a later check reconnects and reports
+facts.
 
 Manual patch runs can opt in to **Reboot automatically after apply when the
 target reports a reboot is required**. The server then runs the fixed
@@ -2667,7 +2683,7 @@ Current status:
   optional reboot after a successful apply when required, catch-up, email
   summaries, manual run-now, and per-host run history.
 - Process-local per-host operation locking shared by manual patch, reboot,
-  helper bootstrap, and scheduled patch operations.
+  helper bootstrap, Docker check/apply, and scheduled patch operations.
 - Authenticated usernames recorded as audit actors for host and import
   mutations; internal collection and scheduler work use explicit service
   actors. Failed manual patch, reboot, helper-install, and host-key approval
@@ -2995,6 +3011,11 @@ Rules:
   excludes, or notes; those are configured in the UI or CMDB path.
 - Duplicate policy is explicit: `error`, `skip`, or `update`, matched by address
   and port.
+- An `update` row is merged onto the existing host. Columns that are absent from
+  the CSV preserve the current value; an optional column that is present with a
+  blank value clears that field. Status, OS family/version, and ProxyJump trust
+  are never taken from CSV input. This prevents a partial CSV from erasing
+  group, tag, CMDB, status, OS, or jump-host data.
 - Preview before commit. Show validation errors per row. Individual host writes
   are audited, but the import is not one database transaction: a mid-commit
   failure can leave earlier rows applied.
@@ -3668,11 +3689,13 @@ Current validation status:
 - SSH config tests cover multiple identity files, `Host *` defaults, `*.pub`
   filtering, and `ProxyJump` alias/direct resolution. Remote tests run a command
   through a real nested SSH jump connection and verify jump-host key errors.
-- Store/server tests cover the `reboot_after_apply` schedule field and reject
-  ambiguous `reboot-check` output before requesting an automatic reboot.
-  `app.js` passes a syntax check; browser interaction tests, including the new
-  **Reboot selected** and reboot-after-patch flows, remain out of tree and need
-  manual validation.
+- Store/server tests cover the `reboot_after_apply` schedule field, reject
+  ambiguous `reboot-check` output, preserve CSV-update fields, keep host setting
+  inheritance split, remove deleted-host monitor state, enforce Docker host
+  locks, bound schedule catch-up, and classify permanent versus transient
+  failures. `app.js` passes a syntax check; browser interaction tests, including
+  the **Reboot selected**, controller-exclusion, and reboot-after-patch flows,
+  remain out of tree and need manual validation.
 - README validator and Python validator tests pass.
 - `govulncheck` with Go 1.27.4 and `golang.org/x/crypto` v0.59.0 reports no
   reachable vulnerabilities in source or the production binary.

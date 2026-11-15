@@ -67,6 +67,16 @@ func TestSMTPSettingsMaskPassword(t *testing.T) {
 		t.Fatalf("stored password was not retained: %s", body)
 	}
 
+	// Changing the username without supplying a new password must be rejected.
+	resp = request(t, http.MethodPut, base+"/api/v1/notifications/smtp", "test-token",
+		`{"enabled":true,"host":"smtp.example.com","port":587,"mode":"starttls","username":"other","password":"","from":"hibp@example.com","recipients":"ops@example.com","timeout_seconds":15}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("expected username-change password requirement, got %d %s", resp.StatusCode, data)
+	}
+	resp.Body.Close()
+
 	resp = request(t, http.MethodPut, base+"/api/v1/notifications/smtp", "test-token",
 		`{"enabled":true,"host":"smtp.example.com","port":587,"mode":"starttls","username":"","clear_password":true,"from":"hibp@example.com","recipients":"ops@example.com","timeout_seconds":15}`)
 	if resp.StatusCode != http.StatusOK {

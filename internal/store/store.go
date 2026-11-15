@@ -806,6 +806,12 @@ func (s *Store) DeleteHostAs(actor, id string) error {
 		_ = tx.Rollback()
 		return sql.ErrNoRows
 	}
+	// monitor_state intentionally has no host foreign key so alert history can
+	// survive; remove the live state explicitly when the host is deleted.
+	if _, err := tx.Exec("DELETE FROM monitor_state WHERE host_id=?", id); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
 	if err := s.addAuditTx(tx, actor, "delete", "host", id, ""); err != nil {
 		_ = tx.Rollback()
 		return err

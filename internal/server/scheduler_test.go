@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RogerBergling/hibp/internal/remote"
 	"github.com/RogerBergling/hibp/internal/store"
 )
 
@@ -142,6 +144,60 @@ func TestCheckScheduleIgnoresRebootAfterApply(t *testing.T) {
 	}
 	if schedule.RebootAfterApply {
 		t.Fatal("check-only schedule must not enable reboot_after_apply")
+	}
+}
+
+func TestScheduleWindowExpired(t *testing.T) {
+	now := time.Date(2026, 11, 15, 4, 0, 0, 0, time.UTC)
+	schedule := store.Schedule{WindowMinutes: 60}
+	if scheduleWindowExpired(schedule, now.Add(-30*time.Minute), now) {
+		t.Fatal("run inside the window was marked expired")
+	}
+	if !scheduleWindowExpired(schedule, now.Add(-61*time.Minute), now) {
+		t.Fatal("run outside the window was not marked expired")
+	}
+	schedule.RunIfMissed = true
+	if scheduleWindowExpired(schedule, now.Add(-48*time.Hour), now) {
+		t.Fatal("catch-up run was incorrectly blocked by the window")
+	}
+}
+
+func TestShouldRetryScheduledRun(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "package manager exit", err: nil, want: false},
+		{name: "sudo required", err: errSudoPasswordRequired, want: false},
+		{name: "sudo rejected", err: errSudoPasswordInvalid, want: false},
+		{name: "untrusted key", err: errHostKeyUntrusted, want: false},
+		{name: "changed key", err: &remote.KeyError{Kind: "changed"}, want: false},
+		{name: "permission denied", err: errors.New("ssh: permission denied"), want: false},
+		{name: "connection reset", err: errors.New("connection reset by peer"), want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldRetryScheduledRun(tc.err); got != tc.want {
+				t.Fatalf("shouldRetryScheduledRun(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDueScheduleOccurrenceBoundedLookback(t *testing.T) {
+	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	schedule := store.Schedule{
+		Cron: "* * * * *", Timezone: "UTC", WindowMinutes: 5, RunIfMissed: true,
+		LastRunAt: now.Add(-30 * 24 * time.Hour).Format(time.RFC3339Nano),
+	}
+	started := time.Now()
+	due, run, _ := dueScheduleOccurrence(schedule, now)
+	if !run || due.IsZero() {
+		t.Fatalf("expected a bounded catch-up occurrence, got due=%s run=%v", due, run)
+	}
+	if time.Since(started) > 2*time.Second {
+		t.Fatalf("catch-up scan took too long: %s", time.Since(started))
 	}
 }
 

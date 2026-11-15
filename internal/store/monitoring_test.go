@@ -80,6 +80,12 @@ func TestMonitorAndServiceLifecycle(t *testing.T) {
 	if err != nil || len(services) != 3 {
 		t.Fatalf("services: %+v %v", services, err)
 	}
+	if err := s.DeleteHost(host.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetMonitorState(monitor.ID, host.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected deleted host monitor state to be removed, got %v", err)
+	}
 	if err := s.DeleteMonitor(monitor.ID); err != nil {
 		t.Fatal(err)
 	}

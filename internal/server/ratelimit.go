@@ -52,17 +52,3 @@ func (l *attemptLimiter) reset(key string) {
 	defer l.mu.Unlock()
 	delete(l.entries, key)
 }
-
-func (l *attemptLimiter) retryAfter(key string) time.Duration {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	entry, ok := l.entries[key]
-	if !ok {
-		return 0
-	}
-	wait := time.Until(entry.reset)
-	if wait < 0 {
-		return 0
-	}
-	return wait
-}

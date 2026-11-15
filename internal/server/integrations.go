@@ -177,6 +177,15 @@ func (s *Server) saveIntegrationConfig(source string, request integrationRequest
 	if request.APISecret != "" {
 		cfg.APISecret = request.APISecret
 	}
+	if !request.ClearCredentials && request.Username != "" && existing.Username != "" &&
+		!strings.EqualFold(strings.TrimSpace(request.Username), strings.TrimSpace(existing.Username)) &&
+		request.Password == "" {
+		return integrationConfig{}, errors.New("password is required when changing username")
+	}
+	if !request.ClearCredentials && request.APIKey != "" && existing.APIKey != "" &&
+		request.APIKey != existing.APIKey && request.APISecret == "" {
+		return integrationConfig{}, errors.New("API secret is required when changing API key")
+	}
 	if request.ClearCredentials {
 		cfg.Password = ""
 		cfg.APIKey = ""

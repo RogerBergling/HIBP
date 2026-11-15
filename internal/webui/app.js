@@ -66,6 +66,19 @@ function selectedHosts() {
   return state.hosts.filter((host) => state.selectedHosts.has(host.id));
 }
 
+function controllerHostNames() {
+  const controller = state.status.controller || {};
+  const values = ['localhost', '127.0.0.1', '::1'];
+  if (controller.hostname) values.push(controller.hostname);
+  for (const address of controller.addresses || []) values.push(address);
+  return new Set(values.map((value) => String(value).trim().toLowerCase()).filter(Boolean));
+}
+
+function isControllerHost(host) {
+  const names = controllerHostNames();
+  return [host.name, host.address].some((value) => names.has(String(value || '').trim().toLowerCase()));
+}
+
 function syncHostSelection() {
   const hostIDs = new Set(state.hosts.map((host) => host.id));
   for (const id of Array.from(state.selectedHosts)) {
@@ -2211,6 +2224,8 @@ async function fleetUpdateHelpers(hosts = null) {
         if (error.message === 'cancelled') {
           setStatus(host, 'skipped', 'review', 'credential prompt cancelled');
           skipped++;
+          cancelled = true;
+          break;
         } else if (error.status === 409 && error.data && error.data.code === 'host_key_untrusted') {
           setStatus(host, 'failed', 'unreachable', 'trust the host key first');
           failed++;
@@ -2479,6 +2494,8 @@ async function fleetPatchHosts(hosts, dryRun, rebootAfterPatch = false) {
         if (error.message === 'cancelled') {
           setStatus(host, 'skipped', 'review', 'credential prompt cancelled');
           skipped++;
+          cancelled = true;
+          break;
         } else if (error.status === 409 && error.data && error.data.code === 'host_busy') {
           setStatus(host, 'failed', 'unreachable', 'another operation is running');
           failed++;
@@ -2501,8 +2518,8 @@ async function fleetPatchHosts(hosts, dryRun, rebootAfterPatch = false) {
 }
 
 function showFleetRebootModal(hosts) {
-  const targets = hosts.slice();
-  if (!targets.length) {
+  const requested = hosts.slice();
+  if (!requested.length) {
     toast('Select at least one host', 'error');
     return;
   }
@@ -2510,8 +2527,17 @@ function showFleetRebootModal(hosts) {
     toast('Another fleet operation is already running', 'error');
     return;
   }
+  const excluded = requested.filter((host) => isControllerHost(host));
+  const targets = requested.filter((host) => !isControllerHost(host));
+  if (!targets.length) {
+    toast('The controller is excluded from bulk reboot; select managed hosts only', 'error');
+    return;
+  }
   const body = el('div', 'modal-body');
   body.append(el('p', 'muted', 'This is a destructive action. The selected hosts will reboot immediately and their SSH connections may drop. Reboots run sequentially, one host at a time. Keep this tab open.'));
+  if (excluded.length) {
+    body.append(el('p', 'field-note', 'The controller is excluded from this bulk reboot: ' + excluded.map((host) => host.name).join(', ') + '. Use the per-host Reboot button only if you deliberately want to reboot the controller.'));
+  }
   const summary = el('div', 'status-list');
   const row = (label, value) => {
     const div = el('div');
@@ -2662,6 +2688,8 @@ async function fleetRebootHosts(hosts) {
         if (error.message === 'cancelled') {
           setStatus(host, 'skipped', 'review', 'credential prompt cancelled');
           skipped++;
+          cancelled = true;
+          break;
         } else if (error.status === 409 && error.data && error.data.code === 'host_busy') {
           setStatus(host, 'failed', 'unreachable', 'another operation is running');
           failed++;
@@ -2977,6 +3005,7 @@ function renderSystemPanel(panel, data, host, reload, onMetricsDaysChange = asyn
 function renderHostSettings(data, host, reload) {
   const card = el('div', 'detail-card');
   card.append(el('h3', '', 'Collection settings for this host'));
+  card.append(el('p', 'muted', 'Values that match the fleet defaults remain inherited. Only changed values become host overrides.'));
   const grid = el('div', 'settings-grid');
   const enabled = selectField(grid, 'Collector', 'collector_enabled', [['1', 'Enabled'], ['0', 'Disabled']]);
   const metricsInterval = inputField(grid, 'Metrics interval', 'metrics_interval', '5m');
@@ -2997,17 +3026,28 @@ function renderHostSettings(data, host, reload) {
   save.type = 'button';
   actions.append(reset, save);
   card.append(actions);
-  const payload = () => ({
-    scope: 'host',
-    host_id: host.id,
-    settings: {
-      'collector.enabled': enabled.value,
-      'collector.metrics_interval': metricsInterval.value.trim(),
-      'collector.facts_interval': factsInterval.value.trim(),
-      'metrics.retention_days': retention.value.trim(),
-      'docker.scan_roots': roots.value.trim(),
-    },
-  });
+  const fields = {
+    'collector.enabled': enabled,
+    'collector.metrics_interval': metricsInterval,
+    'collector.facts_interval': factsInterval,
+    'metrics.retention_days': retention,
+    'docker.scan_roots': roots,
+  };
+  const hostSettings = data.host_settings || {};
+  const inherited = data.inherited_settings || {};
+  const payload = () => {
+    const settings = {};
+    for (const [key, field] of Object.entries(fields)) {
+      const value = field.value.trim();
+      const hadOverride = Object.prototype.hasOwnProperty.call(hostSettings, key);
+      const inheritedValue = inherited[key] ?? data.settings_defaults?.[key] ?? '';
+      // Preserve existing host overrides; create a new override only when the
+      // operator actually changed the inherited value. This avoids turning a
+      // plain "open and save" into a permanent fleet-default pin.
+      if (hadOverride || value !== inheritedValue) settings[key] = value;
+    }
+    return { scope: 'host', host_id: host.id, settings };
+  };
   save.addEventListener('click', async () => {
     try {
       await api('/api/v1/settings', { method: 'PUT', body: JSON.stringify(payload()) });
@@ -4020,7 +4060,7 @@ function showImportModal() {
       const result = await api('/api/v1/import', { method: 'POST', body: JSON.stringify({ csv: textarea.value, commit: false, duplicate_policy: policy.value, default_key_path: defaultKeyPath.value.trim() }) });
       renderImportPreview(preview, result);
       preview.classList.remove('hidden');
-      commitButton.disabled = !result.rows || result.rows.length === 0;
+      commitButton.disabled = !(result.rows || []).some((row) => !row.error);
     } catch (error) {
       toast(error.message, 'error');
     }

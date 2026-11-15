@@ -322,7 +322,7 @@ func dockerProject(ctx context.Context, args []string) (string, []string, error)
 		}
 		return project, files, nil
 	}
-	return "", nil, fmt.Errorf("Compose project %q was not found", project)
+	return "", nil, fmt.Errorf("compose project %q was not found", project)
 }
 
 func composeFiles(value string) ([]string, error) {
@@ -334,7 +334,7 @@ func composeFiles(value string) ([]string, error) {
 			continue
 		}
 		if !filepath.IsAbs(item) {
-			return nil, fmt.Errorf("Compose file path must be absolute: %s", item)
+			return nil, fmt.Errorf("compose file path must be absolute: %s", item)
 		}
 		item = filepath.Clean(item)
 		if seen[item] {
@@ -344,7 +344,7 @@ func composeFiles(value string) ([]string, error) {
 		files = append(files, item)
 	}
 	if len(files) == 0 {
-		return nil, errors.New("Compose project has no config files")
+		return nil, errors.New("compose project has no config files")
 	}
 	return files, nil
 }
@@ -353,30 +353,30 @@ func trustComposeFiles(files []string) error {
 	for _, file := range files {
 		info, err := os.Stat(file)
 		if err != nil {
-			return fmt.Errorf("Compose file %s: %w", file, err)
+			return fmt.Errorf("compose file %s: %w", file, err)
 		}
 		if !info.Mode().IsRegular() {
-			return fmt.Errorf("Compose file %s is not a regular file", file)
+			return fmt.Errorf("compose file %s is not a regular file", file)
 		}
 		stat, ok := info.Sys().(*syscall.Stat_t)
 		if !ok || stat.Uid != 0 {
-			return fmt.Errorf("Compose file %s must be owned by root", file)
+			return fmt.Errorf("compose file %s must be owned by root", file)
 		}
 		if info.Mode().Perm()&0o022 != 0 {
-			return fmt.Errorf("Compose file %s must not be group/world-writable", file)
+			return fmt.Errorf("compose file %s must not be group/world-writable", file)
 		}
 		dir := filepath.Dir(file)
 		for {
 			dirInfo, err := os.Stat(dir)
 			if err != nil {
-				return fmt.Errorf("Compose directory %s: %w", dir, err)
+				return fmt.Errorf("compose directory %s: %w", dir, err)
 			}
 			dirStat, ok := dirInfo.Sys().(*syscall.Stat_t)
 			if !ok || dirStat.Uid != 0 {
-				return fmt.Errorf("Compose directory %s must be owned by root", dir)
+				return fmt.Errorf("compose directory %s must be owned by root", dir)
 			}
 			if dirInfo.Mode().Perm()&0o022 != 0 && dirInfo.Mode()&os.ModeSticky == 0 {
-				return fmt.Errorf("Compose directory %s must not be group/world-writable", dir)
+				return fmt.Errorf("compose directory %s must not be group/world-writable", dir)
 			}
 			parent := filepath.Dir(dir)
 			if parent == dir {
