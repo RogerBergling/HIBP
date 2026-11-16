@@ -481,7 +481,12 @@ func (s *Server) handleFacts(w http.ResponseWriter, r *http.Request) {
 		}
 		password = request.Password
 	}
-	output, code, err := s.runHelper(r.Context(), host, "facts", password, request.SudoPassword, 2*time.Minute)
+	if !s.tryLockHost(host.ID) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "another patch, reboot, or bootstrap operation is already running for this host", "code": "host_busy"})
+		return
+	}
+	defer s.unlockHost(host.ID)
+	output, code, err := s.runHelper(r.Context(), host, "facts", password, request.SudoPassword, 5*time.Minute)
 	if errors.Is(err, errSudoPasswordInvalid) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "sudo_password_invalid"})
 		return

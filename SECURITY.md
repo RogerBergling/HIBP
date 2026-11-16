@@ -60,7 +60,7 @@ Out of scope:
   current SQLCipher 4.20 and the patched `third_party/go-sqlite3` driver.
 - Password SSH and sudo password fallbacks are manual-run only and never
   stored. The first accepted sudo password is reused in browser memory for
-  interactive actions and selected-host patch, reboot, and helper-update
+  interactive actions and selected-host facts, patch, reboot, and helper-update
   batches on hosts with the same SSH username; it is never persisted and is
   discarded after a wrong password, sign-out, or tab close. `ssh-agent`, hardware-backed keys,
   SSH certificates, and passphrase-protected key files are not implemented.

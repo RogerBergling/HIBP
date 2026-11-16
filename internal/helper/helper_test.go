@@ -69,11 +69,41 @@ func TestCheckActionUsesFixedCommand(t *testing.T) {
 	if err != nil || code != 0 {
 		t.Fatalf("check failed: %v code=%d", err, code)
 	}
-	if !strings.HasSuffix(gotName, "apt-get") || strings.Join(gotArgs, " ") != "-s upgrade" {
+	args := strings.Join(gotArgs, " ")
+	if !strings.HasSuffix(gotName, "apt-get") || (args != "-s upgrade" && args != "-s full-upgrade") {
 		t.Fatalf("unexpected command: %s %v", gotName, gotArgs)
 	}
 	if !strings.Contains(output, "Inst curl") {
 		t.Fatalf("unexpected output: %q", output)
+	}
+}
+
+func TestAptCheckRefreshesListsBeforeSimulation(t *testing.T) {
+	restoreLook := SetLookPathForTest(func(name string) (string, error) {
+		if name == "apt-get" {
+			return "/usr/bin/apt-get", nil
+		}
+		return "", errors.New("not found")
+	})
+	defer restoreLook()
+	var calls [][]string
+	restoreRun := SetRunnerForTest(func(_ context.Context, _ string, args ...string) ([]byte, int, error) {
+		calls = append(calls, append([]string(nil), args...))
+		return []byte("Inst curl [1.0] (1.1)\n"), 0, nil
+	})
+	defer restoreRun()
+
+	if _, _, err := checkCommand(context.Background(), "apt"); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("expected update + simulation, got %v", calls)
+	}
+	if strings.Join(calls[0], " ") != "update" {
+		t.Fatalf("expected apt-get update first, got %v", calls[0])
+	}
+	if len(calls[1]) < 2 || calls[1][0] != "-s" {
+		t.Fatalf("expected apt-get simulation, got %v", calls[1])
 	}
 }
 
@@ -446,5 +476,17 @@ func TestCompareKernelVersions(t *testing.T) {
 	}
 	if compareKernelVersions("6.12.0", "6.12.0") != 0 {
 		t.Fatal("equal versions should compare equal")
+	}
+}
+
+func TestAptUpgradeActionForKali(t *testing.T) {
+	if got := aptUpgradeActionFor("kali", "debian"); got != "full-upgrade" {
+		t.Fatalf("Kali should use full-upgrade, got %q", got)
+	}
+	if got := aptUpgradeActionFor("ubuntu", "debian"); got != "upgrade" {
+		t.Fatalf("Ubuntu should keep upgrade, got %q", got)
+	}
+	if got := aptUpgradeActionFor("debian", ""); got != "upgrade" {
+		t.Fatalf("Debian should keep upgrade, got %q", got)
 	}
 }

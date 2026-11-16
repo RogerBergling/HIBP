@@ -162,7 +162,7 @@ func (s *Server) scheduledMetrics(ctx context.Context, host store.Host) {
 }
 
 func (s *Server) scheduledFacts(ctx context.Context, host store.Host) {
-	if output, code, err := s.runHelper(ctx, host, "facts", "", "", 2*time.Minute); err != nil {
+	if output, code, err := s.runHelper(ctx, host, "facts", "", "", 5*time.Minute); err != nil {
 		logCollectorError(host, "facts", err)
 	} else if code != 0 {
 		slog.Warn("collector: facts helper failed", "host", host.Name, "output", strings.TrimSpace(output))

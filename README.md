@@ -577,8 +577,10 @@ The decisions below are the working profile for this rollout:
   default. Optional single-hop `ProxyJump` is supported for targets behind a
   bastion or management host. Multi-hop chains, NAT traversal, and HTTP proxies
   are not supported.
-- **Patching policy:** apt `upgrade` semantics are accepted. Held-back packages
-  are tracked separately and are not forced by HIBP.
+- **Patching policy:** Debian/Ubuntu use apt `upgrade` semantics; Kali uses
+  apt `full-upgrade` because rolling-package dependency changes otherwise leave
+  most updates held back. Review Kali upgrades on a canary host. Held-back
+  packages on Debian/Ubuntu are not forced by HIBP.
 - **Unlock:** use the packaged systemd service with a `0400` passphrase file on
   a full-disk-encrypted controller so schedules and collection recover after a
   reboot. Keep `scripts/start-interactive.sh` for first-run setup, recovery, and
@@ -645,11 +647,12 @@ This profile still requires the canary and restore tests below.
 - **Fedora:** install `dnf-plugins-core` (or the package that provides
   `needs-restarting`) if you want reboot-required detection. Without it the
   helper can report "no reboot required" even when one is needed.
-- **Debian/Ubuntu/Kali:** the current apply path uses
-  `apt-get ... upgrade`, not `full-upgrade`. This is accepted for this rollout.
-  Packages held back because they need dependency changes, removals, or a
-  distribution upgrade remain installed and must be reviewed separately. Kali
-  is rolling; track held-back packages explicitly.
+- **Debian/Ubuntu:** the apply path uses `apt-get ... upgrade`; packages held
+  back because they need dependency changes, removals, or a distribution upgrade
+  remain installed and must be reviewed separately.
+- **Kali:** the apply path uses `apt-get ... full-upgrade` because Kali rolling
+  frequently requires dependency changes. This can install or remove packages;
+  canary-test it and review the package-manager output before a fleet rollout.
 - **Alpine is out of scope for this rollout.** If it is added later, install
   `sudo` (which provides `visudo`). Alpine has no systemd, so service-state
   monitoring and `timedatectl`-based time-sync reporting are unavailable. Reboot
@@ -1372,8 +1375,9 @@ stopped controller.
 - **Check only** is a dry run through the target package manager. **Apply**
   installs updates through the fixed root-owned helper using the
   distribution's normal upgrade action; security-only filtering is not
-  implemented. On apt, the helper uses `upgrade`, so held-back packages remain.
-  Reboots are not automatic unless **Reboot if required after a successful
+  implemented. Debian/Ubuntu use `upgrade`, so held-back packages remain; Kali
+  uses `full-upgrade` because rolling dependency changes otherwise hold updates
+  back. Reboots are not automatic unless **Reboot if required after a successful
   apply** is enabled for that schedule. HIBP then runs `reboot-check` and issues
   the fixed reboot action only when the target reports it is required; it does
   not wait for or verify the rebooted host. Treat this as a destructive schedule
@@ -1599,9 +1603,15 @@ after Setup or Update helpers; an amber version means the helper build differs
 from the running controller.
 
 Use the checkbox column to select one, several, or all hosts. The header
-checkbox selects the whole fleet. **Update selected (N)** runs the setup flow
-only for the checked hosts, while **Update helpers** still runs it for every
-host in the inventory. Both actions show the same sequential progress table.
+checkbox selects the whole fleet. **Setup selected (N)** runs the helper setup
+flow only for the checked hosts, while **Update helpers** still runs it for
+every host in the inventory. Both actions show the same sequential progress
+table.
+
+**Collect facts (N)** runs the fixed `facts` action on the checked hosts and
+refreshes OS, pending-update, reboot, and helper-build data. It uses the same
+sequential progress table, per-host failure isolation, shared in-memory sudo
+reuse, and stop-after-current-host control.
 
 **Patch selected (N)** works on the same checkbox selection. It opens a summary
 with pending updates and reboot flags, then offers **Dry run** or **Apply
@@ -1650,7 +1660,7 @@ Configuration is fleet-first with per-host overrides where it makes sense:
 - SMTP is a global integration; recipients can be set per monitor or fleet.
 - vCenter, HAProxy, and OPNsense credentials are global read-only integrations
   with their own poll interval and optional recipients.
-- Helper lifecycle: per-host **Setup**, selected-host **Update selected**, and
+- Helper lifecycle: per-host **Setup**, selected-host **Setup selected**, and
   fleet-wide **Update helpers**.
 - Secrets (SMTP, vCenter, API tokens) live only in SQLCipher and are never
   returned by the API.
@@ -1772,16 +1782,16 @@ manual actions use `sudo -n` and no longer need the sudo password.
   restart the server to clear it.
 - A wrong password is rejected and the cached value is discarded.
 - The first accepted sudo password is reused in browser memory for other hosts
-  with the same SSH username, including **Patch selected**, **Reboot selected**,
-  and **Update selected**. This avoids repeated typing during interactive work
-  without persisting the password.
+  with the same SSH username, including **Collect facts**, **Patch selected**,
+  **Reboot selected**, and **Setup selected**. This avoids repeated typing
+  during interactive work without persisting the password.
 - The batch reuse is deliberately memory-only. It is not written to the
   database, `localStorage`, `sessionStorage`, a file, an environment variable,
   or a command line. If the password is wrong for a later host, HIBP discards
   the cached value and prompts again.
 
 The safe way to avoid sudo prompts entirely is to install the restricted
-`NOPASSWD` helper rule with **Setup** or **Update selected**. Do not store a sudo
+`NOPASSWD` helper rule with **Setup** or **Setup selected**. Do not store a sudo
 password in plaintext configuration, browser storage, or a shared script.
 
 This fallback is for interactive use only. **Scheduled patching still requires
@@ -2097,7 +2107,8 @@ release.
 
 | Family | Examples | Check for updates | Apply updates | Reboot indicator | Current caveats |
 |---|---|---|---|---|---|
-| Debian | Debian, Ubuntu, Kali, Linux Mint | `apt-get -s upgrade` | `apt-get update`, then `apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade` | `/var/run/reboot-required` | Does **not** use `full-upgrade`. Held-back packages, new dependencies, removals, and distribution upgrades are not handled. Check uses the local apt cache; refresh it separately. Kali is rolling; validate the policy. |
+| Debian | Debian, Ubuntu, Linux Mint | `apt-get update`, then `apt-get -s upgrade` | `apt-get update`, then `apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade` | `/var/run/reboot-required` | Held-back packages, new dependencies, removals, and distribution upgrades are not handled. Check refreshes the apt lists first. |
+| Kali | Kali Linux | `apt-get update`, then `apt-get -s full-upgrade` | `apt-get update`, then `apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold full-upgrade` | `/var/run/reboot-required` | Rolling release. `full-upgrade` can install/remove packages or cross a release change. Canary-test and review the output. |
 | Fedora / RHEL | Fedora, RHEL, AlmaLinux, Rocky Linux, CentOS Stream | `dnf -q check-update` (exit 100 means updates) | `dnf -y --refresh upgrade` | `needs-restarting -r` (exit 1 means reboot) | `needs-restarting` may be absent (`dnf-plugins-core`/`dnf-utils`). Subscription/repo state is not checked. |
 | SUSE | openSUSE Leap, Tumbleweed, SLES | `zypper -q list-updates` | `zypper --non-interactive update` | `zypper needs-reboot` | No distribution upgrade (`dup`); SLES registration/modules are not checked. |
 | Arch | Arch Linux, Manjaro, EndeavourOS | `pacman -Qu` | `pacman -Syu --noconfirm` | Kernel/module-directory heuristic | Rolling release. Check uses the local sync database; refresh separately. Reboot detection compares the running kernel with `/usr/lib/modules`; verify manually. |
@@ -2621,9 +2632,12 @@ Current status:
   fingerprints.
 - Manual SSH and sudo password fallbacks with per-run prompts; no password
   storage. The first accepted sudo password is reused in browser memory for
-  hosts with the same SSH username across selected-host patch, reboot, and
-  helper-update batches. It is discarded on a wrong password, sign-out, or tab
-  close.
+  hosts with the same SSH username across selected-host facts, patch, reboot,
+  and helper-update batches. It is discarded on a wrong password, sign-out, or
+  tab close.
+- Selected-host **Collect facts** workflow with sequential per-host progress,
+  failure isolation, shared in-memory sudo reuse, and stop-after-current-host
+  control.
 - Selected-host **Patch selected** dry-run and apply workflows with sequential
   per-host progress, failure isolation, and stop-after-current-host control.
 - Selected-host **Reboot selected** workflow with a typed confirmation, host
@@ -2807,10 +2821,10 @@ Current status:
   reachability, time synchronization, EOL status, or package-manager locks, and
   it does not cancel a run when the maintenance window ends. The package manager
   reports its own failures; operator/canary checks are required.
-- Debian/Ubuntu/Kali apply uses `apt-get upgrade`, not `full-upgrade`. Packages
-  held back for dependency changes, removals, or distribution upgrades remain
-  installed. This may not satisfy a strict "all available updates" policy on
-  Kali or other rolling systems.
+- Debian/Ubuntu apply uses `apt-get upgrade`; held-back packages remain
+  installed. Kali apply uses `apt-get full-upgrade`, which can install or remove
+  packages and can cross a rolling distribution change. Both paths require a
+  canary and review of the package-manager output.
 - A failed or interrupted package-manager run can leave a target partially
   updated. HIBP does not roll back package transactions; use snapshots,
   distribution tooling, or a tested recovery procedure.

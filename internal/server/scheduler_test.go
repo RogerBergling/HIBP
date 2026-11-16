@@ -337,6 +337,27 @@ func TestRebootRequiredFromHelperOutput(t *testing.T) {
 	}
 }
 
+func TestFactsRejectsBusyHost(t *testing.T) {
+	ts, db, server := testServerWithApp(t, true)
+	host, err := db.CreateHost(store.Host{
+		Name: "web01", Address: "10.0.0.10", Port: 22, Username: "ubuntu",
+		AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !server.tryLockHost(host.ID) {
+		t.Fatal("host was already locked")
+	}
+	defer server.unlockHost(host.ID)
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/hosts/"+host.ID+"/facts", "test-token", `{}`)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict || !strings.Contains(string(body), "host_busy") {
+		t.Fatalf("expected host_busy conflict, got %d %s", resp.StatusCode, body)
+	}
+}
+
 func TestManualPatchRejectsBusyHost(t *testing.T) {
 	ts, db, server := testServerWithApp(t, true)
 	host, err := db.CreateHost(store.Host{

@@ -330,7 +330,18 @@ func checkUpdates(ctx context.Context) (string, int, error) {
 func checkCommand(ctx context.Context, packageManager string) ([]byte, int, error) {
 	switch packageManager {
 	case "apt":
-		return runBinary(ctx, "apt-get", "-s", "upgrade")
+		// Refresh package metadata before simulating. Kali and other rolling
+		// targets can have stale lists, which previously made a host with many
+		// available updates report zero.
+		updateOutput, _, _ := runBinary(ctx, "apt-get", "update")
+		output, code, err := runBinary(ctx, "apt-get", "-s", aptUpgradeAction())
+		if len(updateOutput) > 0 {
+			if updateOutput[len(updateOutput)-1] != '\n' {
+				updateOutput = append(updateOutput, '\n')
+			}
+			output = append(updateOutput, output...)
+		}
+		return output, code, err
 	case "dnf":
 		return runBinary(ctx, "dnf", "-q", "check-update")
 	case "zypper":
@@ -342,6 +353,27 @@ func checkCommand(ctx context.Context, packageManager string) ([]byte, int, erro
 	default:
 		return nil, 0, fmt.Errorf("unsupported package manager %q", packageManager)
 	}
+}
+
+// aptUpgradeAction keeps the conservative Debian/Ubuntu upgrade behavior but
+// uses full-upgrade on Kali. Kali is a rolling distribution; ordinary upgrade
+// commonly holds back packages that need dependency changes, which made the
+// pending count look like zero even when many updates were available.
+func aptUpgradeAction() string {
+	info, err := readOSRelease("/etc/os-release")
+	if err != nil {
+		return "upgrade"
+	}
+	return aptUpgradeActionFor(info["ID"], info["ID_LIKE"])
+}
+
+func aptUpgradeActionFor(id, like string) string {
+	id = strings.ToLower(strings.TrimSpace(id))
+	like = strings.ToLower(strings.TrimSpace(like))
+	if id == "kali" || strings.Contains(like, "kali") {
+		return "full-upgrade"
+	}
+	return "upgrade"
 }
 
 func applyUpdates(ctx context.Context) (string, int, error) {
@@ -357,7 +389,7 @@ func applyUpdates(ctx context.Context) (string, int, error) {
 		output, code, err = runBinary(ctx, "apt-get", "-y",
 			"-o", "Dpkg::Options::=--force-confdef",
 			"-o", "Dpkg::Options::=--force-confold",
-			"upgrade")
+			aptUpgradeAction())
 		all.Write(output)
 		return all.String(), code, err
 	case "dnf":

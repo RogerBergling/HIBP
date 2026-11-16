@@ -23,6 +23,7 @@ const state = {
 let fleetUpdateRunning = false;
 let fleetPatchRunning = false;
 let fleetRebootRunning = false;
+let fleetFactsRunning = false;
 
 const modalStack = [];
 
@@ -99,7 +100,7 @@ function syncHostSelection() {
     const node = $(id);
     if (!node) continue;
     node.disabled = count === 0;
-    node.textContent = count ? 'Update selected (' + count + ')' : 'Update selected';
+    node.textContent = count ? 'Setup selected (' + count + ')' : 'Setup selected';
   }
   for (const id of ['table-patch-selected', 'fleet-patch-selected']) {
     const node = $(id);
@@ -112,6 +113,12 @@ function syncHostSelection() {
     if (!node) continue;
     node.disabled = count === 0;
     node.textContent = count ? 'Reboot selected (' + count + ')' : 'Reboot selected';
+  }
+  for (const id of ['table-facts-selected', 'fleet-facts-selected']) {
+    const node = $(id);
+    if (!node) continue;
+    node.disabled = count === 0;
+    node.textContent = count ? 'Collect facts (' + count + ')' : 'Collect facts';
   }
 }
 
@@ -2129,7 +2136,7 @@ async function bootstrapHost(host) {
 }
 
 async function fleetUpdateHelpers(hosts = null) {
-  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning) {
+  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning) {
     toast('Another fleet operation is already running', 'error');
     return;
   }
@@ -2141,14 +2148,14 @@ async function fleetUpdateHelpers(hosts = null) {
   const scope = hosts
     ? (targets.length === 1 ? 'the selected host' : 'the ' + targets.length + ' selected hosts')
     : ('all ' + targets.length + ' hosts');
-  if (!confirm('Update the HIBP helper on ' + scope + '?\n\nThis uploads the running controller binary, rewrites the sudoers rule, and may prompt for credentials. Hosts with untrusted keys are skipped.')) {
+  if (!confirm('Set up or update the HIBP helper on ' + scope + '?\n\nThis uploads the running controller binary, rewrites the sudoers rule, and may prompt for credentials. Hosts with untrusted keys are skipped.')) {
     return;
   }
 
   fleetUpdateRunning = true;
   let cancelled = false;
   const body = el('div', 'modal-body');
-  body.append(el('p', 'muted', 'Updating sequentially. Keep this tab open. Setup installs the version of the HIBP server that is currently running.'));
+  body.append(el('p', 'muted', 'Setting up sequentially. Keep this tab open. Setup installs the version of the HIBP server that is currently running.'));
   const summary = el('div', 'muted', 'Preparing…');
   const wrap = el('div', 'fleet-update-list');
   const table = el('table');
@@ -2162,7 +2169,7 @@ async function fleetUpdateHelpers(hosts = null) {
   stop.type = 'button';
   actions.append(stop);
   body.append(actions);
-  const close = openModal(hosts ? 'Selected helper update' : 'Fleet helper update', body, () => { cancelled = true; });
+  const close = openModal(hosts ? 'Selected helper setup' : 'Fleet helper setup', body, () => { cancelled = true; });
   const rows = new Map();
   const rowFor = (host) => {
     let row = rows.get(host.id);
@@ -2264,6 +2271,120 @@ async function collectFacts(host) {
   }
 }
 
+async function fleetCollectFacts(hosts) {
+  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning) {
+    toast('Another fleet operation is already running', 'error');
+    return;
+  }
+  const targets = hosts.slice();
+  if (!targets.length) {
+    toast('Select at least one host', 'error');
+    return;
+  }
+  if (!confirm('Collect facts from ' + targets.length + ' selected host(s)? This uses SSH and the fixed helper.')) return;
+
+  fleetFactsRunning = true;
+  let cancelled = false;
+  const body = el('div', 'modal-body');
+  body.append(el('p', 'muted', 'Collecting facts sequentially. Keep this tab open.'));
+  const summary = el('div', 'muted', 'Preparing…');
+  const wrap = el('div', 'fleet-update-list');
+  const table = el('table');
+  const head = el('tr');
+  for (const label of ['Host', 'Status', 'Detail']) head.append(el('th', '', label));
+  table.append(head);
+  wrap.append(table);
+  body.append(summary, wrap);
+  const actions = el('div', 'modal-actions');
+  const stop = el('button', 'btn danger', 'Stop after current host');
+  stop.type = 'button';
+  actions.append(stop);
+  body.append(actions);
+  const close = openModal('Collect facts from selected hosts', body, () => { cancelled = true; });
+  const rows = new Map();
+  const rowFor = (host) => {
+    let row = rows.get(host.id);
+    if (row) return row;
+    const status = el('span', 'pill unknown', 'pending');
+    const statusCell = el('td');
+    statusCell.append(status);
+    const detail = el('td', 'muted', '—');
+    row = el('tr');
+    row.append(el('td', '', host.name), statusCell, detail);
+    table.append(row);
+    row.status = status;
+    row.detail = detail;
+    rows.set(host.id, row);
+    return row;
+  };
+  const setStatus = (host, label, cls, detail) => {
+    const row = rowFor(host);
+    row.status.textContent = label;
+    row.status.className = 'pill ' + cls;
+    row.detail.textContent = detail || '—';
+  };
+  let stopping = false;
+  stop.addEventListener('click', () => {
+    if (fleetFactsRunning) {
+      stopping = true;
+      cancelled = true;
+      stop.disabled = true;
+      stop.textContent = 'Stopping…';
+      summary.textContent = 'Stopping after the current host…';
+      return;
+    }
+    close();
+  });
+
+  const sharedSudo = { value: '' };
+  let ok = 0;
+  let failed = 0;
+  let skipped = 0;
+  try {
+    for (let index = 0; index < targets.length; index++) {
+      if (cancelled) break;
+      const host = targets[index];
+      setStatus(host, 'running', 'unknown', 'collecting…');
+      summary.textContent = 'Collecting ' + (index + 1) + ' of ' + targets.length + '…';
+      try {
+        const password = await passwordFor(host);
+        if (cancelled) break;
+        await requestWithSudo(
+          host,
+          '/api/v1/hosts/' + encodeURIComponent(host.id) + '/facts',
+          (sudoPassword) => ({ password, sudo_password: sudoPassword }),
+          { method: 'POST' },
+          sharedSudo,
+        );
+        setStatus(host, 'collected', 'reachable', 'facts updated');
+        ok++;
+      } catch (error) {
+        if (error.message === 'cancelled') {
+          setStatus(host, 'skipped', 'review', 'credential prompt cancelled');
+          skipped++;
+          cancelled = true;
+          break;
+        } else if (error.status === 409 && error.data && error.data.code === 'host_busy') {
+          setStatus(host, 'failed', 'unreachable', 'another operation is running');
+          failed++;
+        } else {
+          setStatus(host, 'failed', 'unreachable', error.message);
+          failed++;
+        }
+      }
+    }
+  } finally {
+    fleetFactsRunning = false;
+    stop.disabled = false;
+    stop.textContent = 'Close';
+    stop.classList.remove('danger');
+    summary.textContent = (cancelled || stopping)
+      ? 'Stopped. Collected ' + ok + ', failed ' + failed + ', skipped ' + skipped + '.'
+      : 'Finished. Collected ' + ok + ', failed ' + failed + ', skipped ' + skipped + '.';
+    await loadAll();
+  }
+}
+
 function showPatchModal(host) {
   const body = el('div', 'modal-body');
   body.append(el('p', 'muted', 'Dry-run shows what would change. Apply runs the root-owned helper on the target.'));
@@ -2329,7 +2450,7 @@ function showFleetPatchModal(hosts) {
     toast('Select at least one host', 'error');
     return;
   }
-  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning) {
+  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning) {
     toast('Another fleet operation is already running', 'error');
     return;
   }
@@ -2392,7 +2513,7 @@ function showFleetPatchModal(hosts) {
 }
 
 async function fleetPatchHosts(hosts, dryRun, rebootAfterPatch = false) {
-  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning) {
+  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning) {
     toast('Another fleet operation is already running', 'error');
     return;
   }
@@ -2523,7 +2644,7 @@ function showFleetRebootModal(hosts) {
     toast('Select at least one host', 'error');
     return;
   }
-  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning) {
+  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning) {
     toast('Another fleet operation is already running', 'error');
     return;
   }
@@ -2596,7 +2717,7 @@ function showFleetRebootModal(hosts) {
 }
 
 async function fleetRebootHosts(hosts) {
-  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning) {
+  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning) {
     toast('Another fleet operation is already running', 'error');
     return;
   }
@@ -4450,6 +4571,8 @@ function bind() {
   $('fleet-update-helpers').addEventListener('click', () => fleetUpdateHelpers());
   $('table-update-selected').addEventListener('click', () => fleetUpdateHelpers(selectedHosts()));
   $('fleet-update-selected').addEventListener('click', () => fleetUpdateHelpers(selectedHosts()));
+  $('table-facts-selected').addEventListener('click', () => fleetCollectFacts(selectedHosts()));
+  $('fleet-facts-selected').addEventListener('click', () => fleetCollectFacts(selectedHosts()));
   $('table-patch-selected').addEventListener('click', () => showFleetPatchModal(selectedHosts()));
   $('fleet-patch-selected').addEventListener('click', () => showFleetPatchModal(selectedHosts()));
   $('table-reboot-selected').addEventListener('click', () => showFleetRebootModal(selectedHosts()));
