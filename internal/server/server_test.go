@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -994,6 +995,60 @@ func TestRebootRequiresConfirmation(t *testing.T) {
 	data, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(data), "confirm") {
 		t.Fatalf("expected confirmation error, got %s", data)
+	}
+}
+
+func TestRebootProtectsController(t *testing.T) {
+	ts, db, app := testServerWithApp(t, true)
+	host, err := db.CreateHost(store.Host{
+		Name: "controller", Address: "127.0.0.1", Port: 1, Username: "root",
+		AuthType: "key", KeyPath: "/nonexistent/hibp-test-key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !app.isControllerHost(host) {
+		t.Fatal("expected loopback host to be treated as the controller")
+	}
+
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/hosts/"+host.ID+"/reboot", "test-token", `{"confirm":"reboot"}`)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "controller_protected") {
+		t.Fatalf("expected controller protection, got %d %s", resp.StatusCode, body)
+	}
+
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/hosts/"+host.ID+"/reboot", "test-token", `{"confirm":"reboot","allow_controller":true}`)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusBadRequest && strings.Contains(string(body), "controller_protected") {
+		t.Fatalf("explicit per-host approval was still rejected: %d %s", resp.StatusCode, body)
+	}
+}
+
+func TestPostPatchRebootSkipsController(t *testing.T) {
+	_, _, app := testServerWithApp(t, true)
+	required, requested, _, err := app.checkAndReboot(context.Background(), store.Host{
+		Name: "controller", Address: "127.0.0.1", Port: 1,
+	}, "", "")
+	if err == nil || required || requested {
+		t.Fatalf("expected controller reboot refusal, got required=%v requested=%v err=%v", required, requested, err)
+	}
+}
+
+func TestControllerNamesIncludeLoopbackAndHostIdentity(t *testing.T) {
+	names := controllerNames()
+	for _, value := range []string{"localhost", "127.0.0.1", "::1"} {
+		if !names[value] {
+			t.Fatalf("controller names missing %q: %v", value, names)
+		}
+	}
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !names[controllerName(hostname)] {
+		t.Fatalf("controller names missing local hostname %q", hostname)
 	}
 }
 

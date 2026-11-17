@@ -67,17 +67,36 @@ function selectedHosts() {
   return state.hosts.filter((host) => state.selectedHosts.has(host.id));
 }
 
+function controllerNameVariants(value) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/\.$/, '');
+  if (!normalized) return [];
+  const variants = [normalized];
+  // Match a short inventory name to the controller FQDN (and vice versa), but
+  // never split an IPv4 or IPv6 address into a bogus short name.
+  const ipv4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(normalized);
+  if (!ipv4 && !normalized.includes(':')) {
+    const dot = normalized.indexOf('.');
+    if (dot > 0) variants.push(normalized.slice(0, dot));
+  }
+  return variants;
+}
+
 function controllerHostNames() {
   const controller = state.status.controller || {};
   const values = ['localhost', '127.0.0.1', '::1'];
   if (controller.hostname) values.push(controller.hostname);
   for (const address of controller.addresses || []) values.push(address);
-  return new Set(values.map((value) => String(value).trim().toLowerCase()).filter(Boolean));
+  const names = new Set();
+  for (const value of values) {
+    for (const variant of controllerNameVariants(value)) names.add(variant);
+  }
+  return names;
 }
 
 function isControllerHost(host) {
   const names = controllerHostNames();
-  return [host.name, host.address].some((value) => names.has(String(value || '').trim().toLowerCase()));
+  return [host.name, host.address].some((value) =>
+    controllerNameVariants(value).some((variant) => names.has(variant)));
 }
 
 function syncHostSelection() {
@@ -2006,6 +2025,15 @@ async function requestWithSudo(host, path, payloadFor, options = {}, sudoCache =
     }
     if (sudoCache) sudoCache.value = '';
   };
+  const askForSudo = async () => {
+    let sudoPassword = sudoCache && sudoCache.value ? sudoCache.value : '';
+    if (!sudoPassword) {
+      sudoPassword = await sudoPasswordFor(host);
+      if (sudoCache) sudoCache.value = sudoPassword;
+    }
+    remember(sudoPassword);
+    return sudoPassword;
+  };
   try {
     const cachedSudo = (sudoCache && sudoCache.value)
       || state.sudoPasswords.get(host.id)
@@ -2016,16 +2044,19 @@ async function requestWithSudo(host, path, payloadFor, options = {}, sudoCache =
     return result;
   } catch (error) {
     if (error.status === 409 && error.data && error.data.code === 'sudo_password_required') {
-      let sudoPassword = sudoCache && sudoCache.value ? sudoCache.value : '';
-      if (!sudoPassword) {
-        sudoPassword = await sudoPasswordFor(host);
-        if (sudoCache) sudoCache.value = sudoPassword;
-      }
-      remember(sudoPassword);
-      return request(sudoPassword);
+      return request(await askForSudo());
     }
     if (error.status === 400 && error.data && error.data.code === 'sudo_password_invalid') {
+      const rejected = (sudoCache && sudoCache.value)
+        || state.sudoPasswords.get(host.id)
+        || (state.sharedSudoUsername === host.username ? state.sharedSudoPassword : '')
+        || '';
       forget();
+      // A shared password from another host may be wrong for this one. Discard
+      // it and prompt once, rather than failing the host with no way to continue.
+      if (rejected) {
+        return request(await askForSudo());
+      }
     }
     throw error;
   }
@@ -2688,7 +2719,7 @@ function showFleetRebootModal(hosts) {
   wrap.append(table);
   body.append(wrap);
   const confirmWrap = el('label', 'field');
-  confirmWrap.append(el('span', '', 'Type REBOOT to confirm'));
+  confirmWrap.append(el('span', '', 'Type REBOOT to confirm (case-insensitive)'));
   const confirmInput = el('input');
   confirmInput.type = 'text';
   confirmInput.autocomplete = 'off';
@@ -2700,16 +2731,27 @@ function showFleetRebootModal(hosts) {
   cancel.type = 'button';
   const reboot = el('button', 'btn danger', 'Reboot now');
   reboot.type = 'button';
+  const confirmed = () => confirmInput.value.trim().toUpperCase() === 'REBOOT';
   reboot.disabled = true;
   actions.append(cancel, reboot);
   body.append(actions);
   const close = openModal('Reboot ' + targets.length + ' selected host' + (targets.length === 1 ? '' : 's'), body);
   cancel.addEventListener('click', close);
   confirmInput.addEventListener('input', () => {
-    reboot.disabled = confirmInput.value.trim() !== 'REBOOT';
+    reboot.disabled = !confirmed();
+  });
+  confirmInput.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    if (!confirmed()) {
+      reboot.disabled = true;
+      return;
+    }
+    close();
+    fleetRebootHosts(targets);
   });
   reboot.addEventListener('click', () => {
-    if (confirmInput.value.trim() !== 'REBOOT') return;
+    if (!confirmed()) return;
     close();
     fleetRebootHosts(targets);
   });
@@ -2794,7 +2836,7 @@ async function fleetRebootHosts(hosts) {
         const result = await requestWithSudo(
           host,
           '/api/v1/hosts/' + encodeURIComponent(host.id) + '/reboot',
-          (sudoPassword) => ({ confirm: 'reboot', password, sudo_password: sudoPassword }),
+          (sudoPassword) => ({ confirm: 'reboot', password, sudo_password: sudoPassword, allow_controller: false }),
           { method: 'POST' },
           sharedSudo,
         );
@@ -2802,7 +2844,8 @@ async function fleetRebootHosts(hosts) {
           setStatus(host, 'reboot requested', 'review', result.output || 'host may disconnect now');
           ok++;
         } else {
-          setStatus(host, 'failed', 'unreachable', 'exit ' + Number(result.exit_code ?? 0));
+          const output = String(result.output || result.error || '').trim().split('\n').filter(Boolean).slice(-2).join(' / ');
+          setStatus(host, 'failed', 'unreachable', 'exit ' + Number(result.exit_code ?? 0) + (output ? ': ' + output : ''));
           failed++;
         }
       } catch (error) {
@@ -2814,6 +2857,9 @@ async function fleetRebootHosts(hosts) {
         } else if (error.status === 409 && error.data && error.data.code === 'host_busy') {
           setStatus(host, 'failed', 'unreachable', 'another operation is running');
           failed++;
+        } else if (error.status === 400 && error.data && error.data.code === 'controller_protected') {
+          setStatus(host, 'skipped', 'review', 'controller reboot requires the per-host button');
+          skipped++;
         } else if (!error.status) {
           setStatus(host, 'unconfirmed', 'review', 'connection dropped; verify the host state');
           unconfirmed++;
@@ -2844,7 +2890,7 @@ async function rebootHost(host) {
     const result = await requestWithSudo(
       host,
       '/api/v1/hosts/' + encodeURIComponent(host.id) + '/reboot',
-      (sudoPassword) => ({ confirm: 'reboot', password, sudo_password: sudoPassword }),
+      (sudoPassword) => ({ confirm: 'reboot', password, sudo_password: sudoPassword, allow_controller: true }),
       { method: 'POST' },
     );
     showOutputModal('Reboot requested — ' + host.name, {

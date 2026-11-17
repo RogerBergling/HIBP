@@ -68,30 +68,85 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	controller := map[string]any{"hostname": "", "addresses": []string{}}
-	if hostname, err := os.Hostname(); err == nil {
-		controller["hostname"] = hostname
-	}
-	if addresses, err := net.InterfaceAddrs(); err == nil {
-		values := make([]string, 0, len(addresses))
-		for _, address := range addresses {
-			switch value := address.(type) {
-			case *net.IPNet:
-				values = append(values, value.IP.String())
-			case *net.IPAddr:
-				values = append(values, value.IP.String())
-			}
-		}
-		controller["addresses"] = values
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version":       s.build.Version,
 		"build":         s.build,
 		"hosts":         hosts,
 		"audit_entries": entries,
 		"time":          crypto.Now(),
-		"controller":    controller,
+		"controller":    controllerStatus(),
 	})
+}
+
+// controllerStatus describes the host running this server. The UI uses it to
+// keep the controller out of bulk reboot batches.
+func controllerStatus() map[string]any {
+	hostname, _ := os.Hostname()
+	addresses := []string{}
+	if values, err := net.InterfaceAddrs(); err == nil {
+		for _, address := range values {
+			switch value := address.(type) {
+			case *net.IPNet:
+				addresses = append(addresses, value.IP.String())
+			case *net.IPAddr:
+				addresses = append(addresses, value.IP.String())
+			}
+		}
+	}
+	return map[string]any{"hostname": hostname, "addresses": addresses}
+}
+
+func controllerName(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.TrimSuffix(value, ".")
+}
+
+// controllerNames returns the names and addresses that identify this server.
+// Short hostnames are included so an inventory entry using a short name still
+// matches a controller known by its FQDN, and vice versa.
+func controllerNames() map[string]bool {
+	names := map[string]bool{"localhost": true, "127.0.0.1": true, "::1": true}
+	add := func(value string) {
+		value = controllerName(value)
+		if value == "" {
+			return
+		}
+		if ip := net.ParseIP(value); ip != nil {
+			names[ip.String()] = true
+			return
+		}
+		names[value] = true
+		if index := strings.Index(value, "."); index > 0 {
+			names[value[:index]] = true
+		}
+	}
+	status := controllerStatus()
+	if hostname, ok := status["hostname"].(string); ok {
+		add(hostname)
+	}
+	if addresses, ok := status["addresses"].([]string); ok {
+		for _, address := range addresses {
+			add(address)
+		}
+	}
+	return names
+}
+
+func (s *Server) isControllerHost(host store.Host) bool {
+	names := controllerNames()
+	for _, value := range []string{host.Name, host.Address} {
+		value = controllerName(value)
+		if value == "" {
+			continue
+		}
+		if names[value] {
+			return true
+		}
+		if ip := net.ParseIP(value); ip != nil && names[ip.String()] {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleListHosts(w http.ResponseWriter, _ *http.Request) {
@@ -614,6 +669,9 @@ func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
 // a successful patch and, when it does, requests that reboot through the same
 // restricted helper action. It never uses a shell or an arbitrary command.
 func (s *Server) checkAndReboot(ctx context.Context, host store.Host, sshPassword, sudoPassword string) (bool, bool, string, error) {
+	if s.isControllerHost(host) {
+		return false, false, "", errors.New("refusing to reboot the HIBP controller automatically; use the per-host Reboot button")
+	}
 	checkOutput, checkCode, err := s.runHelper(ctx, host, "reboot-check", sshPassword, sudoPassword, 2*time.Minute)
 	if err != nil {
 		return false, false, checkOutput, fmt.Errorf("reboot check failed: %w", err)
@@ -664,9 +722,10 @@ func rebootRequiredFromHelperOutput(output string) (bool, error) {
 }
 
 type rebootRequest struct {
-	Confirm      string `json:"confirm"`
-	Password     string `json:"password"`
-	SudoPassword string `json:"sudo_password"`
+	Confirm         string `json:"confirm"`
+	Password        string `json:"password"`
+	SudoPassword    string `json:"sudo_password"`
+	AllowController bool   `json:"allow_controller"`
 }
 
 func (s *Server) handleReboot(w http.ResponseWriter, r *http.Request) {
@@ -691,6 +750,14 @@ func (s *Server) handleReboot(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		password = request.Password
+	}
+	if s.isControllerHost(host) && !request.AllowController {
+		s.auditHostActionFailure(r, "reboot", host.ID, errors.New("controller reboot requires explicit per-host approval"))
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "refusing to reboot the HIBP controller from a batch or API request without explicit per-host approval",
+			"code":  "controller_protected",
+		})
+		return
 	}
 	if !s.tryLockHost(host.ID) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "another patch, reboot, or bootstrap operation is already running for this host", "code": "host_busy"})

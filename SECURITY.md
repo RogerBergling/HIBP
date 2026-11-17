@@ -245,10 +245,14 @@ cron-based patch schedules are implemented.
 - Do not use `NOPASSWD: ALL`; use the narrow helper rule.
 - The reboot action is destructive. Per-host and selected-host reboots require
   explicit confirmation in the API and UI, and selected-host reboots require
-  typing `REBOOT`. The controller is detected from its hostname/local addresses
-  and excluded from bulk reboot. A manual patch run or schedule can opt in to a reboot after a
+  typing `REBOOT`. The controller is detected from its hostname, short hostname,
+  and local addresses and is excluded from bulk reboot. The server also refuses
+  a controller reboot from a batch/API request unless the request explicitly
+  carries per-host controller approval, which only the single-host UI action
+  sends. A manual patch run or schedule can opt in to a reboot after a
   successful apply when the fixed `reboot-check` reports it is required; the
-  default is no reboot. HIBP does not wait for or verify the rebooted host, so
+  default is no reboot, and automatic post-patch reboots refuse the controller.
+  HIBP does not wait for or verify the rebooted host, so
   check kernel, boot ID, uptime, package state, and service health afterward.
 - The local SSH config reader returns aliases, hostnames, users, ports, and key
   paths only. It never returns private key contents. Treat the config path and
