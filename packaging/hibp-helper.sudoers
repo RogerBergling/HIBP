@@ -11,6 +11,8 @@
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper facts
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper check
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper apply
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper cleanup-check
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper cleanup-apply
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper reboot
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper reboot-check
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper system-info

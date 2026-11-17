@@ -464,7 +464,7 @@ func sudoOutputLines(output string) []string {
 
 func (s *Server) runHelper(ctx context.Context, host store.Host, action, sshPassword, sudoPassword string, timeout time.Duration, args ...string) (string, int, error) {
 	switch action {
-	case "facts", "check", "apply", "reboot", "reboot-check", "system-info", "metrics", "docker-list", "docker-check", "docker-apply", "docker-update-all":
+	case "facts", "check", "apply", "cleanup-check", "cleanup-apply", "reboot", "reboot-check", "system-info", "metrics", "docker-list", "docker-check", "docker-apply", "docker-update-all":
 	default:
 		return "", 0, errors.New("invalid helper action")
 	}
@@ -665,6 +665,96 @@ func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+type cleanupRequest struct {
+	DryRun          bool   `json:"dry_run"`
+	Confirm         string `json:"confirm"`
+	Password        string `json:"password"`
+	SudoPassword    string `json:"sudo_password"`
+	AllowController bool   `json:"allow_controller"`
+}
+
+func (s *Server) handleCleanup(w http.ResponseWriter, r *http.Request) {
+	host, err := s.store.GetHost(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "host not found")
+		return
+	}
+	var request cleanupRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	password := ""
+	if host.AuthType == "password" {
+		if request.Password == "" {
+			writeError(w, http.StatusBadRequest, "password is required for password authentication")
+			return
+		}
+		password = request.Password
+	}
+	action := "cleanup-check"
+	timeout := 5 * time.Minute
+	if !request.DryRun {
+		if request.Confirm != "cleanup" {
+			writeError(w, http.StatusBadRequest, "confirm must be \"cleanup\" for a real package cleanup")
+			return
+		}
+		if s.isControllerHost(host) && !request.AllowController {
+			s.auditHostActionFailure(r, "cleanup", host.ID, errors.New("controller cleanup requires explicit per-host approval"))
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "refusing to clean up the HIBP controller from a batch or API request without explicit per-host approval",
+				"code":  "controller_protected",
+			})
+			return
+		}
+		action = "cleanup-apply"
+		timeout = 30 * time.Minute
+	}
+	if !s.tryLockHost(host.ID) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "another patch, reboot, cleanup, or bootstrap operation is already running for this host", "code": "host_busy"})
+		return
+	}
+	defer s.unlockHost(host.ID)
+	output, code, err := s.runHelper(r.Context(), host, action, password, request.SudoPassword, timeout)
+	if errors.Is(err, errSudoPasswordInvalid) {
+		s.auditHostActionFailure(r, action, host.ID, err)
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "sudo_password_invalid"})
+		return
+	}
+	if errors.Is(err, errSudoPasswordRequired) {
+		s.auditHostActionFailure(r, action, host.ID, err)
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "sudo_password_required"})
+		return
+	}
+	if err != nil {
+		s.auditHostActionFailure(r, action, host.ID, err)
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	var result helper.CleanupResult
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "helper returned invalid JSON", "output": output})
+		return
+	}
+	if code != 0 && result.OK {
+		result.OK = false
+		if result.Error == "" {
+			result.Error = fmt.Sprintf("helper exited with code %d", code)
+		}
+	}
+	if action == "cleanup-apply" && result.OK {
+		_ = s.store.UpdateOrphanedPackages(host.ID, result.Remaining)
+	}
+	detail := ""
+	if action == "cleanup-apply" {
+		detail = fmt.Sprintf("removed=%d remaining=%d", result.Count, result.Remaining)
+	} else {
+		detail = fmt.Sprintf("orphaned=%d exit=%d", result.Count, code)
+	}
+	_ = s.store.AddAudit(s.auditActor(r), action, "host", host.ID, detail)
+	writeJSON(w, http.StatusOK, result)
+}
+
 // checkAndReboot asks the fixed helper whether the target needs a reboot after
 // a successful patch and, when it does, requests that reboot through the same
 // restricted helper action. It never uses a shell or an arbitrary command.
@@ -792,17 +882,19 @@ func (s *Server) handleReboot(w http.ResponseWriter, r *http.Request) {
 
 func storeFactsFromHelper(facts helper.Facts) store.Facts {
 	return store.Facts{
-		CollectedAt:    crypto.Now(),
-		UptimeSeconds:  facts.UptimeSeconds,
-		BootTime:       facts.BootTime,
-		Kernel:         facts.Kernel,
-		OSPrettyName:   facts.OSPrettyName,
-		PackageManager: facts.PackageManager,
-		RebootRequired: facts.RebootRequired,
-		DiskFreeBytes:  facts.DiskFreeBytes,
-		TimeSyncOK:     facts.TimeSyncOK,
-		PendingUpdates: facts.PendingUpdates,
-		Agent:          facts.Agent,
+		CollectedAt:      crypto.Now(),
+		UptimeSeconds:    facts.UptimeSeconds,
+		BootTime:         facts.BootTime,
+		Kernel:           facts.Kernel,
+		OSPrettyName:     facts.OSPrettyName,
+		PackageManager:   facts.PackageManager,
+		RebootRequired:   facts.RebootRequired,
+		DiskFreeBytes:    facts.DiskFreeBytes,
+		TimeSyncOK:       facts.TimeSyncOK,
+		PendingUpdates:   facts.PendingUpdates,
+		OrphanedPackages: facts.OrphanedPackages,
+		CleanupSupported: facts.CleanupSupported,
+		Agent:            facts.Agent,
 	}
 }
 
@@ -927,11 +1019,13 @@ func (s *Server) handleExportHosts(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Disposition", `attachment; filename="hibp-hosts.csv"`)
 	writer := csv.NewWriter(w)
 	defer writer.Flush()
-	_ = writer.Write([]string{"name", "address", "port", "username", "auth_type", "os", "status", "pending_updates", "reboot_required", "uptime_seconds", "last_check", "tags", "group", "cmdb_ci_id"})
+	_ = writer.Write([]string{"name", "address", "port", "username", "auth_type", "os", "status", "pending_updates", "orphaned_packages", "cleanup_supported", "reboot_required", "uptime_seconds", "last_check", "tags", "group", "cmdb_ci_id"})
 	for _, host := range hosts {
-		pending, reboot, uptime, last := "", "", "", ""
+		pending, orphaned, cleanupSupported, reboot, uptime, last := "", "", "", "", "", ""
 		if host.Facts != nil {
 			pending = strconv.Itoa(host.Facts.PendingUpdates)
+			orphaned = strconv.Itoa(host.Facts.OrphanedPackages)
+			cleanupSupported = strconv.FormatBool(host.Facts.CleanupSupported)
 			reboot = strconv.FormatBool(host.Facts.RebootRequired)
 			uptime = strconv.FormatInt(host.Facts.UptimeSeconds, 10)
 			last = host.Facts.CollectedAt
@@ -939,7 +1033,7 @@ func (s *Server) handleExportHosts(w http.ResponseWriter, _ *http.Request) {
 		_ = writer.Write([]string{
 			neutralizeCSV(host.Name), neutralizeCSV(host.Address), strconv.Itoa(host.Port),
 			neutralizeCSV(host.Username), host.AuthType, neutralizeCSV(host.OSFamily + " " + host.OSVersion),
-			host.Status, pending, reboot, uptime, last, neutralizeCSV(host.Tags),
+			host.Status, pending, orphaned, cleanupSupported, reboot, uptime, last, neutralizeCSV(host.Tags),
 			neutralizeCSV(host.GroupName), neutralizeCSV(host.CMDBCIID),
 		})
 	}

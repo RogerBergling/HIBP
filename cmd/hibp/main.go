@@ -117,7 +117,7 @@ func usage() {
 
 Usage:
   hibp server [flags]     Run the local browser UI and API
-  hibp helper <action>    Run a fixed target action (facts|check|apply|reboot|reboot-check|system-info|metrics|docker-list|docker-check|docker-apply|docker-update-all)
+  hibp helper <action>    Run a fixed target action (facts|check|apply|cleanup-check|cleanup-apply|reboot|reboot-check|system-info|metrics|docker-list|docker-check|docker-apply|docker-update-all)
   hibp user reset         Reset the local account password, TOTP, and passkeys
   hibp version            Print the version and build identity
 

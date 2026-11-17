@@ -490,3 +490,143 @@ func TestAptUpgradeActionForKali(t *testing.T) {
 		t.Fatalf("Debian should keep upgrade, got %q", got)
 	}
 }
+
+func TestParseCleanupPackages(t *testing.T) {
+	apt := "The following packages will be REMOVED:\n  libfoo1 libbar2\n  oldkernel\n0 upgraded, 0 newly installed, 3 to remove and 0 not upgraded.\n"
+	if got := parseAptAutoremove(apt); strings.Join(got, ",") != "libfoo1,libbar2,oldkernel" {
+		t.Fatalf("unexpected apt orphans: %v", got)
+	}
+	dnf := "Last metadata expiration check: 0:01:00 ago.\nInstalled Packages\nfoo.x86_64 1.0-1.fc41 @System\nbar.noarch 2.0-1.fc41 @System\n"
+	if got := parseDNFList(dnf); strings.Join(got, ",") != "foo,bar" {
+		t.Fatalf("unexpected dnf orphans: %v", got)
+	}
+	zypper := "S | Repository | Name | Version | Arch\n--+------------+------+---------+-----\ni+ | @System | keepme | 1.0 | x86_64\ni  | @System | dropme | 2.0 | x86_64\n"
+	if got := parseZypperUnneeded(zypper); strings.Join(got, ",") != "dropme" {
+		t.Fatalf("unexpected zypper orphans: %v", got)
+	}
+	pacman := "libfoo\nlibbar\n"
+	if got := parsePacmanOrphans(pacman); strings.Join(got, ",") != "libfoo,libbar" {
+		t.Fatalf("unexpected pacman orphans: %v", got)
+	}
+}
+
+func TestCleanupCheckUsesFixedCommands(t *testing.T) {
+	tests := []struct {
+		name     string
+		binary   string
+		output   string
+		code     int
+		wantArgs string
+		want     int
+	}{
+		{name: "apt", binary: "apt-get", output: "The following packages will be REMOVED:\n  libfoo1\n0 upgraded.\n", wantArgs: "-s autoremove", want: 1},
+		{name: "dnf", binary: "dnf", output: "Installed Packages\nfoo.x86_64 1.0-1 @System\n", wantArgs: "-q list --autoremove", want: 1},
+		{name: "zypper", binary: "zypper", output: "S | Repository | Name | Version | Arch\n--+--+--+--+--\ni | @System | dropme | 2.0 | x86_64\n", wantArgs: "-q --non-interactive --no-refresh packages --unneeded", want: 1},
+		{name: "pacman", binary: "pacman", output: "libfoo\n", code: 0, wantArgs: "-Qdtq", want: 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			restoreLook := SetLookPathForTest(func(name string) (string, error) {
+				if name == tc.binary {
+					return "/usr/bin/" + name, nil
+				}
+				return "", errors.New("not found")
+			})
+			defer restoreLook()
+			var gotArgs []string
+			restoreRun := SetRunnerForTest(func(_ context.Context, _ string, args ...string) ([]byte, int, error) {
+				gotArgs = append([]string(nil), args...)
+				return []byte(tc.output), tc.code, nil
+			})
+			defer restoreRun()
+
+			result, err := cleanupCheck(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !result.Supported || !result.OK || result.Count != tc.want {
+				t.Fatalf("unexpected result: %+v", result)
+			}
+			if strings.Join(gotArgs, " ") != tc.wantArgs {
+				t.Fatalf("expected %q, got %q", tc.wantArgs, strings.Join(gotArgs, " "))
+			}
+		})
+	}
+}
+
+func TestCleanupApplyUsesComputedNames(t *testing.T) {
+	restoreLook := SetLookPathForTest(func(name string) (string, error) {
+		if name == "pacman" {
+			return "/usr/bin/pacman", nil
+		}
+		return "", errors.New("not found")
+	})
+	defer restoreLook()
+	var calls [][]string
+	restoreRun := SetRunnerForTest(func(_ context.Context, _ string, args ...string) ([]byte, int, error) {
+		calls = append(calls, append([]string(nil), args...))
+		if len(calls) == 1 {
+			return []byte("libfoo\nlibbar\n"), 0, nil
+		}
+		return []byte("removed\n"), 0, nil
+	})
+	defer restoreRun()
+
+	result, err := cleanupApply(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || len(result.Packages) != 2 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if len(calls) < 2 || strings.Join(calls[1], " ") != "-R --noconfirm -- libfoo libbar" {
+		t.Fatalf("unexpected apply command: %v", calls)
+	}
+}
+
+func TestCleanupUnsupportedPackageManager(t *testing.T) {
+	restoreLook := SetLookPathForTest(func(name string) (string, error) {
+		if name == "apk" {
+			return "/sbin/apk", nil
+		}
+		return "", errors.New("not found")
+	})
+	defer restoreLook()
+	result, err := cleanupCheck(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Supported || !result.OK || len(result.Packages) != 0 {
+		t.Fatalf("expected unsupported apk result, got %+v", result)
+	}
+}
+
+func TestCleanupApplyZypperUsesComputedNames(t *testing.T) {
+	restoreLook := SetLookPathForTest(func(name string) (string, error) {
+		if name == "zypper" {
+			return "/usr/bin/zypper", nil
+		}
+		return "", errors.New("not found")
+	})
+	defer restoreLook()
+	var calls [][]string
+	restoreRun := SetRunnerForTest(func(_ context.Context, _ string, args ...string) ([]byte, int, error) {
+		calls = append(calls, append([]string(nil), args...))
+		if len(calls) == 1 {
+			return []byte("S | Repository | Name | Version | Arch\n--+--+--+--+--\ni | @System | dropme | 2.0 | x86_64\ni+ | @System | keepme | 1.0 | x86_64\n"), 0, nil
+		}
+		return []byte("removed\n"), 0, nil
+	})
+	defer restoreRun()
+
+	result, err := cleanupApply(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || len(result.Packages) != 1 || result.Packages[0] != "dropme" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if len(calls) < 2 || strings.Join(calls[1], " ") != "--non-interactive remove --clean-deps -- dropme" {
+		t.Fatalf("unexpected apply command: %v", calls)
+	}
+}

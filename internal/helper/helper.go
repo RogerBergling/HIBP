@@ -24,18 +24,34 @@ const maxOutput = 1 << 20 // 1 MiB
 
 // Facts is the JSON contract returned by the facts action.
 type Facts struct {
-	OSID           string         `json:"os_id"`
-	OSVersion      string         `json:"os_version"`
-	OSPrettyName   string         `json:"os_pretty_name"`
-	Kernel         string         `json:"kernel"`
-	PackageManager string         `json:"package_manager"`
-	UptimeSeconds  int64          `json:"uptime_seconds"`
-	BootTime       string         `json:"boot_time"`
-	PendingUpdates int            `json:"pending_updates"`
-	RebootRequired bool           `json:"reboot_required"`
-	DiskFreeBytes  int64          `json:"disk_free_bytes"`
-	TimeSyncOK     bool           `json:"time_sync_ok"`
-	Agent          buildinfo.Info `json:"agent"`
+	OSID             string         `json:"os_id"`
+	OSVersion        string         `json:"os_version"`
+	OSPrettyName     string         `json:"os_pretty_name"`
+	Kernel           string         `json:"kernel"`
+	PackageManager   string         `json:"package_manager"`
+	UptimeSeconds    int64          `json:"uptime_seconds"`
+	BootTime         string         `json:"boot_time"`
+	PendingUpdates   int            `json:"pending_updates"`
+	OrphanedPackages int            `json:"orphaned_packages"`
+	CleanupSupported bool           `json:"cleanup_supported"`
+	RebootRequired   bool           `json:"reboot_required"`
+	DiskFreeBytes    int64          `json:"disk_free_bytes"`
+	TimeSyncOK       bool           `json:"time_sync_ok"`
+	Agent            buildinfo.Info `json:"agent"`
+}
+
+// CleanupResult is the JSON contract for cleanup-check and cleanup-apply.
+type CleanupResult struct {
+	Action         string   `json:"action"`
+	OK             bool     `json:"ok"`
+	Supported      bool     `json:"supported"`
+	PackageManager string   `json:"package_manager"`
+	Packages       []string `json:"packages"`
+	Count          int      `json:"count"`
+	Remaining      int      `json:"remaining"`
+	ExitCode       int      `json:"exit_code"`
+	Output         string   `json:"output"`
+	Error          string   `json:"error,omitempty"`
 }
 
 // Result is the JSON contract for check/apply/reboot/reboot-check.
@@ -105,6 +121,12 @@ func Run(ctx context.Context, action string, out io.Writer, args ...string) erro
 	case "apply":
 		output, code, err := applyUpdates(ctx)
 		return writeResult(out, "apply", output, code, err)
+	case "cleanup-check":
+		result, err := cleanupCheck(ctx)
+		return writeCleanupResult(out, result, err)
+	case "cleanup-apply":
+		result, err := cleanupApply(ctx)
+		return writeCleanupResult(out, result, err)
 	case "reboot":
 		output, code, err := rebootHost(ctx)
 		return writeResult(out, "reboot", string(output), code, err)
@@ -179,6 +201,24 @@ func writeResult(out io.Writer, action, output string, code int, err error) erro
 	return nil
 }
 
+func writeCleanupResult(out io.Writer, result CleanupResult, err error) error {
+	if result.Packages == nil {
+		result.Packages = []string{}
+	}
+	result.Count = len(result.Packages)
+	if err != nil {
+		result.OK = false
+		result.Error = err.Error()
+	}
+	if encodeErr := json.NewEncoder(out).Encode(result); encodeErr != nil {
+		return encodeErr
+	}
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func collectFacts(ctx context.Context) (Facts, error) {
 	osInfo, err := readOSRelease("/etc/os-release")
 	if err != nil {
@@ -201,6 +241,10 @@ func collectFacts(ctx context.Context) (Facts, error) {
 		Agent:          buildinfo.Current,
 	}
 	facts.PendingUpdates = countPending(ctx, facts.PackageManager)
+	facts.CleanupSupported = cleanupSupported(facts.PackageManager)
+	if facts.CleanupSupported {
+		facts.OrphanedPackages, _ = countOrphaned(ctx, facts.PackageManager)
+	}
 	facts.RebootRequired, _ = rebootRequired(ctx)
 	return facts, nil
 }
@@ -406,6 +450,306 @@ func applyUpdates(ctx context.Context) (string, int, error) {
 		return string(output), code, err
 	default:
 		return "", 0, fmt.Errorf("unsupported package manager %q", packageManager)
+	}
+}
+
+func cleanupSupported(packageManager string) bool {
+	switch packageManager {
+	case "apt", "dnf", "zypper", "pacman":
+		return true
+	default:
+		return false
+	}
+}
+
+func countOrphaned(ctx context.Context, packageManager string) (int, error) {
+	packages, _, _, err := cleanupPreview(ctx, packageManager)
+	if err != nil {
+		return 0, err
+	}
+	return len(packages), nil
+}
+
+func cleanupCheck(ctx context.Context) (CleanupResult, error) {
+	packageManager := detectPackageManager()
+	result := CleanupResult{
+		Action: "cleanup-check", PackageManager: packageManager,
+		Supported: cleanupSupported(packageManager), Packages: []string{},
+	}
+	if !result.Supported {
+		result.OK = true
+		result.Output = "orphan package cleanup is not supported for " + packageManager
+		return result, nil
+	}
+	packages, output, code, err := cleanupPreview(ctx, packageManager)
+	result.Output = output
+	result.ExitCode = code
+	result.Packages = packages
+	result.Count = len(packages)
+	result.Remaining = len(packages)
+	if err != nil {
+		result.Error = err.Error()
+		return result, nil
+	}
+	if !cleanupExitOK(packageManager, code, packages) {
+		result.Error = fmt.Sprintf("package manager exited with code %d", code)
+		return result, nil
+	}
+	result.OK = true
+	return result, nil
+}
+
+func cleanupApply(ctx context.Context) (CleanupResult, error) {
+	packageManager := detectPackageManager()
+	result := CleanupResult{
+		Action: "cleanup-apply", PackageManager: packageManager,
+		Supported: cleanupSupported(packageManager), Packages: []string{},
+	}
+	if !result.Supported {
+		result.OK = true
+		result.Output = "orphan package cleanup is not supported for " + packageManager
+		return result, nil
+	}
+
+	// Preview first. The apply action never accepts package names from the
+	// controller; it removes only what the local package manager reports.
+	packages, previewOutput, previewCode, err := cleanupPreview(ctx, packageManager)
+	result.Output = previewOutput
+	result.ExitCode = previewCode
+	result.Packages = packages
+	result.Count = len(packages)
+	result.Remaining = len(packages)
+	if err != nil {
+		result.Error = err.Error()
+		return result, nil
+	}
+	if !cleanupExitOK(packageManager, previewCode, packages) {
+		result.Error = fmt.Sprintf("package manager exited with code %d", previewCode)
+		return result, nil
+	}
+	if len(packages) == 0 {
+		result.OK = true
+		result.Output = previewOutput + "\nNo orphaned packages to remove."
+		return result, nil
+	}
+
+	output, code, err := cleanupRemove(ctx, packageManager, packages)
+	result.Output = previewOutput + "\n" + output
+	result.ExitCode = code
+	if err != nil {
+		result.Error = err.Error()
+		return result, nil
+	}
+	if code != 0 {
+		result.Error = fmt.Sprintf("package manager exited with code %d", code)
+		return result, nil
+	}
+
+	remaining, _, _, recheckErr := cleanupPreview(ctx, packageManager)
+	if recheckErr != nil {
+		result.Remaining = -1
+	} else {
+		result.Remaining = len(remaining)
+	}
+	result.OK = true
+	return result, nil
+}
+
+func cleanupPreview(ctx context.Context, packageManager string) ([]string, string, int, error) {
+	switch packageManager {
+	case "apt":
+		output, code, err := runBinary(ctx, "apt-get", "-s", "autoremove")
+		return parseAptAutoremove(string(output)), string(output), code, err
+	case "dnf":
+		output, code, err := runBinary(ctx, "dnf", "-q", "list", "--autoremove")
+		return parseDNFList(string(output)), string(output), code, err
+	case "zypper":
+		output, code, err := runBinary(ctx, "zypper", "-q", "--non-interactive", "--no-refresh", "packages", "--unneeded")
+		return parseZypperUnneeded(string(output)), string(output), code, err
+	case "pacman":
+		output, code, err := runBinary(ctx, "pacman", "-Qdtq")
+		packages := parsePacmanOrphans(string(output))
+		if code == 1 && len(packages) == 0 {
+			code = 0
+		}
+		return packages, string(output), code, err
+	default:
+		return nil, "", 0, fmt.Errorf("unsupported package manager %q", packageManager)
+	}
+}
+
+func cleanupRemove(ctx context.Context, packageManager string, packages []string) (string, int, error) {
+	switch packageManager {
+	case "apt":
+		output, code, err := runBinary(ctx, "apt-get", "-y",
+			"-o", "Dpkg::Options::=--force-confdef",
+			"-o", "Dpkg::Options::=--force-confold",
+			"autoremove")
+		return string(output), code, err
+	case "dnf":
+		output, code, err := runBinary(ctx, "dnf", "-y", "autoremove")
+		return string(output), code, err
+	case "zypper":
+		names := safePackageNames(packages)
+		if len(names) == 0 {
+			return "No orphaned packages to remove.", 0, nil
+		}
+		args := append([]string{"--non-interactive", "remove", "--clean-deps", "--"}, names...)
+		output, code, err := runBinary(ctx, "zypper", args...)
+		return string(output), code, err
+	case "pacman":
+		names := safePackageNames(packages)
+		if len(names) == 0 {
+			return "No orphaned packages to remove.", 0, nil
+		}
+		args := append([]string{"-R", "--noconfirm", "--"}, names...)
+		output, code, err := runBinary(ctx, "pacman", args...)
+		return string(output), code, err
+	default:
+		return "", 0, fmt.Errorf("unsupported package manager %q", packageManager)
+	}
+}
+
+func cleanupExitOK(packageManager string, code int, packages []string) bool {
+	if code == 0 {
+		return true
+	}
+	return (packageManager == "dnf" || packageManager == "pacman") && code == 1 && len(packages) == 0
+}
+
+func safePackageNames(values []string) []string {
+	names := make([]string, 0, len(values))
+	for _, value := range values {
+		if safePackageName(value) {
+			names = append(names, value)
+		}
+	}
+	return names
+}
+
+func safePackageName(value string) bool {
+	if value == "" || strings.HasPrefix(value, "-") {
+		return false
+	}
+	for _, char := range value {
+		switch {
+		case char >= 'a' && char <= 'z':
+		case char >= 'A' && char <= 'Z':
+		case char >= '0' && char <= '9':
+		case char == '+' || char == '-' || char == '.' || char == '_' || char == ':' || char == '@':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func parseAptAutoremove(output string) []string {
+	var packages []string
+	inSection := false
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "The following packages will be REMOVED:") {
+			inSection = true
+			continue
+		}
+		if !inSection {
+			continue
+		}
+		if trimmed == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+			break
+		}
+		for _, name := range strings.Fields(trimmed) {
+			if safePackageName(name) {
+				packages = appendUnique(packages, name)
+			}
+		}
+	}
+	return packages
+}
+
+func parseDNFList(output string) []string {
+	var packages []string
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" ||
+			strings.HasPrefix(trimmed, "Last metadata") ||
+			strings.HasPrefix(trimmed, "Dependencies resolved") ||
+			strings.HasPrefix(trimmed, "Transaction Summary") ||
+			strings.HasPrefix(trimmed, "Installed Packages") ||
+			strings.HasPrefix(trimmed, "Available Packages") ||
+			strings.HasPrefix(trimmed, "Error:") ||
+			strings.HasPrefix(trimmed, "Problem:") {
+			continue
+		}
+		fields := strings.Fields(trimmed)
+		if len(fields) < 3 || fields[0] == "Name" {
+			continue
+		}
+		name := fields[0]
+		if dot := strings.LastIndex(name, "."); dot > 0 && isRPMArch(name[dot+1:]) {
+			name = name[:dot]
+		}
+		if safePackageName(name) {
+			packages = appendUnique(packages, name)
+		}
+	}
+	return packages
+}
+
+func parseZypperUnneeded(output string) []string {
+	var packages []string
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Split(line, "|")
+		if len(fields) < 4 {
+			continue
+		}
+		// "i" is automatically installed; "i+" is user-installed and must not
+		// be removed by an autoremove-style cleanup.
+		if strings.TrimSpace(fields[0]) != "i" {
+			continue
+		}
+		name := strings.TrimSpace(fields[2])
+		if name == "" || name == "Name" {
+			continue
+		}
+		if safePackageName(name) {
+			packages = appendUnique(packages, name)
+		}
+	}
+	return packages
+}
+
+func parsePacmanOrphans(output string) []string {
+	var packages []string
+	for _, line := range strings.Split(output, "\n") {
+		for _, name := range strings.Fields(line) {
+			if safePackageName(name) {
+				packages = appendUnique(packages, name)
+			}
+		}
+	}
+	return packages
+}
+
+func appendUnique(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func isRPMArch(value string) bool {
+	switch value {
+	case "x86_64", "noarch", "aarch64", "armv7hl", "armv6hl", "i686", "i586", "ppc64le", "ppc64", "s390x", "riscv64":
+		return true
+	default:
+		return false
 	}
 }
 

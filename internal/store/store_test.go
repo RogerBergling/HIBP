@@ -39,7 +39,7 @@ func TestCreateHostAuditBackup(t *testing.T) {
 	if err := s.SaveFacts(host.ID, Facts{
 		CollectedAt: "2026-11-10T12:00:00Z", UptimeSeconds: 3600,
 		Kernel: "6.8.0-51", OSPrettyName: "Ubuntu 24.04 LTS",
-		PackageManager: "apt", PendingUpdates: 4, RebootRequired: true, TimeSyncOK: true,
+		PackageManager: "apt", PendingUpdates: 4, OrphanedPackages: 3, CleanupSupported: true, RebootRequired: true, TimeSyncOK: true,
 		Agent: buildinfo.Info{
 			Version: "0.6.2", BuildNumber: "1234", BuildCommit: "abc123def456",
 			BuildDate: "2026-11-11T12:00:00Z", BuildTarget: "linux/amd64", BuildType: "release",
@@ -56,6 +56,19 @@ func TestCreateHostAuditBackup(t *testing.T) {
 	}
 	if hosts[0].Facts == nil || hosts[0].Facts.PendingUpdates != 4 {
 		t.Fatalf("unexpected facts: %+v", hosts[0].Facts)
+	}
+	if hosts[0].Facts.OrphanedPackages != 3 || !hosts[0].Facts.CleanupSupported {
+		t.Fatalf("unexpected cleanup facts: %+v", hosts[0].Facts)
+	}
+	if err := s.UpdateOrphanedPackages(host.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := s.GetHost(host.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Facts == nil || updated.Facts.OrphanedPackages != 1 {
+		t.Fatalf("orphan count was not updated: %+v", updated.Facts)
 	}
 	if hosts[0].Facts.Agent.Version != "0.6.2" || hosts[0].Facts.Agent.BuildNumber != "1234" ||
 		hosts[0].Facts.Agent.BuildCommit != "abc123def456" {

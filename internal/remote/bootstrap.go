@@ -207,6 +207,8 @@ func sudoersContent(username string) string {
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper facts
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper check
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper apply
+%s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper cleanup-check
+%s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper cleanup-apply
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper reboot
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper reboot-check
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper system-info
@@ -215,7 +217,7 @@ func sudoersContent(username string) string {
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-check *
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-apply *
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-update-all
-`, username, username, username, username, username, username, username, username, username, username, username)
+`, username, username, username, username, username, username, username, username, username, username, username, username, username)
 }
 
 func architectureMatches(uname string) bool {

@@ -83,17 +83,19 @@ type Host struct {
 
 // Facts is the latest collected host state.
 type Facts struct {
-	CollectedAt    string         `json:"collected_at"`
-	UptimeSeconds  int64          `json:"uptime_seconds"`
-	BootTime       string         `json:"boot_time"`
-	Kernel         string         `json:"kernel"`
-	OSPrettyName   string         `json:"os_pretty_name"`
-	PackageManager string         `json:"package_manager"`
-	RebootRequired bool           `json:"reboot_required"`
-	DiskFreeBytes  int64          `json:"disk_free_bytes"`
-	TimeSyncOK     bool           `json:"time_sync_ok"`
-	PendingUpdates int            `json:"pending_updates"`
-	Agent          buildinfo.Info `json:"agent"`
+	CollectedAt      string         `json:"collected_at"`
+	UptimeSeconds    int64          `json:"uptime_seconds"`
+	BootTime         string         `json:"boot_time"`
+	Kernel           string         `json:"kernel"`
+	OSPrettyName     string         `json:"os_pretty_name"`
+	PackageManager   string         `json:"package_manager"`
+	RebootRequired   bool           `json:"reboot_required"`
+	DiskFreeBytes    int64          `json:"disk_free_bytes"`
+	TimeSyncOK       bool           `json:"time_sync_ok"`
+	PendingUpdates   int            `json:"pending_updates"`
+	OrphanedPackages int            `json:"orphaned_packages"`
+	CleanupSupported bool           `json:"cleanup_supported"`
+	Agent            buildinfo.Info `json:"agent"`
 }
 
 // HostKey is a trusted SSH host key.
@@ -826,6 +828,7 @@ func (s *Store) ListHosts() ([]Host, error) {
 		h.os_family,h.os_version,h.status,h.tags,h.group_name,h.cmdb_ci_id,h.created_at,h.updated_at,
 		f.collected_at,f.uptime_seconds,f.boot_time,f.kernel,f.os_pretty_name,f.package_manager,
 		f.reboot_required,f.disk_free_bytes,f.time_sync_ok,f.pending_updates,
+		f.orphaned_packages,f.cleanup_supported,
 		f.agent_version,f.agent_build_number,f.agent_build_commit,f.agent_build_date,
 		f.agent_build_target,f.agent_build_type,
 		(SELECT COUNT(*) FROM docker_projects dp WHERE dp.host_id=h.id),
@@ -853,6 +856,7 @@ func (s *Store) FindHostByAddress(address string, port int) (Host, error) {
 		h.os_family,h.os_version,h.status,h.tags,h.group_name,h.cmdb_ci_id,h.created_at,h.updated_at,
 		f.collected_at,f.uptime_seconds,f.boot_time,f.kernel,f.os_pretty_name,f.package_manager,
 		f.reboot_required,f.disk_free_bytes,f.time_sync_ok,f.pending_updates,
+		f.orphaned_packages,f.cleanup_supported,
 		f.agent_version,f.agent_build_number,f.agent_build_commit,f.agent_build_date,
 		f.agent_build_target,f.agent_build_type,
 		(SELECT COUNT(*) FROM docker_projects dp WHERE dp.host_id=h.id),
@@ -868,6 +872,7 @@ func (s *Store) GetHost(id string) (Host, error) {
 		h.os_family,h.os_version,h.status,h.tags,h.group_name,h.cmdb_ci_id,h.created_at,h.updated_at,
 		f.collected_at,f.uptime_seconds,f.boot_time,f.kernel,f.os_pretty_name,f.package_manager,
 		f.reboot_required,f.disk_free_bytes,f.time_sync_ok,f.pending_updates,
+		f.orphaned_packages,f.cleanup_supported,
 		f.agent_version,f.agent_build_number,f.agent_build_commit,f.agent_build_date,
 		f.agent_build_target,f.agent_build_type,
 		(SELECT COUNT(*) FROM docker_projects dp WHERE dp.host_id=h.id),
@@ -885,14 +890,15 @@ func scanHost(row scanner) (Host, error) {
 	var collectedAt, bootTime, kernel, pretty, pkg sql.NullString
 	var agentVersion, agentBuildNumber, agentBuildCommit sql.NullString
 	var agentBuildDate, agentBuildTarget, agentBuildType sql.NullString
-	var uptime, disk, pending sql.NullInt64
-	var reboot, timeSync sql.NullBool
+	var uptime, disk, pending, orphaned sql.NullInt64
+	var reboot, timeSync, cleanupSupported sql.NullBool
 	var jumpAddress, jumpUsername, jumpKeyPath, jumpKeyType, jumpFingerprint string
 	var jumpPort int
 	err := row.Scan(&host.ID, &host.Name, &host.Address, &host.Port, &host.Username, &host.AuthType, &host.KeyPath,
 		&jumpAddress, &jumpPort, &jumpUsername, &jumpKeyPath, &jumpKeyType, &jumpFingerprint,
 		&host.OSFamily, &host.OSVersion, &host.Status, &host.Tags, &host.GroupName, &host.CMDBCIID, &host.CreatedAt, &host.UpdatedAt,
 		&collectedAt, &uptime, &bootTime, &kernel, &pretty, &pkg, &reboot, &disk, &timeSync, &pending,
+		&orphaned, &cleanupSupported,
 		&agentVersion, &agentBuildNumber, &agentBuildCommit, &agentBuildDate, &agentBuildTarget, &agentBuildType,
 		&host.DockerProjectCount, &host.DockerContainerCount)
 	if err != nil {
@@ -906,16 +912,18 @@ func scanHost(row scanner) (Host, error) {
 	}
 	if collectedAt.Valid {
 		host.Facts = &Facts{
-			CollectedAt:    collectedAt.String,
-			UptimeSeconds:  uptime.Int64,
-			BootTime:       bootTime.String,
-			Kernel:         kernel.String,
-			OSPrettyName:   pretty.String,
-			PackageManager: pkg.String,
-			RebootRequired: reboot.Bool,
-			DiskFreeBytes:  disk.Int64,
-			TimeSyncOK:     timeSync.Bool,
-			PendingUpdates: int(pending.Int64),
+			CollectedAt:      collectedAt.String,
+			UptimeSeconds:    uptime.Int64,
+			BootTime:         bootTime.String,
+			Kernel:           kernel.String,
+			OSPrettyName:     pretty.String,
+			PackageManager:   pkg.String,
+			RebootRequired:   reboot.Bool,
+			DiskFreeBytes:    disk.Int64,
+			TimeSyncOK:       timeSync.Bool,
+			PendingUpdates:   int(pending.Int64),
+			OrphanedPackages: int(orphaned.Int64),
+			CleanupSupported: cleanupSupported.Bool,
 			Agent: buildinfo.Info{
 				Version:     agentVersion.String,
 				BuildNumber: agentBuildNumber.String,
@@ -995,19 +1003,22 @@ func (s *Store) SaveFactsAs(actor, hostID string, facts Facts) error {
 	}
 	_, err = tx.Exec(`INSERT INTO host_facts
 		(host_id,collected_at,uptime_seconds,boot_time,kernel,os_pretty_name,package_manager,reboot_required,disk_free_bytes,time_sync_ok,pending_updates,
+			orphaned_packages,cleanup_supported,
 			agent_version,agent_build_number,agent_build_commit,agent_build_date,agent_build_target,agent_build_type)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(host_id) DO UPDATE SET
 			collected_at=excluded.collected_at, uptime_seconds=excluded.uptime_seconds,
 			boot_time=excluded.boot_time, kernel=excluded.kernel, os_pretty_name=excluded.os_pretty_name,
 			package_manager=excluded.package_manager, reboot_required=excluded.reboot_required,
 			disk_free_bytes=excluded.disk_free_bytes, time_sync_ok=excluded.time_sync_ok,
-			pending_updates=excluded.pending_updates, agent_version=excluded.agent_version,
+			pending_updates=excluded.pending_updates, orphaned_packages=excluded.orphaned_packages,
+			cleanup_supported=excluded.cleanup_supported, agent_version=excluded.agent_version,
 			agent_build_number=excluded.agent_build_number, agent_build_commit=excluded.agent_build_commit,
 			agent_build_date=excluded.agent_build_date, agent_build_target=excluded.agent_build_target,
 			agent_build_type=excluded.agent_build_type`,
 		hostID, facts.CollectedAt, facts.UptimeSeconds, facts.BootTime, facts.Kernel, facts.OSPrettyName,
 		facts.PackageManager, facts.RebootRequired, facts.DiskFreeBytes, facts.TimeSyncOK, facts.PendingUpdates,
+		facts.OrphanedPackages, facts.CleanupSupported,
 		facts.Agent.Version, facts.Agent.BuildNumber, facts.Agent.BuildCommit, facts.Agent.BuildDate,
 		facts.Agent.BuildTarget, facts.Agent.BuildType)
 	if err != nil {
@@ -1018,11 +1029,21 @@ func (s *Store) SaveFactsAs(actor, hostID string, facts Facts) error {
 		_ = tx.Rollback()
 		return err
 	}
-	if err := s.addAuditTx(tx, actor, "facts", "host", hostID, fmt.Sprintf("%d pending updates", facts.PendingUpdates)); err != nil {
+	if err := s.addAuditTx(tx, actor, "facts", "host", hostID, fmt.Sprintf("%d pending updates, %d orphaned packages", facts.PendingUpdates, facts.OrphanedPackages)); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
 	return tx.Commit()
+}
+
+// UpdateOrphanedPackages refreshes the orphan count after a cleanup run. A
+// negative count means the post-cleanup check failed; the stored value is kept.
+func (s *Store) UpdateOrphanedPackages(hostID string, count int) error {
+	if count < 0 {
+		return nil
+	}
+	_, err := s.db.Exec(`UPDATE host_facts SET orphaned_packages=? WHERE host_id=?`, count, hostID)
+	return err
 }
 
 // SetHostStatus updates the connection status.

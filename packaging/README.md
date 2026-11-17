@@ -137,6 +137,8 @@ The controller invokes only:
 sudo -n /usr/local/libexec/hibp/hibp-helper facts
 sudo -n /usr/local/libexec/hibp/hibp-helper check
 sudo -n /usr/local/libexec/hibp/hibp-helper apply
+sudo -n /usr/local/libexec/hibp/hibp-helper cleanup-check
+sudo -n /usr/local/libexec/hibp/hibp-helper cleanup-apply
 sudo -n /usr/local/libexec/hibp/hibp-helper reboot
 sudo -n /usr/local/libexec/hibp/hibp-helper reboot-check
 sudo -n /usr/local/libexec/hibp/hibp-helper system-info

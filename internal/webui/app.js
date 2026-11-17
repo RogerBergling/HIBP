@@ -24,6 +24,7 @@ let fleetUpdateRunning = false;
 let fleetPatchRunning = false;
 let fleetRebootRunning = false;
 let fleetFactsRunning = false;
+let fleetCleanupRunning = false;
 
 const modalStack = [];
 
@@ -126,6 +127,12 @@ function syncHostSelection() {
     if (!node) continue;
     node.disabled = count === 0;
     node.textContent = count ? 'Patch selected (' + count + ')' : 'Patch selected';
+  }
+  for (const id of ['table-cleanup-selected', 'fleet-cleanup-selected']) {
+    const node = $(id);
+    if (!node) continue;
+    node.disabled = count === 0;
+    node.textContent = count ? 'Clean up unused (' + count + ')' : 'Clean up unused';
   }
   for (const id of ['table-reboot-selected', 'fleet-reboot-selected']) {
     const node = $(id);
@@ -630,6 +637,14 @@ function hostRow(host) {
   const pendingEl = el('span', 'pending ' + (pending === 0 ? 'zero' : pending >= 5 ? 'high' : 'low'));
   pendingEl.append(el('span', 'count', pending), document.createTextNode(' updates'));
   pendingTd.append(pendingEl);
+  const orphaned = Number(facts.orphaned_packages || 0);
+  if (facts.cleanup_supported && orphaned > 0) {
+    const line = el('div', 'unused-line');
+    const badge = el('span', 'badge amber', orphaned + ' unused');
+    badge.title = 'Orphaned packages can be removed with Cleanup';
+    line.append(badge);
+    pendingTd.append(line);
+  }
 
   const checkTd = el('td');
   checkTd.append(el('span', 'nowrap', relativeTime(facts.collected_at)));
@@ -652,6 +667,7 @@ function hostRow(host) {
   actions.append(actionButton('Setup', () => bootstrapHost(host)));
   actions.append(actionButton('Facts', () => collectFacts(host)));
   actions.append(actionButton('Patch', () => showPatchModal(host)));
+  actions.append(actionButton('Cleanup', () => showCleanupModal(host)));
   actions.append(actionButton('Reboot', () => rebootHost(host), 'danger'));
   actions.append(actionButton('Delete', () => deleteHost(host), 'danger'));
   actionsTd.append(actions);
@@ -2167,7 +2183,7 @@ async function bootstrapHost(host) {
 }
 
 async function fleetUpdateHelpers(hosts = null) {
-  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning) {
+  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning || fleetCleanupRunning) {
     toast('Another fleet operation is already running', 'error');
     return;
   }
@@ -2303,7 +2319,7 @@ async function collectFacts(host) {
 }
 
 async function fleetCollectFacts(hosts) {
-  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning) {
+  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning || fleetCleanupRunning) {
     toast('Another fleet operation is already running', 'error');
     return;
   }
@@ -2481,7 +2497,7 @@ function showFleetPatchModal(hosts) {
     toast('Select at least one host', 'error');
     return;
   }
-  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning) {
+  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning || fleetCleanupRunning) {
     toast('Another fleet operation is already running', 'error');
     return;
   }
@@ -2544,7 +2560,7 @@ function showFleetPatchModal(hosts) {
 }
 
 async function fleetPatchHosts(hosts, dryRun, rebootAfterPatch = false) {
-  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning) {
+  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning || fleetCleanupRunning) {
     toast('Another fleet operation is already running', 'error');
     return;
   }
@@ -2675,7 +2691,7 @@ function showFleetRebootModal(hosts) {
     toast('Select at least one host', 'error');
     return;
   }
-  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning) {
+  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning || fleetCleanupRunning) {
     toast('Another fleet operation is already running', 'error');
     return;
   }
@@ -2759,7 +2775,7 @@ function showFleetRebootModal(hosts) {
 }
 
 async function fleetRebootHosts(hosts) {
-  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning) {
+  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning || fleetCleanupRunning) {
     toast('Another fleet operation is already running', 'error');
     return;
   }
@@ -2903,6 +2919,394 @@ async function rebootHost(host) {
   }
 }
 
+function showCleanupModal(host) {
+  const body = el('div', 'modal-body');
+  body.append(el('p', 'muted', 'Checking for orphaned packages on ' + host.name + '…'));
+  const close = openModal('Cleanup — ' + host.name, body);
+  (async () => {
+    try {
+      const password = await passwordFor(host);
+      const result = await requestWithSudo(
+        host,
+        '/api/v1/hosts/' + encodeURIComponent(host.id) + '/cleanup',
+        (sudoPassword) => ({ dry_run: true, password, sudo_password: sudoPassword, allow_controller: true }),
+        { method: 'POST' },
+      );
+      close();
+      showCleanupPreview(host, result);
+    } catch (error) {
+      close();
+      if (error.message !== 'cancelled') toast(error.message, 'error');
+    }
+  })();
+}
+
+function showCleanupPreview(host, preview) {
+  const body = el('div', 'modal-body');
+  if (!preview.supported) {
+    body.append(el('p', '', preview.output || ('Cleanup is not supported for ' + (preview.package_manager || 'this host') + '.')));
+    const actions = el('div', 'modal-actions');
+    const closeButton = el('button', 'btn', 'Close');
+    closeButton.type = 'button';
+    actions.append(closeButton);
+    body.append(actions);
+    const close = openModal('Cleanup — ' + host.name, body);
+    closeButton.addEventListener('click', close);
+    return;
+  }
+  if (!preview.ok) {
+    body.append(el('p', 'auth-message', preview.error || 'Cleanup check failed.'));
+    if (preview.output) body.append(el('pre', 'cleanup-list', preview.output));
+    const actions = el('div', 'modal-actions');
+    const closeButton = el('button', 'btn', 'Close');
+    closeButton.type = 'button';
+    actions.append(closeButton);
+    body.append(actions);
+    const close = openModal('Cleanup — ' + host.name, body);
+    closeButton.addEventListener('click', close);
+    return;
+  }
+  const packages = preview.packages || [];
+  if (!packages.length) {
+    body.append(el('p', '', 'No orphaned packages found on ' + host.name + '.'));
+    if (preview.output) body.append(el('pre', 'cleanup-list', preview.output));
+    const actions = el('div', 'modal-actions');
+    const closeButton = el('button', 'btn', 'Close');
+    closeButton.type = 'button';
+    actions.append(closeButton);
+    body.append(actions);
+    const close = openModal('Cleanup — ' + host.name, body);
+    closeButton.addEventListener('click', close);
+    return;
+  }
+  const summary = el('div', 'status-list');
+  const row = (label, value) => {
+    const div = el('div');
+    div.append(el('span', '', label), el('b', '', value));
+    return div;
+  };
+  summary.append(
+    row('Host', host.name),
+    row('Package manager', preview.package_manager || 'unknown'),
+    row('Orphaned packages', String(packages.length)),
+  );
+  body.append(summary);
+  body.append(el('p', 'muted', 'Review the package list. Removal runs the fixed helper on the target and cannot be undone.'));
+  body.append(el('pre', 'cleanup-list', packages.join('\n')));
+  const confirmWrap = el('label', 'field');
+  confirmWrap.append(el('span', '', 'Type CLEAN to confirm (case-insensitive)'));
+  const confirmInput = el('input');
+  confirmInput.type = 'text';
+  confirmInput.autocomplete = 'off';
+  confirmInput.placeholder = 'CLEAN';
+  confirmWrap.append(confirmInput);
+  body.append(confirmWrap);
+  const actions = el('div', 'modal-actions');
+  const cancel = el('button', 'btn', 'Cancel');
+  cancel.type = 'button';
+  const remove = el('button', 'btn danger', 'Remove ' + packages.length + ' package' + (packages.length === 1 ? '' : 's'));
+  remove.type = 'button';
+  const confirmed = () => confirmInput.value.trim().toUpperCase() === 'CLEAN';
+  remove.disabled = true;
+  actions.append(cancel, remove);
+  body.append(actions);
+  const close = openModal('Cleanup — ' + host.name, body);
+  cancel.addEventListener('click', close);
+  confirmInput.addEventListener('input', () => {
+    remove.disabled = !confirmed();
+  });
+  confirmInput.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || !confirmed()) return;
+    event.preventDefault();
+    close();
+    applyCleanup(host);
+  });
+  remove.addEventListener('click', () => {
+    if (!confirmed()) return;
+    close();
+    applyCleanup(host);
+  });
+  confirmInput.focus();
+}
+
+async function applyCleanup(host) {
+  toast('Removing orphaned packages on ' + host.name + '…');
+  try {
+    const password = await passwordFor(host);
+    const result = await requestWithSudo(
+      host,
+      '/api/v1/hosts/' + encodeURIComponent(host.id) + '/cleanup',
+      (sudoPassword) => ({
+        dry_run: false, confirm: 'cleanup', password, sudo_password: sudoPassword,
+        allow_controller: true,
+      }),
+      { method: 'POST' },
+    );
+    showOutputModal('Cleanup — ' + host.name, {
+      ...result,
+      output: result.output || result.error || 'Cleanup finished.',
+    });
+    if (result.ok) {
+      toast('Cleanup finished on ' + host.name +
+        (result.remaining >= 0 ? ', ' + result.remaining + ' package(s) remaining' : ''), 'ok');
+    } else if (result.error) {
+      toast(result.error, 'error');
+    }
+    await loadAll();
+  } catch (error) {
+    if (error.message !== 'cancelled') toast(error.message, 'error');
+  }
+}
+
+function showFleetCleanupModal(hosts) {
+  const requested = hosts.slice();
+  if (!requested.length) {
+    toast('Select at least one host', 'error');
+    return;
+  }
+  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning || fleetCleanupRunning) {
+    toast('Another fleet operation is already running', 'error');
+    return;
+  }
+  const excluded = requested.filter((host) => isControllerHost(host));
+  const targets = requested.filter((host) => !isControllerHost(host));
+  if (!targets.length) {
+    toast('The controller is excluded from bulk cleanup; select managed hosts only', 'error');
+    return;
+  }
+
+  fleetCleanupRunning = true;
+  let cancelled = false;
+  let scanned = false;
+  let applying = false;
+  const body = el('div', 'modal-body');
+  body.append(el('p', 'muted', 'First scan the selected hosts, review the package lists, then type CLEAN to remove them. Cleanup runs sequentially, one host at a time. Keep this tab open.'));
+  if (excluded.length) {
+    body.append(el('p', 'field-note', 'The controller is excluded from bulk cleanup: ' + excluded.map((host) => host.name).join(', ') + '. Use the per-host Cleanup button only if you deliberately want to clean the controller.'));
+  }
+  const summary = el('div', 'muted', 'Ready to scan.');
+  const wrap = el('div', 'fleet-update-list');
+  const table = el('table');
+  const head = el('tr');
+  for (const label of ['Host', 'Status', 'Orphaned', 'Detail']) head.append(el('th', '', label));
+  table.append(head);
+  wrap.append(table);
+  body.append(summary, wrap);
+  const actions = el('div', 'modal-actions');
+  const cancel = el('button', 'btn', 'Cancel');
+  cancel.type = 'button';
+  const scan = el('button', 'btn primary', 'Scan selected');
+  scan.type = 'button';
+  actions.append(cancel, scan);
+  body.append(actions);
+  const close = openModal('Clean up unused packages', body, () => {
+    cancelled = true;
+    fleetCleanupRunning = false;
+  });
+  let phaseRunning = false;
+  const rows = new Map();
+  const rowFor = (host) => {
+    let row = rows.get(host.id);
+    if (row) return row;
+    const status = el('span', 'pill unknown', 'pending');
+    const statusCell = el('td');
+    statusCell.append(status);
+    const count = el('td', 'muted', '—');
+    const detail = el('td', 'muted', '—');
+    row = el('tr');
+    row.append(el('td', '', host.name), statusCell, count, detail);
+    table.append(row);
+    row.status = status;
+    row.count = count;
+    row.detail = detail;
+    rows.set(host.id, row);
+    return row;
+  };
+  const setStatus = (host, label, cls, count, detail) => {
+    const row = rowFor(host);
+    row.status.textContent = label;
+    row.status.className = 'pill ' + cls;
+    row.count.textContent = count === undefined || count === null ? '—' : String(count);
+    row.detail.textContent = detail || '—';
+  };
+
+  cancel.addEventListener('click', () => {
+    if (phaseRunning) {
+      cancelled = true;
+      cancel.disabled = true;
+      cancel.textContent = 'Stopping…';
+      summary.textContent = 'Stopping after the current host…';
+      return;
+    }
+    close();
+  });
+  scan.addEventListener('click', async () => {
+    if (scanned) return;
+    scanned = true;
+    phaseRunning = true;
+    scan.disabled = true;
+    cancel.textContent = 'Stop after current host';
+    cancel.classList.add('danger');
+    summary.textContent = 'Scanning hosts for orphaned packages…';
+    const sharedSudo = { value: '' };
+    const checked = [];
+    let failed = 0;
+    let unsupported = 0;
+    try {
+      for (let index = 0; index < targets.length; index++) {
+        if (cancelled) break;
+        const host = targets[index];
+        setStatus(host, 'checking', 'unknown', '—', 'scanning…');
+        summary.textContent = 'Scanning ' + (index + 1) + ' of ' + targets.length + '…';
+        try {
+          const password = await passwordFor(host);
+          if (cancelled) break;
+          const result = await requestWithSudo(
+            host,
+            '/api/v1/hosts/' + encodeURIComponent(host.id) + '/cleanup',
+            (sudoPassword) => ({ dry_run: true, password, sudo_password: sudoPassword, allow_controller: false }),
+            { method: 'POST' },
+            sharedSudo,
+          );
+          checked.push({ host, result });
+          if (!result.supported) {
+            setStatus(host, 'unsupported', 'review', '—', result.output || 'package manager not supported');
+            unsupported++;
+          } else if (!result.ok) {
+            setStatus(host, 'failed', 'unreachable', '—', result.error || 'scan failed');
+            failed++;
+          } else if (!result.count) {
+            setStatus(host, 'no orphans', 'reachable', 0, 'nothing to remove');
+          } else {
+            setStatus(host, 'found', 'review', result.count, result.packages.join(', '));
+          }
+        } catch (error) {
+          if (error.message === 'cancelled') {
+            setStatus(host, 'skipped', 'review', '—', 'credential prompt cancelled');
+            cancelled = true;
+            break;
+          } else if (error.status === 409 && error.data && error.data.code === 'host_busy') {
+            setStatus(host, 'failed', 'unreachable', '—', 'another operation is running');
+            failed++;
+          } else {
+            setStatus(host, 'failed', 'unreachable', '—', error.message);
+            failed++;
+          }
+        }
+      }
+    } finally {
+      phaseRunning = false;
+      cancel.disabled = false;
+      if (cancelled) {
+        fleetCleanupRunning = false;
+        cancel.textContent = 'Close';
+        cancel.classList.remove('danger');
+        summary.textContent = 'Scan stopped.';
+        return;
+      }
+      const removable = checked.filter(({ result }) => result.supported && result.ok && result.count > 0);
+      const total = removable.reduce((sum, { result }) => sum + Number(result.count || 0), 0);
+      if (!removable.length) {
+        fleetCleanupRunning = false;
+        cancel.textContent = 'Close';
+        cancel.classList.remove('danger');
+        summary.textContent = 'No orphaned packages found. Failed ' + failed + ', unsupported ' + unsupported + '.';
+        return;
+      }
+      summary.textContent = 'Found ' + total + ' orphaned package(s) on ' + removable.length + ' host(s). Review the list, then confirm.';
+      cancel.textContent = 'Close';
+      cancel.classList.remove('danger');
+      const list = el('pre', 'cleanup-list');
+      list.textContent = removable.map(({ host, result }) =>
+        host.name + ':\n  ' + (result.packages || []).join('\n  ')).join('\n\n');
+      body.append(list);
+      const confirmWrap = el('label', 'field');
+      confirmWrap.append(el('span', '', 'Type CLEAN to remove these packages (case-insensitive)'));
+      const confirmInput = el('input');
+      confirmInput.type = 'text';
+      confirmInput.autocomplete = 'off';
+      confirmInput.placeholder = 'CLEAN';
+      confirmWrap.append(confirmInput);
+      body.append(confirmWrap);
+      const remove = el('button', 'btn danger', 'Remove ' + total + ' package' + (total === 1 ? '' : 's'));
+      remove.type = 'button';
+      const confirmed = () => confirmInput.value.trim().toUpperCase() === 'CLEAN';
+      remove.disabled = true;
+      actions.replaceChildren(cancel, remove);
+      confirmInput.addEventListener('input', () => {
+        remove.disabled = !confirmed();
+      });
+      confirmInput.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' || !confirmed()) return;
+        event.preventDefault();
+        remove.click();
+      });
+      remove.addEventListener('click', async () => {
+        if (!confirmed() || applying) return;
+        applying = true;
+        phaseRunning = true;
+        remove.disabled = true;
+        confirmInput.disabled = true;
+        cancel.disabled = false;
+        cancel.textContent = 'Stop after current host';
+        cancel.classList.add('danger');
+        summary.textContent = 'Removing orphaned packages…';
+        let removed = 0;
+        let applyFailed = 0;
+        try {
+          for (let index = 0; index < removable.length; index++) {
+            if (cancelled) break;
+            const { host } = removable[index];
+            setStatus(host, 'removing', 'unknown', removable[index].result.count, 'removing…');
+            summary.textContent = 'Cleaning ' + (index + 1) + ' of ' + removable.length + '…';
+            try {
+              const password = await passwordFor(host);
+              if (cancelled) break;
+              const result = await requestWithSudo(
+                host,
+                '/api/v1/hosts/' + encodeURIComponent(host.id) + '/cleanup',
+                (sudoPassword) => ({ dry_run: false, confirm: 'cleanup', password, sudo_password: sudoPassword, allow_controller: false }),
+                { method: 'POST' },
+                sharedSudo,
+              );
+              if (result.ok) {
+                setStatus(host, 'cleaned', 'reachable', result.remaining, 'remaining ' + result.remaining);
+                removed += Number(result.count || 0);
+              } else {
+                setStatus(host, 'failed', 'unreachable', '—', result.error || 'cleanup failed');
+                applyFailed++;
+              }
+            } catch (error) {
+              if (error.message === 'cancelled') {
+                setStatus(host, 'skipped', 'review', '—', 'credential prompt cancelled');
+                cancelled = true;
+                break;
+              } else if (error.status === 409 && error.data && error.data.code === 'host_busy') {
+                setStatus(host, 'failed', 'unreachable', '—', 'another operation is running');
+                applyFailed++;
+              } else {
+                setStatus(host, 'failed', 'unreachable', '—', error.message);
+                applyFailed++;
+              }
+            }
+          }
+        } finally {
+          fleetCleanupRunning = false;
+          applying = false;
+          phaseRunning = false;
+          cancel.disabled = false;
+          cancel.textContent = 'Close';
+          cancel.classList.remove('danger');
+          summary.textContent = (cancelled ? 'Stopped. ' : 'Finished. ') +
+            'Requested removal of ' + removed + ' package(s), failed ' + applyFailed + '.';
+          await loadAll();
+        }
+      });
+      confirmInput.focus();
+    }
+  });
+}
+
 function detailCard(title, rows) {
   const card = el('div', 'detail-card');
   card.append(el('h3', '', title));
@@ -2978,6 +3382,7 @@ function renderOverviewPanel(panel, data, host) {
     ]),
     detailCard('Patch state', [
       ['Pending updates', facts.pending_updates],
+      ['Orphaned packages', facts.cleanup_supported ? facts.orphaned_packages : 'not supported'],
       ['Reboot required', facts.reboot_required ? 'yes' : 'no'],
       ['Facts collected', facts.collected_at ? new Date(facts.collected_at).toLocaleString() : ''],
     ]),
@@ -4621,6 +5026,8 @@ function bind() {
   $('fleet-facts-selected').addEventListener('click', () => fleetCollectFacts(selectedHosts()));
   $('table-patch-selected').addEventListener('click', () => showFleetPatchModal(selectedHosts()));
   $('fleet-patch-selected').addEventListener('click', () => showFleetPatchModal(selectedHosts()));
+  $('table-cleanup-selected').addEventListener('click', () => showFleetCleanupModal(selectedHosts()));
+  $('fleet-cleanup-selected').addEventListener('click', () => showFleetCleanupModal(selectedHosts()));
   $('table-reboot-selected').addEventListener('click', () => showFleetRebootModal(selectedHosts()));
   $('fleet-reboot-selected').addEventListener('click', () => showFleetRebootModal(selectedHosts()));
   for (const id of ['hosts-select-all', 'hosts-select-all-full']) {

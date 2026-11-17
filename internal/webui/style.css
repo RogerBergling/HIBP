@@ -311,6 +311,8 @@ label.field .password-field input:focus { border-color: transparent; box-shadow:
 .badge.green { color: #6ee7b7; background: var(--green-bg); }
 .badge.amber { color: #fcd34d; background: var(--amber-bg); }
 .badge.red { color: #fca5a5; background: var(--red-bg); }
+.unused-line { margin-top: 3px; }
+.cleanup-list { background: #08101d; border: 1px solid var(--border); border-radius: 8px; padding: 10px; max-height: 240px; overflow: auto; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; color: #bae6fd; }
 @media (max-width: 1400px) {
   .content { grid-template-columns: 1fr; }
   .stats { grid-template-columns: repeat(2, 1fr); }

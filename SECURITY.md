@@ -60,7 +60,7 @@ Out of scope:
   current SQLCipher 4.20 and the patched `third_party/go-sqlite3` driver.
 - Password SSH and sudo password fallbacks are manual-run only and never
   stored. The first accepted sudo password is reused in browser memory for
-  interactive actions and selected-host facts, patch, reboot, and helper-update
+  interactive actions and selected-host facts, patch, cleanup, reboot, and helper-update
   batches on hosts with the same SSH username; it is never persisted and is
   discarded after a wrong password, sign-out, or tab close. `ssh-agent`, hardware-backed keys,
   SSH certificates, and passphrase-protected key files are not implemented.
@@ -243,6 +243,21 @@ cron-based patch schedules are implemented.
 - If using interactive unlock, keep the server in a persistent console/tmux
   session. Schedules, collection, and monitoring stop when the process stops.
 - Do not use `NOPASSWD: ALL`; use the narrow helper rule.
+- Package cleanup is destructive. HIBP never runs `apt autoremove`, `dnf
+  autoremove`, zypper cleanup, or pacman orphan removal as part of a patch run.
+  The fixed `cleanup-check`/`cleanup-apply` actions compute the orphan list on
+  the target; the controller never supplies package names. The UI shows a
+  dry-run list and requires typing `CLEAN`. The controller is excluded from bulk
+  cleanup, and the server refuses a controller cleanup from a batch/API request
+  unless the single-host action explicitly approves it. Alpine is unsupported.
+  Review the list on a canary first; cleanup can remove a package someone still
+  expects.
+- Package cleanup uses fixed `cleanup-check` and `cleanup-apply` actions. The
+  controller never supplies package names: the helper computes the orphan list
+  on the target, returns it for review, and removes only that computed list.
+  The UI requires a typed `CLEAN` confirmation, bulk cleanup excludes the
+  controller, and unsupported package managers are reported instead of guessed.
+  Cleanup is not part of patching and is not scheduled automatically.
 - The reboot action is destructive. Per-host and selected-host reboots require
   explicit confirmation in the API and UI, and selected-host reboots require
   typing `REBOOT`. The controller is detected from its hostname, short hostname,

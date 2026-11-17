@@ -998,6 +998,15 @@ func TestRebootRequiresConfirmation(t *testing.T) {
 	}
 }
 
+func TestStoreFactsFromHelperIncludesCleanup(t *testing.T) {
+	facts := storeFactsFromHelper(helper.Facts{
+		PackageManager: "apt", PendingUpdates: 4, OrphanedPackages: 3, CleanupSupported: true,
+	})
+	if facts.PendingUpdates != 4 || facts.OrphanedPackages != 3 || !facts.CleanupSupported {
+		t.Fatalf("cleanup facts were not mapped: %+v", facts)
+	}
+}
+
 func TestRebootProtectsController(t *testing.T) {
 	ts, db, app := testServerWithApp(t, true)
 	host, err := db.CreateHost(store.Host{
@@ -1049,6 +1058,68 @@ func TestControllerNamesIncludeLoopbackAndHostIdentity(t *testing.T) {
 	}
 	if !names[controllerName(hostname)] {
 		t.Fatalf("controller names missing local hostname %q", hostname)
+	}
+}
+
+func TestCleanupRequiresConfirmation(t *testing.T) {
+	ts, _ := testServer(t)
+	body := `{"name":"web01","address":"10.0.0.10","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519"}`
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/hosts", "test-token", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, data)
+	}
+	var host store.Host
+	if err := json.NewDecoder(resp.Body).Decode(&host); err != nil {
+		t.Fatal(err)
+	}
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/hosts/"+host.ID+"/cleanup", "test-token", `{"dry_run":false}`)
+	data, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "confirm") {
+		t.Fatalf("expected cleanup confirmation error, got %d %s", resp.StatusCode, data)
+	}
+}
+
+func TestCleanupRejectsBusyHost(t *testing.T) {
+	ts, db, app := testServerWithApp(t, true)
+	host, err := db.CreateHost(store.Host{
+		Name: "web01", Address: "10.0.0.10", Port: 22, Username: "ubuntu",
+		AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !app.tryLockHost(host.ID) {
+		t.Fatal("host was already locked")
+	}
+	defer app.unlockHost(host.ID)
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/hosts/"+host.ID+"/cleanup", "test-token", `{"dry_run":true}`)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict || !strings.Contains(string(body), "host_busy") {
+		t.Fatalf("expected host_busy conflict, got %d %s", resp.StatusCode, body)
+	}
+}
+
+func TestCleanupProtectsController(t *testing.T) {
+	ts, db, app := testServerWithApp(t, true)
+	host, err := db.CreateHost(store.Host{
+		Name: "controller", Address: "127.0.0.1", Port: 1, Username: "root",
+		AuthType: "key", KeyPath: "/nonexistent/hibp-test-key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !app.isControllerHost(host) {
+		t.Fatal("expected loopback host to be treated as the controller")
+	}
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/hosts/"+host.ID+"/cleanup", "test-token", `{"dry_run":false,"confirm":"cleanup"}`)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "controller_protected") {
+		t.Fatalf("expected controller cleanup protection, got %d %s", resp.StatusCode, body)
 	}
 }
 

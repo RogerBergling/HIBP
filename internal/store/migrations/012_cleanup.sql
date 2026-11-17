@@ -1,0 +1,2 @@
+ALTER TABLE host_facts ADD COLUMN orphaned_packages INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE host_facts ADD COLUMN cleanup_supported INTEGER NOT NULL DEFAULT 0;
