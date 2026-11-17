@@ -500,6 +500,9 @@ func TestParseCleanupPackages(t *testing.T) {
 	if got := parseDNFList(dnf); strings.Join(got, ",") != "foo,bar" {
 		t.Fatalf("unexpected dnf orphans: %v", got)
 	}
+	if got := parseDNFPackages("foo\nbar\n"); strings.Join(got, ",") != "foo,bar" {
+		t.Fatalf("unexpected dnf repoquery orphans: %v", got)
+	}
 	zypper := "S | Repository | Name | Version | Arch\n--+------------+------+---------+-----\ni+ | @System | keepme | 1.0 | x86_64\ni  | @System | dropme | 2.0 | x86_64\n"
 	if got := parseZypperUnneeded(zypper); strings.Join(got, ",") != "dropme" {
 		t.Fatalf("unexpected zypper orphans: %v", got)
@@ -520,7 +523,7 @@ func TestCleanupCheckUsesFixedCommands(t *testing.T) {
 		want     int
 	}{
 		{name: "apt", binary: "apt-get", output: "The following packages will be REMOVED:\n  libfoo1\n0 upgraded.\n", wantArgs: "-s autoremove", want: 1},
-		{name: "dnf", binary: "dnf", output: "Installed Packages\nfoo.x86_64 1.0-1 @System\n", wantArgs: "-q list --autoremove", want: 1},
+		{name: "dnf", binary: "dnf", output: "foo\nbar\n", wantArgs: "-q repoquery --unneeded --installed --qf %{name}", want: 2},
 		{name: "zypper", binary: "zypper", output: "S | Repository | Name | Version | Arch\n--+--+--+--+--\ni | @System | dropme | 2.0 | x86_64\n", wantArgs: "-q --non-interactive --no-refresh packages --unneeded", want: 1},
 		{name: "pacman", binary: "pacman", output: "libfoo\n", code: 0, wantArgs: "-Qdtq", want: 1},
 	}

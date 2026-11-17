@@ -561,8 +561,18 @@ func cleanupPreview(ctx context.Context, packageManager string) ([]string, strin
 		output, code, err := runBinary(ctx, "apt-get", "-s", "autoremove")
 		return parseAptAutoremove(string(output)), string(output), code, err
 	case "dnf":
-		output, code, err := runBinary(ctx, "dnf", "-q", "list", "--autoremove")
-		return parseDNFList(string(output)), string(output), code, err
+		// repoquery --unneeded is the DNF4/DNF5 equivalent of the autoremove
+		// preview. Fall back to the older list --autoremove form if this DNF
+		// build does not provide repoquery.
+		output, code, err := runBinary(ctx, "dnf", "-q", "repoquery", "--unneeded", "--installed", "--qf", "%{name}")
+		if err == nil && code == 0 {
+			return parseDNFPackages(string(output)), string(output), code, nil
+		}
+		fallback, fallbackCode, fallbackErr := runBinary(ctx, "dnf", "-q", "list", "--autoremove")
+		if fallbackErr == nil && fallbackCode == 0 {
+			return parseDNFList(string(fallback)), string(output) + "\n" + string(fallback), fallbackCode, nil
+		}
+		return parseDNFPackages(string(output)), string(output), code, err
 	case "zypper":
 		output, code, err := runBinary(ctx, "zypper", "-q", "--non-interactive", "--no-refresh", "packages", "--unneeded")
 		return parseZypperUnneeded(string(output)), string(output), code, err
@@ -693,6 +703,24 @@ func parseDNFList(output string) []string {
 		if dot := strings.LastIndex(name, "."); dot > 0 && isRPMArch(name[dot+1:]) {
 			name = name[:dot]
 		}
+		if safePackageName(name) {
+			packages = appendUnique(packages, name)
+		}
+	}
+	return packages
+}
+
+func parseDNFPackages(output string) []string {
+	var packages []string
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" ||
+			strings.HasPrefix(trimmed, "Last metadata") ||
+			strings.HasPrefix(trimmed, "Error:") ||
+			strings.HasPrefix(trimmed, "Problem:") {
+			continue
+		}
+		name := strings.Fields(trimmed)[0]
 		if safePackageName(name) {
 			packages = appendUnique(packages, name)
 		}
