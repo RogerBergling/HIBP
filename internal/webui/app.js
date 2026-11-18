@@ -896,18 +896,21 @@ const MONITOR_TYPES = {
     label: 'HTTP endpoint', target: 'url', targetLabel: 'URL',
     placeholder: 'https://example.com/health', threshold: 'latency',
     warningLabel: 'Warning latency (ms)', criticalLabel: 'Critical latency (ms)', warning: 0, critical: 0,
-    note: '2xx and 3xx responses are healthy. Latency thresholds are optional; 0 disables them.',
+    namePlaceholder: 'App availability',
+    note: '2xx and 3xx responses are healthy. Redirects are followed up to five times. Latency thresholds are optional; 0 disables them. Add a TLS certificate monitor for expiry alerts.',
   },
   'tcp': {
     label: 'TCP port', target: 'address', targetLabel: 'host:port',
     placeholder: '10.0.0.10:443', threshold: 'latency',
     warningLabel: 'Warning latency (ms)', criticalLabel: 'Critical latency (ms)', warning: 0, critical: 0,
+    namePlaceholder: 'Database port',
     note: 'A successful TCP connect is healthy. Latency thresholds are optional; 0 disables them.',
   },
   'ssl': {
     label: 'TLS certificate', target: 'address', targetLabel: 'host:port',
     placeholder: 'example.com:443', threshold: 'days',
     warningLabel: 'Warning days left', criticalLabel: 'Critical days left', warning: 30, critical: 14,
+    namePlaceholder: 'Certificate expiry',
     note: 'Connects with TLS and checks certificate expiry. Warning must be larger than critical.',
   },
 };
@@ -919,13 +922,18 @@ function monitorTypeLabel(type) {
 }
 
 function monitorHostName(hostID) {
-  if (!hostID) return 'network target';
+  if (!hostID) return 'standalone probe';
   const host = state.hosts.find((entry) => entry.id === hostID);
   return host ? host.name : hostID.slice(0, 8);
 }
 
+function isNetworkMonitorType(type) {
+  return type === 'http' || type === 'tcp' || type === 'ssl';
+}
+
 function monitorAssignmentLabel(assignment) {
   if (assignment.scope === 'fleet') return 'Fleet';
+  if (assignment.scope === 'standalone') return 'Standalone';
   if (assignment.scope === 'host') return 'Host: ' + monitorHostName(assignment.target);
   if (assignment.scope === 'group') return 'Group: ' + assignment.target;
   if (assignment.scope === 'tag') return 'Tag: ' + assignment.target;
@@ -1019,8 +1027,17 @@ function renderMonitoring() {
 
     const assignmentTd = el('td');
     const assignmentWrap = el('div', 'assignment-pills');
-    for (const assignment of monitor.assignments || []) {
-      assignmentWrap.append(el('span', 'assignment-pill', monitorAssignmentLabel(assignment)));
+    const assignments = monitor.assignments || [];
+    const network = isNetworkMonitorType(monitor.type);
+    if (network || !assignments.length) {
+      const standalone = el('span', 'assignment-pill', 'Standalone');
+      if (network) standalone.title = 'Runs from the HIBP controller; host assignments do not affect this probe.';
+      assignmentWrap.append(standalone);
+    }
+    if (!network) {
+      for (const assignment of assignments) {
+        assignmentWrap.append(el('span', 'assignment-pill', monitorAssignmentLabel(assignment)));
+      }
     }
     assignmentTd.append(assignmentWrap);
 
@@ -1065,7 +1082,7 @@ function renderMonitoring() {
     time.title = new Date(event.created_at).toLocaleString();
     timeTd.append(time);
     const monitorTd = el('td', '', monitorNames.get(event.monitor_id) || event.monitor_id.slice(0, 8));
-    const hostTd = el('td', '', event.host_id ? monitorHostName(event.host_id) : 'network target');
+    const hostTd = el('td', '', event.host_id ? monitorHostName(event.host_id) : 'standalone probe');
     const statusTd = el('td');
     statusTd.append(monitorStatusPill(event.status, event.status === 'ok' ? 'recovered' : ''));
     const detailTd = el('td', 'alert-detail', event.detail || '');
@@ -1101,9 +1118,15 @@ async function checkMonitorNow(monitor) {
     await api('/api/v1/monitors/' + encodeURIComponent(monitor.id) + '/check', { method: 'POST', body: '{}' });
     toast('Check requested for ' + monitor.name, 'ok');
     // The engine normally finishes cached checks quickly. Network probes may
-    // take longer, so refresh once and let the user refresh again if needed.
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    await loadAll();
+    // take longer, so poll briefly instead of asking the operator to refresh.
+    const before = monitor.last_checked_at || '';
+    for (let attempt = 0; attempt < 12; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await loadAll({ silent: true });
+      const current = (state.monitors || []).find((entry) => entry.id === monitor.id);
+      if (current && (current.last_checked_at || '') !== before) break;
+    }
+    await loadAll({ force: true });
   } catch (error) {
     toast(error.message, 'error');
   }
@@ -1211,6 +1234,13 @@ function showMonitorModal(monitor = null, preset = null) {
   assignmentCard.append(chips);
   form.append(assignmentCard);
 
+  const standaloneNote = el('div', 'detail-card hidden');
+  standaloneNote.append(
+    el('h3', '', 'Standalone probe'),
+    el('p', 'muted', 'Network checks run from the controller against the target above. They do not need a host assignment and keep working if the Docker host or SSH access is unavailable.'),
+  );
+  form.append(standaloneNote);
+
   const syncAssignmentTarget = () => {
     const value = scope.value;
     hostSelect.classList.toggle('hidden', value !== 'host');
@@ -1268,11 +1298,19 @@ function showMonitorModal(monitor = null, preset = null) {
 
   const applyMonitorType = (setDefaults) => {
     const info = MONITOR_TYPES[type.value] || {};
+    const network = isNetworkMonitorType(type.value);
     targetWrap.classList.toggle('hidden', info.target === 'none');
+    name.placeholder = info.namePlaceholder || 'Monitor name';
     if (info.targetLabel) setFieldLabel(target, info.targetLabel);
     target.placeholder = info.placeholder || '';
     thresholdRow.classList.toggle('hidden', info.threshold === 'none');
     thresholdNote.textContent = info.note || '';
+    assignmentCard.classList.toggle('hidden', network);
+    standaloneNote.classList.toggle('hidden', !network);
+    if (network && assignments.length) {
+      assignments.length = 0;
+      renderAssignments();
+    }
     if (info.threshold && info.threshold !== 'none') {
       setFieldLabel(warning, info.warningLabel || 'Warning');
       setFieldLabel(critical, info.criticalLabel || 'Critical');
@@ -1308,15 +1346,16 @@ function showMonitorModal(monitor = null, preset = null) {
   const actions = el('div', 'modal-actions');
   const cancel = el('button', 'btn', 'Cancel');
   cancel.type = 'button';
-  const save = el('button', 'btn primary', editing ? 'Save monitor' : 'Add monitor');
+  const webPreset = Boolean(preset) && isNetworkMonitorType(source.type);
+  const save = el('button', 'btn primary', editing ? 'Save monitor' : webPreset ? 'Add web service' : 'Add monitor');
   save.type = 'submit';
   actions.append(cancel, save);
   form.append(actions);
-  const close = openModal(editing ? 'Edit monitor — ' + monitor.name : 'Add monitor', form, null, 'wide');
+  const close = openModal(editing ? 'Edit monitor — ' + monitor.name : webPreset ? 'Add web service monitor' : 'Add monitor', form, null, 'wide');
   cancel.addEventListener('click', close);
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
-    if (!assignments.length) {
+    if (!assignments.length && !isNetworkMonitorType(type.value)) {
       toast('Add at least one assignment', 'error');
       return;
     }
@@ -5552,6 +5591,15 @@ function bind() {
   }
   $('open-settings').addEventListener('click', showSettingsModal);
   $('monitor-add').addEventListener('click', () => showMonitorModal());
+  $('monitor-add-web').addEventListener('click', () => showMonitorModal(null, {
+    type: 'http',
+    interval_seconds: 60,
+    warning: 0,
+    critical: 0,
+    repeat_minutes: 60,
+    cooldown_minutes: 15,
+    assignments: [],
+  }));
   $('monitor-notifications').addEventListener('click', showSMTPModal);
   $('schedule-add').addEventListener('click', () => showScheduleModal());
   $('backup-button').addEventListener('click', showBackupModal);

@@ -125,7 +125,7 @@ func (s *Server) validateMonitor(request monitorRequest, monitorID string) (stor
 		}
 		recipients = parsed
 	}
-	if len(request.Assignments) == 0 {
+	if len(request.Assignments) == 0 && !networkMonitorType(request.Type) {
 		return store.Monitor{}, errors.New("at least one monitor assignment is required")
 	}
 	assignments := make([]store.MonitorAssignment, 0, len(request.Assignments))

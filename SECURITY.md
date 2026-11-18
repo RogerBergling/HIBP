@@ -142,6 +142,12 @@ cron-based patch schedules are implemented.
   deliberately omits environment variables, command lines, mounts, and secrets.
 - The collector never prompts for credentials. Scheduled collection requires
   the restricted NOPASSWD helper; password-auth hosts are collected manually.
+- HTTP, TCP, and TLS monitors are controller-originated network probes. They do
+  not use SSH, the helper, or a host assignment, so a standalone monitor works
+  when the target host is offline or unreachable. The target is therefore a
+  controller egress destination; allowlist it in outbound firewall policy. HTTP
+  targets reject embedded credentials, redirects are capped, and only status,
+  latency, certificate expiry, and bounded error text are stored.
 - Optional single-hop `ProxyJump` uses a separately trusted jump-host key;
   HIBP verifies both the jump host and target host keys before running a helper
   action. Jump credentials are never logged, agent forwarding is not used, and

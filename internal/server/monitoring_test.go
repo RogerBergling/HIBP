@@ -279,6 +279,75 @@ func TestMonitorCRUDAndValidation(t *testing.T) {
 	}
 }
 
+func TestStandaloneNetworkMonitor(t *testing.T) {
+	ts, _ := testServer(t)
+	payload := `{"name":"App availability","type":"http","target":"https://apps.bergling.net/","interval_seconds":60,"repeat_minutes":60,"cooldown_minutes":15,"enabled":true,"assignments":[]}`
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/monitors", "test-token", payload)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create standalone HTTP monitor failed: %d %s", resp.StatusCode, body)
+	}
+	var created store.Monitor
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ID == "" || len(created.Assignments) != 0 {
+		t.Fatalf("unexpected standalone monitor: %+v", created)
+	}
+
+	update := `{"name":"App availability updated","type":"http","target":"https://apps.bergling.net/health","interval_seconds":120,"repeat_minutes":30,"cooldown_minutes":10,"enabled":true,"assignments":[]}`
+	resp = request(t, http.MethodPut, ts.URL+"/api/v1/monitors/"+created.ID, "test-token", update)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("update standalone HTTP monitor failed: %d %s", resp.StatusCode, body)
+	}
+	var updated store.Monitor
+	if err := json.Unmarshal(body, &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != "App availability updated" || len(updated.Assignments) != 0 {
+		t.Fatalf("unexpected updated standalone monitor: %+v", updated)
+	}
+
+	// Host-based checks still require at least one assignment.
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/monitors", "test-token",
+		`{"name":"No assignment","type":"host.cpu","warning":80,"critical":90,"interval_seconds":60,"assignments":[]}`)
+	data, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected host monitor assignment failure, got %d %s", resp.StatusCode, data)
+	}
+}
+
+func TestStandaloneMonitorStateAndAlert(t *testing.T) {
+	app, db, _ := newMonitorTestApp(t)
+	monitor, err := db.CreateMonitor(store.Monitor{
+		Name: "App availability", Type: "http", Target: "https://apps.bergling.net/",
+		IntervalSeconds: 60, RepeatMinutes: 60, CooldownMinutes: 15, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	app.recordMonitorResult(monitor, "", "", monitorResult{status: "critical", message: "HTTP 503"}, now)
+	states, err := db.ListMonitorStates(monitor.ID)
+	if err != nil || len(states) != 1 || states[0].HostID != "" {
+		t.Fatalf("expected one standalone state with an empty host id, got %+v %v", states, err)
+	}
+	events, err := db.ListAlertEvents(10)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("expected one standalone alert, got %+v %v", events, err)
+	}
+	if events[0].HostID != "" || !strings.Contains(events[0].Detail, "standalone probe") {
+		t.Fatalf("unexpected standalone alert: %+v", events[0])
+	}
+	if !strings.Contains(events[0].Subject, "https://apps.bergling.net/") {
+		t.Fatalf("expected the target in the alert subject, got %q", events[0].Subject)
+	}
+}
+
 func TestResolveMonitorTargets(t *testing.T) {
 	hosts := map[string]store.Host{
 		"a": {ID: "a", Name: "web01", GroupName: "web", Tags: "prod,web"},
@@ -304,6 +373,17 @@ func TestResolveMonitorTargets(t *testing.T) {
 	targets, active, network = resolveMonitorTargets("http", []store.MonitorAssignment{{Scope: "fleet"}}, hosts)
 	if !active || !network || len(targets) != 0 {
 		t.Fatalf("network targets: %+v active=%v network=%v", targets, active, network)
+	}
+	for _, monitorType := range []string{"http", "tcp", "ssl"} {
+		targets, active, network = resolveMonitorTargets(monitorType, nil, hosts)
+		if !active || !network || len(targets) != 0 {
+			t.Fatalf("standalone %s: %+v active=%v network=%v", monitorType, targets, active, network)
+		}
+	}
+	// A stale network assignment must not disable the controller-side probe.
+	targets, active, network = resolveMonitorTargets("http", []store.MonitorAssignment{{Scope: "host", Target: "missing"}}, hosts)
+	if !active || !network || len(targets) != 0 {
+		t.Fatalf("stale network assignment: %+v active=%v network=%v", targets, active, network)
 	}
 }
 

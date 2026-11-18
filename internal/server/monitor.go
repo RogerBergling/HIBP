@@ -25,6 +25,10 @@ type monitorResult struct {
 	skip    bool
 }
 
+func networkMonitorType(monitorType string) bool {
+	return monitorType == "http" || monitorType == "tcp" || monitorType == "ssl"
+}
+
 // RunMonitor evaluates enabled monitors and sends alert email. It never
 // modifies targets; network probes are read-only and host data comes from the
 // collector snapshots.
@@ -143,7 +147,13 @@ func (s *Server) evaluateMonitors(ctx context.Context) {
 }
 
 func resolveMonitorTargets(monitorType string, assignments []store.MonitorAssignment, hosts map[string]store.Host) ([]store.Host, bool, bool) {
-	network := monitorType == "http" || monitorType == "tcp" || monitorType == "ssl"
+	// Network probes run from the controller against the monitor target. They
+	// are independent of host state, and a standalone monitor has no
+	// assignments at all. Keep them active even if an old assignment pointed at
+	// a host that has since been removed.
+	if networkMonitorType(monitorType) {
+		return nil, true, true
+	}
 	targets := make(map[string]store.Host)
 	active := false
 	for _, assignment := range assignments {
@@ -176,9 +186,6 @@ func resolveMonitorTargets(monitorType string, assignments []store.MonitorAssign
 				}
 			}
 		}
-	}
-	if network {
-		return nil, active, true
 	}
 	result := make([]store.Host, 0, len(targets))
 	for _, host := range targets {
@@ -545,6 +552,8 @@ func (s *Server) recordMonitorResult(monitor store.Monitor, hostID, hostName str
 		detail := result.message
 		if hostName != "" {
 			detail = hostName + ": " + detail
+		} else {
+			detail = "standalone probe: " + detail
 		}
 		_ = s.store.AddAlertEvent(store.AlertEvent{
 			MonitorID: monitor.ID, HostID: hostID, Status: result.status, Subject: subject,
@@ -574,6 +583,10 @@ func monitorEmail(monitor store.Monitor, hostName string, result monitorResult, 
 	if hostName != "" {
 		scope = hostName + " (" + target + ")"
 	}
+	hostLabel := hostName
+	if hostLabel == "" {
+		hostLabel = "standalone probe"
+	}
 	subject := fmt.Sprintf("[HIBP][%s] %s - %s", severity, monitor.Name, scope)
 	body := fmt.Sprintf(`HIBP monitoring alert
 
@@ -584,7 +597,7 @@ Host: %s
 Status: %s
 Detail: %s
 Time: %s
-`, monitor.Name, monitor.Type, monitor.Target, hostName, result.status, result.message,
+`, monitor.Name, monitor.Type, monitor.Target, hostLabel, result.status, result.message,
 		time.Now().UTC().Format(time.RFC3339))
 	return subject, body
 }
