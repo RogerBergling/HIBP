@@ -38,6 +38,11 @@ HIBP supports two access models:
 Both models keep the same application behavior. HIBP is still a single-operator
 controller. There is no RBAC, WAF, or supported reverse-proxy mode.
 
+LAN HTTPS mode binds one listener and replaces the default loopback listener.
+If you need local-only access as well, open the LAN URL from the server or keep
+the default loopback unit and use an SSH tunnel. Do not run two HIBP processes
+against the same database.
+
 **Do not port-forward HIBP on your router.** LAN mode is for private networks.
 For internet access, keep loopback-only and use an SSH tunnel or a VPN.
 
@@ -477,6 +482,25 @@ sudo systemctl enable --now hibp
 
 Do not enable both `hibp.service` and `hibp-lan.service`; they use the same
 database. Install one unit as `/etc/systemd/system/hibp.service`.
+
+Bind to the controller's specific LAN address when possible. `0.0.0.0` listens
+on every interface, including any public interface, so the firewall becomes the
+only boundary. HIBP also prints a warning when it binds all interfaces.
+
+HIBP does not redirect HTTP to HTTPS. Users must open the `https://` URL. If a
+client tries `http://hibp.lan:8443`, the request fails rather than silently
+sending credentials in clear text.
+
+TLS certificates expire. Before expiry, replace `/etc/hibp/tls.crt` and
+`/etc/hibp/tls.key` and restart the service. HIBP does not hot-reload
+certificates:
+
+```bash
+sudo systemctl restart hibp
+```
+
+Plan the restart for a quiet period; it briefly interrupts the UI and any
+in-flight operation.
 
 ### Firewall
 
