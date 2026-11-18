@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/csv"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -464,7 +467,7 @@ func sudoOutputLines(output string) []string {
 
 func (s *Server) runHelper(ctx context.Context, host store.Host, action, sshPassword, sudoPassword string, timeout time.Duration, args ...string) (string, int, error) {
 	switch action {
-	case "facts", "check", "apply", "cleanup-check", "cleanup-apply", "reboot", "reboot-check", "system-info", "metrics", "docker-list", "docker-check", "docker-apply", "docker-update-all":
+	case "facts", "preview", "check", "apply", "cleanup-check", "cleanup-apply", "reboot", "reboot-check", "system-info", "metrics", "docker-list", "docker-check", "docker-apply", "docker-update-all":
 	default:
 		return "", 0, errors.New("invalid helper action")
 	}
@@ -576,16 +579,132 @@ type patchRequest struct {
 	Password         string `json:"password"`
 	SudoPassword     string `json:"sudo_password"`
 	RebootAfterPatch bool   `json:"reboot_after_patch"`
+	PreviewHash      string `json:"preview_hash"`
+	AllowRemovals    bool   `json:"allow_removals"`
 }
 
-// patchResponse keeps the existing helper.Result fields and adds the optional
-// post-patch reboot outcome. Older clients ignore the extra fields.
+// patchResponse keeps the existing helper.Result fields and adds the preview,
+// refreshed facts, and optional post-patch reboot outcome. Older clients ignore
+// the extra fields.
 type patchResponse struct {
 	helper.Result
-	RebootRequired  bool   `json:"reboot_required,omitempty"`
-	RebootRequested bool   `json:"reboot_requested,omitempty"`
-	RebootOutput    string `json:"reboot_output,omitempty"`
-	RebootError     string `json:"reboot_error,omitempty"`
+	Preview         *helper.PreviewResult `json:"preview,omitempty"`
+	PreviewHash     string                `json:"preview_hash,omitempty"`
+	NoChanges       bool                  `json:"no_changes,omitempty"`
+	Facts           *helper.Facts         `json:"facts,omitempty"`
+	FactsError      string                `json:"facts_error,omitempty"`
+	RebootRequired  bool                  `json:"reboot_required,omitempty"`
+	RebootRequested bool                  `json:"reboot_requested,omitempty"`
+	RebootOutput    string                `json:"reboot_output,omitempty"`
+	RebootError     string                `json:"reboot_error,omitempty"`
+}
+
+type previewResponse struct {
+	Preview     helper.PreviewResult `json:"preview"`
+	PreviewHash string               `json:"preview_hash"`
+}
+
+func previewHash(result helper.PreviewResult) string {
+	packages := append([]helper.PackageChange(nil), result.Packages...)
+	sort.SliceStable(packages, func(i, j int) bool {
+		if packages[i].Action != packages[j].Action {
+			return packages[i].Action < packages[j].Action
+		}
+		if packages[i].Name != packages[j].Name {
+			return packages[i].Name < packages[j].Name
+		}
+		if packages[i].OldVersion != packages[j].OldVersion {
+			return packages[i].OldVersion < packages[j].OldVersion
+		}
+		if packages[i].NewVersion != packages[j].NewVersion {
+			return packages[i].NewVersion < packages[j].NewVersion
+		}
+		if packages[i].Repository != packages[j].Repository {
+			return packages[i].Repository < packages[j].Repository
+		}
+		return packages[i].Architecture < packages[j].Architecture
+	})
+	payload, _ := json.Marshal(struct {
+		PackageManager string                 `json:"package_manager"`
+		Packages       []helper.PackageChange `json:"packages"`
+	}{PackageManager: result.PackageManager, Packages: packages})
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
+func (s *Server) runPatchPreview(ctx context.Context, host store.Host, password, sudoPassword string) (helper.PreviewResult, string, error) {
+	output, code, err := s.runHelper(ctx, host, "preview", password, sudoPassword, 10*time.Minute)
+	if err != nil {
+		return helper.PreviewResult{}, "", err
+	}
+	var result helper.PreviewResult
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		return helper.PreviewResult{}, "", fmt.Errorf("helper returned invalid preview JSON: %w", err)
+	}
+	if code != 0 && result.OK {
+		result.OK = false
+		if result.Error == "" {
+			result.Error = fmt.Sprintf("helper exited with code %d", code)
+		}
+	}
+	if result.Packages == nil {
+		result.Packages = []helper.PackageChange{}
+	}
+	if result.Counts == nil {
+		result.Counts = map[string]int{}
+	}
+	return result, previewHash(result), nil
+}
+
+func (s *Server) handlePatchPreview(w http.ResponseWriter, r *http.Request) {
+	host, err := s.store.GetHost(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "host not found")
+		return
+	}
+	var request passwordRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	password := ""
+	if host.AuthType == "password" {
+		if request.Password == "" {
+			writeError(w, http.StatusBadRequest, "password is required for password authentication")
+			return
+		}
+		password = request.Password
+	}
+	if !s.tryLockHost(host.ID) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "another patch, reboot, cleanup, or bootstrap operation is already running for this host", "code": "host_busy"})
+		return
+	}
+	defer s.unlockHost(host.ID)
+	preview, hash, err := s.runPatchPreview(r.Context(), host, password, request.SudoPassword)
+	if errors.Is(err, errSudoPasswordInvalid) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "sudo_password_invalid"})
+		return
+	}
+	if errors.Is(err, errSudoPasswordRequired) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "sudo_password_required"})
+		return
+	}
+	if err != nil {
+		s.auditHostActionFailure(r, "patch-preview", host.ID, err)
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if !preview.OK {
+		s.auditHostActionFailure(r, "patch-preview", host.ID, errors.New(preview.Error))
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"error": "patch preview failed", "preview": preview, "preview_hash": hash,
+		})
+		return
+	}
+	_ = s.store.AddAudit(s.auditActor(r), "patch-preview", "host", host.ID,
+		fmt.Sprintf("upgrade=%d install=%d remove=%d exit=%d",
+			preview.Counts["upgrade"], preview.Counts["install"], preview.Counts["remove"], preview.ExitCode))
+	writeJSON(w, http.StatusOK, previewResponse{Preview: preview, PreviewHash: hash})
 }
 
 func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
@@ -614,6 +733,12 @@ func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "confirm must be \"apply\" for a real patch run")
 			return
 		}
+		if strings.TrimSpace(request.PreviewHash) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "run a patch preview before applying updates", "code": "preview_required",
+			})
+			return
+		}
 		action = "apply"
 		timeout = 45 * time.Minute
 	}
@@ -622,6 +747,59 @@ func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.unlockHost(host.ID)
+
+	var preview helper.PreviewResult
+	previewHash := ""
+	if action == "apply" {
+		preview, previewHash, err = s.runPatchPreview(r.Context(), host, password, request.SudoPassword)
+		if errors.Is(err, errSudoPasswordInvalid) {
+			s.auditHostActionFailure(r, "patch-preview", host.ID, err)
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "sudo_password_invalid"})
+			return
+		}
+		if errors.Is(err, errSudoPasswordRequired) {
+			s.auditHostActionFailure(r, "patch-preview", host.ID, err)
+			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": "sudo_password_required"})
+			return
+		}
+		if err != nil {
+			s.auditHostActionFailure(r, "patch-preview", host.ID, err)
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		if !preview.OK {
+			s.auditHostActionFailure(r, "patch-preview", host.ID, errors.New(preview.Error))
+			writeJSON(w, http.StatusBadGateway, map[string]any{
+				"error": "patch preview failed", "preview": preview, "preview_hash": previewHash,
+			})
+			return
+		}
+		if previewHash != request.PreviewHash {
+			s.auditHostActionFailure(r, "patch-preview", host.ID, errors.New("preview changed before apply"))
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": "the package preview changed; review the new package list before applying",
+				"code":  "preview_changed", "preview": preview, "preview_hash": previewHash,
+			})
+			return
+		}
+		if preview.Counts["remove"] > 0 && !request.AllowRemovals {
+			s.auditHostActionFailure(r, "patch-apply", host.ID, errors.New("package removals were not confirmed"))
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "the preview includes package removals; confirm them before applying",
+				"code":  "removals_not_confirmed", "preview": preview, "preview_hash": previewHash,
+			})
+			return
+		}
+		if len(preview.Packages) == 0 {
+			_ = s.store.AddAudit(s.auditActor(r), "patch-apply-noop", "host", host.ID, "no package changes")
+			writeJSON(w, http.StatusOK, patchResponse{
+				Result:  helper.Result{Action: "apply", OK: true, ExitCode: 0, Output: "No package changes to apply."},
+				Preview: &preview, PreviewHash: previewHash, NoChanges: true,
+			})
+			return
+		}
+	}
+
 	output, code, err := s.runHelper(r.Context(), host, action, password, request.SudoPassword, timeout)
 	if errors.Is(err, errSudoPasswordInvalid) {
 		s.auditHostActionFailure(r, "patch-"+action, host.ID, err)
@@ -638,15 +816,29 @@ func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	result := helper.Result{Action: action, OK: code == 0 || (action == "check" && code == 100), ExitCode: code, Output: output}
+	result := parseHelperResult(action, output, code)
 	if err := s.store.AddAudit(s.auditActor(r), "patch-"+action, "host", host.ID, fmt.Sprintf("exit=%d", code)); err != nil {
 		_ = err
 	}
 	response := patchResponse{Result: result}
+	if action == "apply" {
+		response.Preview = &preview
+		response.PreviewHash = previewHash
+	}
+	if action == "apply" && result.OK {
+		factsCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Minute)
+		defer cancel()
+		facts, factsErr := s.collectFactsForHost(factsCtx, s.auditActor(r), host, password, request.SudoPassword)
+		if factsErr != nil {
+			response.FactsError = shortRunSummary(factsErr.Error())
+		} else {
+			response.Facts = &facts
+		}
+	}
 	// A reboot is only considered after a successful apply run. Dry runs never
 	// change a host. The operator opts in per request; existing callers that do
 	// not send reboot_after_patch keep the old behavior.
-	if action == "apply" && code == 0 && request.RebootAfterPatch {
+	if action == "apply" && result.OK && request.RebootAfterPatch {
 		// The patch already completed. Do not let a closing browser tab cancel
 		// the explicit post-patch reboot check, but keep a bounded timeout.
 		rebootCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Minute)
@@ -663,6 +855,20 @@ func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func parseHelperResult(action, output string, code int) helper.Result {
+	var result helper.Result
+	if err := json.Unmarshal([]byte(output), &result); err == nil {
+		if result.Action == "" {
+			result.Action = action
+		}
+		if action == "check" && code == 100 {
+			result.OK = true
+		}
+		return result
+	}
+	return helper.Result{Action: action, OK: code == 0 || (action == "check" && code == 100), ExitCode: code, Output: output}
 }
 
 type cleanupRequest struct {
@@ -878,6 +1084,24 @@ func (s *Server) handleReboot(w http.ResponseWriter, r *http.Request) {
 		_ = err
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) collectFactsForHost(ctx context.Context, actor string, host store.Host, password, sudoPassword string) (helper.Facts, error) {
+	output, code, err := s.runHelper(ctx, host, "facts", password, sudoPassword, 5*time.Minute)
+	if err != nil {
+		return helper.Facts{}, err
+	}
+	if code != 0 {
+		return helper.Facts{}, fmt.Errorf("facts helper exited with code %d", code)
+	}
+	var facts helper.Facts
+	if err := json.Unmarshal([]byte(output), &facts); err != nil {
+		return helper.Facts{}, fmt.Errorf("helper returned invalid facts JSON: %w", err)
+	}
+	if err := s.store.SaveFactsAs(actor, host.ID, storeFactsFromHelper(facts)); err != nil {
+		return helper.Facts{}, err
+	}
+	return facts, nil
 }
 
 func storeFactsFromHelper(facts helper.Facts) store.Facts {

@@ -205,6 +205,7 @@ func runSudo(ctx context.Context, target Target, expected *HostKey, command, sud
 func sudoersContent(username string) string {
 	return fmt.Sprintf(`# Managed by HIBP. This rule is limited to the fixed helper actions.
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper facts
+%s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper preview
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper check
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper apply
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper cleanup-check
@@ -217,7 +218,7 @@ func sudoersContent(username string) string {
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-check *
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-apply *
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-update-all
-`, username, username, username, username, username, username, username, username, username, username, username, username, username)
+`, username, username, username, username, username, username, username, username, username, username, username, username, username, username)
 }
 
 func architectureMatches(uname string) bool {

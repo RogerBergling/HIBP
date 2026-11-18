@@ -115,6 +115,8 @@ func Run(ctx context.Context, action string, out io.Writer, args ...string) erro
 			return err
 		}
 		return json.NewEncoder(out).Encode(facts)
+	case "preview":
+		return json.NewEncoder(out).Encode(previewUpdates(ctx))
 	case "check":
 		output, code, err := checkUpdates(ctx)
 		return writeResult(out, "check", output, code, err)

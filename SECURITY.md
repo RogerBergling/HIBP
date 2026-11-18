@@ -153,6 +153,13 @@ cron-based patch schedules are implemented.
   and `docker-apply *` sudoers wildcards are constrained by that validation.
   **Check all projects** and **Update selected** are controller-side loops over
   the same fixed per-project actions; they add no new privileged operation.
+- Manual patch runs start with the read-only `preview` helper action. The
+  controller shows upgrades, installs, and removals, then re-runs the preview
+  immediately before apply and rejects the run if the package transaction hash
+  changed. Removals require a typed `APPLY` confirmation in the UI and the
+  `allow_removals` flag in the request. The preview and raw package-manager
+  output may contain repository or package metadata; treat it as operational
+  data and do not paste it into public issues.
 - Per-project Docker status is stored in `docker_project_checks` inside the
   encrypted database. It contains project names, status, timestamps, and a
   bounded summary or helper error, never Compose file contents or secrets.
@@ -179,7 +186,7 @@ cron-based patch schedules are implemented.
 - Monitoring is an alerting and visibility feature, not a remote-control plane.
   A monitoring credential must not be able to change the monitored system.
 - Patch schedules are administrator-only definitions. They run the same fixed
-  `check`/`apply` helper actions as manual patching, use the configured cron
+  `preview`/`check`/`apply` helper actions as manual patching, use the configured cron
   timezone and maintenance window, and only target hosts with key auth and a
   trusted host key. Concurrency is bounded per schedule, only transient
   transport failures are retried (not authentication, host-key, sudo-policy, or

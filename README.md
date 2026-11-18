@@ -1,8 +1,9 @@
 # HIBP - Have I Been Patched
 
-> **Status: v0.9.1 production-hardening release with selected-host facts,
-> setup, patch, cleanup, and reboot workflows, including multi-distro
-> orphaned-package cleanup and DNF5 preview compatibility.**
+> **Status: v0.10.0 live patch-preview release with package-level upgrade,
+> install, and removal previews, preview-hash revalidation before apply,
+> explicit removal confirmation, a live operation status bar, automatic page
+> refresh, and post-patch facts refresh.**
 > The repository contains a working Go server, browser UI, SQLCipher storage,
 > host CRUD/import, password + TOTP/passkey authentication with post-enrollment
 > MFA management, SSH host-key approval, remote helper installation, fact
@@ -19,10 +20,11 @@
 > build still uses the 2020 spike driver and prints a warning. SSH password and
 > sudo fallbacks are manual-run only.
 >
-> **Not yet production-complete:** package-level run diffs, approval workflows,
-> a durable job queue with resume across restarts, approved playbooks, agent
-> mode, and RBAC are not implemented. The scheduler is a single-process cron
-> engine with bounded per-host retries. Read
+> **Not yet production-complete:** approval workflows, a durable job queue with
+> resume across restarts, approved playbooks, agent mode, and RBAC are not
+> implemented. Package-level preflight diffs are implemented, but per-run
+> resulting package diffs are not recorded. The scheduler is a single-process
+> cron engine with bounded per-host retries. Read
 > [Production deployment checklist](#production-deployment-checklist) and
 > [Known limitations before production](#known-limitations-before-production)
 > before exposing this to real hosts.
@@ -39,8 +41,12 @@ package manager, applies updates on demand or through cron schedules, reboots
 one or many selected hosts on explicit confirmation, and can reboot
 automatically after a successful patch when the target reports that a reboot is
 required. It can also preview and remove orphaned packages on explicit
+confirmation. Manual patch runs now resolve a package-level preflight diff
+before anything is applied, show upgrades, installs, and removals, revalidate
+that preview immediately before apply, and require explicit removal
 confirmation. It records audit events and per-host run history. It does not yet
-provide a durable job queue, approvals, or package-level diff evidence.
+provide a durable job queue, approval workflows, or per-run resulting package
+diffs.
 
 ## Screenshots
 
@@ -59,9 +65,25 @@ Monitoring checks use collected host snapshots and read-only network probes.
 External integrations poll vCenter, HAProxy, and OPNsense without changing
 them. Alert history is recorded even when email delivery is disabled or fails.
 
+### Live patch preview
+
+The manual patch flow resolves the package transaction before it changes
+anything, then shows upgrades, installs, and removals. The page refreshes itself
+after the run, so the host table and pending counts update without an F5.
+
+| Live operation status | Package-level preview |
+| --- | --- |
+| ![Live operation status bar showing fleet preview progress](docs/screenshots/live-operation-status.png) | ![Patch preview with upgrades, installs, removals, and typed APPLY confirmation](docs/screenshots/patch-preview.png) |
+
+> **Upgrading from v0.9.x:** run **Setup / Update helpers** on each target before
+> the first patch preview. v0.10.0 adds the fixed `preview` helper action and
+> its restricted sudoers entry. Older helpers can still run check/apply, but
+> the preview will fail until the helper is updated.
+
 ## Contents
 
 - [Screenshots](#screenshots)
+- [Live patch preview](#live-patch-preview)
 - [Install a release](#install-a-release-recommended)
 - [Install prerequisites](#install-prerequisites)
 - [Quick start (source build)](#quick-start-source-build)
@@ -136,7 +158,7 @@ End users should not need Go or a compiler.
 
    ```bash
    # Install a specific version
-   sh install.sh --version v0.9.1
+   sh install.sh --version v0.10.0
 
    # Install system-wide (run as a user with write access to /usr/local/bin)
    sudo HIBP_PREFIX=/usr/local/bin sh install.sh
@@ -471,7 +493,7 @@ Server flags:
 | `-demo` | off | Seeds sample hosts when empty. Use only for screenshots or demos. |
 | `-version` | off | Prints the version, build number, commit, build date, target, build type, and SQLCipher driver, then exits. |
 
-Helper actions are intentionally fixed: `facts`, `check`, `apply`,
+Helper actions are intentionally fixed: `facts`, `preview`, `check`, `apply`,
 `cleanup-check`, `cleanup-apply`, `reboot`, `reboot-check`, `system-info`,
 `metrics`, `docker-list`, `docker-check <project>`, `docker-apply <project>`,
 and `docker-update-all`. The helper does not accept package names, host names,
@@ -480,7 +502,7 @@ or shell fragments from the controller.
 Important constraints:
 
 - The server requires the database passphrase before it starts. There is no
-  locked/paused browser UI in v0.9.1. If the process stops, the UI, collector,
+  locked/paused browser UI in v0.10.0. If the process stops, the UI, collector,
   scheduler, and monitoring stop with it.
 - `-create` is not an upgrade or reset flag. It refuses an existing database.
 - `-demo` writes sample hosts and is not a production mode.
@@ -501,7 +523,7 @@ against them without pinning and testing a release.
 `hibp version` and `hibp server --version` print the complete build identity:
 
 ```text
-hibp 0.9.1
+hibp 0.10.0
 build:  1234
 commit: abc123def456
 date:   2026-11-11T12:00:00Z
@@ -530,7 +552,7 @@ Build metadata is generated by `make`:
 Override the inferred values for a controlled build:
 
 ```bash
-make build VERSION=0.9.1 BUILD_NUMBER=1234 BUILD_COMMIT=abc123def456
+make build VERSION=0.10.0 BUILD_NUMBER=1234 BUILD_COMMIT=abc123def456
 ```
 
 `make production` passes the same values as Docker build arguments and records
@@ -690,9 +712,11 @@ This profile still requires the canary and restore tests below.
   kernel, or service health. Plan a separate verification step, especially for
   kernel updates. The `reboot-check` result and the host uptime are evidence,
   not an enforcement mechanism.
-- There is no package-level old/new diff. If you need per-package evidence,
-  capture the bounded run output or use distribution-side history until a
-  package diff is implemented.
+- Manual patch runs show a package-level preflight diff with old and new
+  versions, but the resulting transaction is not stored as per-run package
+  evidence. Scheduled runs store bounded output only. Capture the preview or
+  run output, or use distribution-side history, until post-run package evidence
+  is implemented.
 - A failed or interrupted apply can leave a target partially updated. HIBP does
   not provide package-transaction rollback. Use VM snapshots, distribution
   rollback tooling, or a tested recovery plan for high-risk hosts.
@@ -745,7 +769,7 @@ This profile still requires the canary and restore tests below.
 ## Production deployment checklist
 
 This is the minimum operational and security review before using HIBP against
-real hosts. It reflects the current v0.9.1 implementation; treat it as a
+real hosts. It reflects the current v0.10.0 implementation; treat it as a
 gate, not as a suggestion.
 
 ### 1. Confirm the deployment model
@@ -761,9 +785,9 @@ gate, not as a suggestion.
   or separation between an operator and an auditor.
 - The current release implements cron-based check/apply schedules, bounded
   per-host retries, per-host operation locks, per-host run history, and manual
-  run-now. It does not implement a durable job queue, package-level diffs,
-  approvals, resume across a controller restart, host disable/maintenance
-  state, or approved playbooks. Review the scheduler limitations before making
+  run-now. It does not implement a durable job queue, approval gates,
+  post-run package evidence, resume across a controller restart, host
+  disable/maintenance state, or approved playbooks. Review the scheduler limitations before making
   it authoritative.
 
 ### 2. Create the service account and protected paths
@@ -1124,7 +1148,7 @@ and sessions.
 
 ## Docker, system information, and monitoring
 
-> **Status: v0.9.1 adds DNF5-compatible orphan previews on top of the v0.9.0 multi-distro cleanup, dry-run previews, and typed confirmation.**
+> **Status: v0.10.0 adds live package-level patch previews, preview-hash revalidation, a global operation status bar, automatic page refresh, and post-patch facts refresh.**
 > Read-only system information, Docker inventory, host details, metric history,
 > configurable collection, explicit Docker check/apply and bulk Compose update,
 > monitoring definitions,
@@ -1512,8 +1536,8 @@ commit:
    status, and cmdb-lite CSV/JSON import with preview and merge/overwrite.
 5. **Implemented:** cron-based check/apply scheduling, maintenance windows,
    jitter, concurrency, run history, and email summaries.
-6. **Next:** durable job queue with retry/resume, package-level diffs, approval
-   gates, and reboot orchestration.
+6. **Next:** durable job queue with retry/resume, approval gates, post-run
+   package evidence, and reboot orchestration.
 
 ### Collection settings
 
@@ -1557,6 +1581,7 @@ The helper accepts only this fixed set of actions:
 
 ```text
 facts
+preview
 check
 apply
 cleanup-check
@@ -1710,6 +1735,7 @@ uses to log in:
 sudo tee /etc/sudoers.d/hibp-helper >/dev/null <<'EOF'
 # Replace "hibp" with the SSH account used by the controller.
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper facts
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper preview
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper check
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper apply
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper cleanup-check
@@ -1963,7 +1989,10 @@ as core features rather than afterthoughts.
 > on a real target matrix. G5 is key-only plus manual password fallback. G9 is
 > implemented as a single-process cron scheduler with some gaps. G11 is local
 > hash-chain verification only. G12 is read-only import; write-back is not
-> implemented. G8 preview/cancel and G10 package diffs are not implemented.
+> implemented. G8 preview is implemented for manual patch runs with a cancel
+> before apply and automatic page refresh after the run. G10 package-level
+> preflight diffs are implemented; resulting per-run package diffs are not yet
+> stored.
 
 ## Non-goals
 
@@ -2116,7 +2145,7 @@ as core features rather than afterthoughts.
 - The server requires the database passphrase before it starts. After a reboot,
   an operator must start the process and unlock the database; until then there
   is no UI, collector, or scheduler. There is no locked/paused browser state in
-  v0.9.1, and no database key is persisted.
+  v0.10.0, and no database key is persisted.
 
 ### History and drill-down
 
@@ -2304,7 +2333,7 @@ hibp agent (systemd timer) ── outbound mTLS ──► hibp server
 
 ### Execution flow
 
-> This is the design target. v0.9.1 implements collection, check/apply through
+> This is the design target. v0.10.0 implements collection, check/apply through
 > the fixed helper, per-host locking, retries, run history, and audit, but not
 > package plans/diffs, approval gates, cancellation, post-reboot verification,
 > or retention.
@@ -2435,7 +2464,7 @@ The current release derives the SQLCipher key directly from the database
 passphrase with Argon2id and keeps SMTP/integration secrets inside the encrypted
 database. It does **not** implement a separate credential vault, envelope/DEK
 wrapping, or passphrase rotation. The following is a future design goal, not a
-claim about v0.9.1:
+claim about v0.10.0:
 
 - Generate a random data encryption key (DEK) for a credential vault.
 - Derive a key-encryption key (KEK) from the database passphrase with Argon2id,
@@ -2541,7 +2570,7 @@ That authority must be narrow and auditable.
 - Use a dedicated account for HIBP where possible, not a personal admin account.
 - Prefer a root-owned helper installed on the target, invoked through a
   restricted sudoers rule. The helper accepts a small allowlist of actions
-  (`facts`, `check`, `apply`, `cleanup-check`, `cleanup-apply`, `reboot`,
+  (`facts`, `preview`, `check`, `apply`, `cleanup-check`, `cleanup-apply`, `reboot`,
   `reboot-check`, `system-info`, `metrics`, `docker-list`,
   `docker-check <project>`, `docker-apply <project>`, `docker-update-all`)
   and validates its arguments.
@@ -2586,7 +2615,7 @@ code execution as root. It must be designed as a first-class, audited feature.
 **Decision: versioned, approved playbooks only. Arbitrary shell is not supported
 in v1.**
 
-- Built-in actions cover normal patching: facts, check, apply, cleanup-check,
+- Built-in actions cover normal patching: facts, preview, check, apply, cleanup-check,
   cleanup-apply, reboot, and reboot-check.
 - A playbook is a named, versioned, reviewed script or profile with a SHA-256
   hash and optional signature.
@@ -2617,7 +2646,7 @@ Agent mode is optional and later; v1 uses SSH from the always-on server.
   Do not share one fleet-wide secret.
 - Policy and playbooks are signed and versioned. The agent rejects unsigned,
   expired, or rolled-back policy.
-- The agent exposes a minimal local interface: collect facts, check, apply,
+- The agent exposes a minimal local interface: collect facts, preview, check, apply,
   cleanup-check, cleanup-apply, reboot-check, and run an approved playbook. It
   does not expose a general shell.
 - The agent binary is memory-safe where possible (Go or Rust), statically
@@ -2689,6 +2718,28 @@ Current status:
   remote-code-execution feature.
 - Consider reproducible builds for the server and agent binaries.
 
+### Implemented in v0.10.0
+
+- Live package preview for manual patch runs across apt, dnf, zypper, pacman,
+  and apk. The preview lists upgrades, installs, and removals with old and new
+  versions where the package manager exposes them.
+- Preview-hash revalidation immediately before apply. If the transaction
+  changed, HIBP refuses the apply and asks the operator to review the new list.
+- Explicit removal confirmation. If the preview includes removals, the operator
+  must type `APPLY`; the server also rejects an apply without
+  `allow_removals`.
+- A global operation status bar for patch previews, apply runs, cleanup,
+  reboots, fleet operations, and scheduled runs. It shows the current stage,
+  host progress, elapsed time, and a progress track.
+- Automatic page refresh every 15 seconds with a **Live** toggle. Host facts and
+  pending-update counts refresh after every successful patch, so the operator no
+  longer needs to press F5.
+- The patch preview and results screens include package counts, color-coded
+  groups, raw package-manager output, warnings, and per-host review links.
+- Fixed helper action `preview` with a restricted `NOPASSWD` sudoers entry.
+  The helper still accepts no package names or shell fragments from the
+  controller.
+
 ### Implemented in v0.9.0
 
 - Multi-distro orphaned-package detection in facts for apt, dnf, zypper, and
@@ -2742,7 +2793,7 @@ Current status:
   per target, has its own trusted host key, and is imported from concrete SSH
   config aliases or direct `[user@]host[:port]` specifications. Multi-hop jump
   chains are shown as unsupported rather than silently flattened.
-- Fixed helper actions (`facts`, `check`, `apply`, `cleanup-check`,
+- Fixed helper actions (`facts`, `preview`, `check`, `apply`, `cleanup-check`,
   `cleanup-apply`, `reboot`, `reboot-check`, `system-info`, `metrics`,
   `docker-list`, `docker-check`, `docker-apply`, `docker-update-all`) with
   absolute binary paths, a sanitized environment, no shell, and output limits.
@@ -2825,8 +2876,8 @@ Current status:
   path and clears all MFA.
 - Patch scheduling is a single-process cron engine, not a durable job queue.
   Per-host retries are bounded (0–5) and exist only within one schedule run.
-  There is no approval gate, resume across a controller restart, package-level
-  old/new diff, security-only filtering, package excludes/held-package policy,
+  There is no approval gate, resume across a controller restart, post-run
+  package diff, security-only filtering, package excludes/held-package policy,
   post-reboot verification, host disabled/maintenance state, or global queue
   across schedules. A schedule can opt in to a reboot after a successful apply
   when `reboot-check` reports it is required, but HIBP does not wait for or
@@ -3038,7 +3089,7 @@ Schema rules:
 
 ## Scheduling and job semantics
 
-> This section is the target semantics. v0.9.1 implements five-field cron,
+> This section is the target semantics. v0.10.0 implements five-field cron,
 > per-schedule time zones, jitter, a late-start window, skip/latest-missed
 > catch-up, per-schedule concurrency, a controller-wide cap, bounded retries,
 > an optional reboot after a successful apply when `reboot-check` reports it is
@@ -3538,7 +3589,8 @@ Still missing:
 - Notifications via email are implemented for monitoring and schedules;
   webhook/ntfy channels and scheduler-driven reboot notifications remain.
 - **Still missing:** durable queue, resume across restarts, approval gates,
-  package-level diffs, post-reboot verification, and host maintenance state.
+  post-run package evidence, post-reboot verification, and host maintenance
+  state.
 
 ### M4 - Security hardening
 
@@ -3780,6 +3832,11 @@ Current validation status:
 - `go vet ./...` passes.
 - `go test -race ./...` passes.
 - `make static` produces a development ELF with no dynamic dependencies.
+- The v0.10.0 patch-preview changes were validated with helper parser tests for
+  apt, dnf, zypper, pacman, and apk, a fake-runner preview wiring test, server
+  preview-hash and preview-required tests, the full Go suite, `go vet`, the
+  README/Python validators, JavaScript syntax checks, a development build, and
+  headless-browser rendering of the live operation bar and patch-preview modal.
 - The v0.9.0 orphaned-package cleanup changes were validated with helper parser
   and fixed-command tests, server confirmation/lock/controller-protection tests,
   the store schema/update tests, the Go suite, vet, README/Python validators,
@@ -3798,7 +3855,7 @@ Current validation status:
 - The current-SQLCipher production Docker build and release pipeline passed for
   `v0.7.1`; the published archive checksum, installed binary, and SQLCipher
   production driver were verified.
-- Pushing the `v0.9.1` tag runs the production image/archive release workflow;
+- Pushing the `v0.10.0` tag runs the production image/archive release workflow;
   verify its checksum and installed binary before fleet deployment.
 - The store/server suite passes against the production driver with current
   system `libsqlcipher`, including backup, restore, audit-chain verification,

@@ -173,9 +173,26 @@
       <div class="topbar">
         <div class="crumb">Fleet / <b id="crumb-view">Overview</b></div>
         <div class="topbar-right">
+          <label class="live-toggle" title="Refresh hosts and run history automatically">
+            <input type="checkbox" id="auto-refresh-toggle" checked>
+            <span class="live-dot"></span>
+            <span>Live</span>
+          </label>
           <div class="last-check"><span class="dot"></span> <span id="last-refresh">not loaded</span></div>
           <button class="btn" id="top-refresh">Refresh</button>
           <button class="btn primary" id="top-add-host"><span class="plus">+</span> Add host</button>
+        </div>
+      </div>
+
+      <div id="operation-bar" class="operation-bar hidden" role="status" aria-live="polite">
+        <span class="operation-spinner" aria-hidden="true"></span>
+        <div class="operation-copy">
+          <div class="operation-title" id="operation-title">Working…</div>
+          <div class="operation-detail" id="operation-detail">Starting…</div>
+        </div>
+        <div class="operation-meta">
+          <span id="operation-elapsed">0s</span>
+          <div class="operation-track" aria-hidden="true"><div class="operation-fill" id="operation-fill"></div></div>
         </div>
       </div>
 

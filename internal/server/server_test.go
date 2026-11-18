@@ -972,6 +972,51 @@ func TestPatchResponseIncludesRebootOutcome(t *testing.T) {
 	}
 }
 
+func TestPreviewHashIsStableAndOrderIndependent(t *testing.T) {
+	first := helper.PreviewResult{
+		PackageManager: "apt",
+		Packages: []helper.PackageChange{
+			{Name: "b", Action: "install", NewVersion: "2.0"},
+			{Name: "a", Action: "upgrade", OldVersion: "1.0", NewVersion: "1.1"},
+		},
+	}
+	second := helper.PreviewResult{
+		PackageManager: "apt",
+		Packages: []helper.PackageChange{
+			{Name: "a", Action: "upgrade", OldVersion: "1.0", NewVersion: "1.1"},
+			{Name: "b", Action: "install", NewVersion: "2.0"},
+		},
+	}
+	if previewHash(first) != previewHash(second) {
+		t.Fatal("preview hash changed when package order changed")
+	}
+	second.Packages[1].NewVersion = "2.1"
+	if previewHash(first) == previewHash(second) {
+		t.Fatal("preview hash did not change when package version changed")
+	}
+}
+
+func TestPatchApplyRequiresPreviewHash(t *testing.T) {
+	ts, _ := testServer(t)
+	body := `{"name":"web01","address":"10.0.0.10","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519"}`
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/hosts", "test-token", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create failed: %d %s", resp.StatusCode, data)
+	}
+	var host store.Host
+	if err := json.NewDecoder(resp.Body).Decode(&host); err != nil {
+		t.Fatal(err)
+	}
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/hosts/"+host.ID+"/patch", "test-token", `{"dry_run":false,"confirm":"apply"}`)
+	data, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "preview_required") {
+		t.Fatalf("expected preview_required, got %d %s", resp.StatusCode, data)
+	}
+}
+
 func TestRebootRequiresConfirmation(t *testing.T) {
 	ts, _ := testServer(t)
 	body := `{"name":"web01","address":"10.0.0.10","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519"}`

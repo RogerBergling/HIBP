@@ -26,6 +26,135 @@ let fleetRebootRunning = false;
 let fleetFactsRunning = false;
 let fleetCleanupRunning = false;
 
+const operationState = {
+  active: false,
+  title: '',
+  detail: '',
+  startedAt: 0,
+  progress: 0,
+  total: 0,
+  finishedAt: 0,
+  finishedTitle: '',
+  finishedDetail: '',
+  error: false,
+};
+
+const autoRefreshState = {
+  enabled: true,
+  timer: null,
+  loading: false,
+};
+
+try {
+  autoRefreshState.enabled = window.localStorage.getItem('hibp-live-refresh') !== 'off';
+} catch (error) {}
+
+function beginOperation(title, detail = '', total = 0) {
+  operationState.active = true;
+  operationState.title = title;
+  operationState.detail = detail;
+  operationState.startedAt = Date.now();
+  operationState.progress = 0;
+  operationState.total = total;
+  operationState.finishedAt = 0;
+  operationState.error = false;
+  renderOperationBar();
+}
+
+function updateOperation(detail, progress = null, total = null) {
+  if (!operationState.active) return;
+  if (detail !== null && detail !== undefined) operationState.detail = detail;
+  if (progress !== null && progress !== undefined) operationState.progress = progress;
+  if (total !== null && total !== undefined) operationState.total = total;
+  renderOperationBar();
+}
+
+function finishOperation(title, detail = '', error = false) {
+  operationState.active = false;
+  operationState.finishedAt = Date.now();
+  operationState.finishedTitle = title;
+  operationState.finishedDetail = detail;
+  operationState.error = error;
+  renderOperationBar();
+}
+
+function operationElapsed(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
+  if (seconds < 60) return seconds + 's';
+  return Math.floor(seconds / 60) + 'm ' + String(seconds % 60).padStart(2, '0') + 's';
+}
+
+function renderOperationBar() {
+  const bar = $('operation-bar');
+  if (!bar) return;
+  let title = '';
+  let detail = '';
+  let elapsed = 0;
+  let percent = null;
+  let tone = '';
+  let show = false;
+  if (operationState.active) {
+    show = true;
+    title = operationState.title;
+    detail = operationState.detail;
+    elapsed = Math.floor((Date.now() - operationState.startedAt) / 1000);
+    if (operationState.total > 0) {
+      percent = Math.max(0, Math.min(100, Math.round((operationState.progress / operationState.total) * 100)));
+    }
+  } else if (operationState.finishedAt && Date.now() - operationState.finishedAt < 4500) {
+    show = true;
+    title = operationState.finishedTitle;
+    detail = operationState.finishedDetail;
+    elapsed = Math.max(0, Math.floor((operationState.finishedAt - operationState.startedAt) / 1000));
+    tone = operationState.error ? 'error' : 'done';
+    percent = 100;
+  } else {
+    const running = (state.runs || []).find((run) => run.status === 'running');
+    if (running) {
+      const host = (state.hosts || []).find((entry) => entry.id === running.host_id);
+      const action = running.action === 'patch-apply' ? 'Patch apply' : running.action === 'patch-check' ? 'Patch check' : running.action;
+      show = true;
+      title = 'Scheduled ' + action.toLowerCase() + ' running' + (host ? ' — ' + host.name : '');
+      detail = 'Started ' + (running.started_at ? new Date(running.started_at).toLocaleTimeString() : 'recently') + ' · live run history updates automatically';
+      elapsed = running.started_at ? Math.max(0, Math.floor((Date.now() - new Date(running.started_at).getTime()) / 1000)) : 0;
+    }
+  }
+  if (!show) {
+    bar.classList.add('hidden');
+    bar.classList.remove('done', 'error', 'indeterminate');
+    return;
+  }
+  bar.classList.remove('hidden', 'done', 'error', 'indeterminate');
+  if (tone) bar.classList.add(tone);
+  if (percent === null) bar.classList.add('indeterminate');
+  $('operation-title').textContent = title;
+  $('operation-detail').textContent = detail || 'Working…';
+  $('operation-elapsed').textContent = operationElapsed(elapsed);
+  const fill = $('operation-fill');
+  if (percent !== null) fill.style.width = percent + '%';
+  else fill.style.width = '';
+}
+
+function setAutoRefresh(enabled) {
+  autoRefreshState.enabled = Boolean(enabled);
+  try {
+    window.localStorage.setItem('hibp-live-refresh', autoRefreshState.enabled ? 'on' : 'off');
+  } catch (error) {}
+  const toggle = $('auto-refresh-toggle');
+  if (toggle) toggle.checked = autoRefreshState.enabled;
+  if (autoRefreshState.timer) {
+    window.clearInterval(autoRefreshState.timer);
+    autoRefreshState.timer = null;
+  }
+  if (autoRefreshState.enabled) {
+    autoRefreshState.timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible' && !operationState.active && !modalStack.length) {
+        loadAll({ silent: true });
+      }
+    }, 15000);
+  }
+}
+
 const modalStack = [];
 
 document.addEventListener('keydown', (event) => {
@@ -319,6 +448,7 @@ async function enterApp() {
   showApp();
   updateUserDisplay();
   await loadAll();
+  setAutoRefresh(autoRefreshState.enabled);
 }
 
 function renderMFA(status) {
@@ -446,6 +576,10 @@ async function loginWithPasskey() {
 }
 
 async function signOut() {
+  if (autoRefreshState.timer) {
+    window.clearInterval(autoRefreshState.timer);
+    autoRefreshState.timer = null;
+  }
   try {
     await api('/api/v1/auth/logout', { method: 'POST', body: '{}' });
   } catch (error) {
@@ -460,7 +594,9 @@ async function signOut() {
   await showAuthScreen();
 }
 
-async function loadAll() {
+async function loadAll(options = {}) {
+  if (autoRefreshState.loading && !options.force) return;
+  autoRefreshState.loading = true;
   try {
     const [status, hosts, audit, monitors, alerts, integrations, schedules, runs] = await Promise.all([
       api('/api/v1/status'),
@@ -482,9 +618,12 @@ async function loadAll() {
     state.schedules = schedules.schedules || [];
     state.runs = runs.runs || [];
     renderAll();
+    renderOperationBar();
     $('last-refresh').textContent = 'updated ' + new Date().toLocaleTimeString();
   } catch (error) {
-    toast(error.message, 'error');
+    if (!options.silent) toast(error.message, 'error');
+  } finally {
+    autoRefreshState.loading = false;
   }
 }
 
@@ -1664,12 +1803,15 @@ function renderSchedules() {
 
 async function runScheduleNow(schedule) {
   if (!confirm('Run schedule "' + schedule.name + '" now? This runs the configured check or apply immediately.')) return;
+  beginOperation('Queued schedule — ' + schedule.name, 'The scheduler will start the next run.');
   try {
     await api('/api/v1/schedules/' + encodeURIComponent(schedule.id) + '/run', { method: 'POST', body: '{}' });
     toast('Schedule queued: ' + schedule.name, 'ok');
     await new Promise((resolve) => setTimeout(resolve, 1500));
-    await loadAll();
+    finishOperation('Schedule started — ' + schedule.name, 'Live run status will appear above.');
+    await loadAll({ force: true });
   } catch (error) {
+    finishOperation('Schedule failed — ' + schedule.name, error.message, true);
     toast(error.message, 'error');
   }
 }
@@ -2256,12 +2398,14 @@ async function fleetUpdateHelpers(hosts = null) {
   let ok = 0;
   let failed = 0;
   let skipped = 0;
+  beginOperation('Updating helpers', 'Starting with ' + targets.length + ' host(s)…', targets.length);
   try {
     for (let index = 0; index < targets.length; index++) {
       if (cancelled) break;
       const host = targets[index];
       setStatus(host, 'running', 'unknown', 'connecting…');
       summary.textContent = 'Updating ' + (index + 1) + ' of ' + targets.length + '…';
+      updateOperation('Updating helper on ' + host.name + ' (' + (index + 1) + ' of ' + targets.length + ')…', index, targets.length);
       try {
         const password = await passwordFor(host);
         if (cancelled) break;
@@ -2297,12 +2441,14 @@ async function fleetUpdateHelpers(hosts = null) {
     summary.textContent = (cancelled || stopping)
       ? 'Stopped. Updated ' + ok + ', failed ' + failed + ', skipped ' + skipped + '.'
       : 'Finished. Updated ' + ok + ', failed ' + failed + ', skipped ' + skipped + '.';
-    await loadAll();
+    finishOperation('Helper update finished', 'Updated ' + ok + ' · failed ' + failed + ' · skipped ' + skipped, failed > 0);
+    await loadAll({ force: true });
   }
 }
 
 async function collectFacts(host) {
   toast('Collecting facts from ' + host.name + '…');
+  beginOperation('Collecting facts — ' + host.name, 'Running the fixed helper…');
   try {
     const password = await passwordFor(host);
     await requestWithSudo(
@@ -2312,8 +2458,10 @@ async function collectFacts(host) {
       { method: 'POST' },
     );
     toast('Facts collected from ' + host.name, 'ok');
-    await loadAll();
+    finishOperation('Facts collected — ' + host.name, 'Host state refreshed.');
+    await loadAll({ force: true });
   } catch (error) {
+    finishOperation('Facts failed — ' + host.name, error.message, true);
     if (error.message !== 'cancelled') toast(error.message, 'error');
   }
 }
@@ -2387,12 +2535,14 @@ async function fleetCollectFacts(hosts) {
   let ok = 0;
   let failed = 0;
   let skipped = 0;
+  beginOperation('Collecting facts', 'Starting with ' + targets.length + ' host(s)…', targets.length);
   try {
     for (let index = 0; index < targets.length; index++) {
       if (cancelled) break;
       const host = targets[index];
       setStatus(host, 'running', 'unknown', 'collecting…');
       summary.textContent = 'Collecting ' + (index + 1) + ' of ' + targets.length + '…';
+      updateOperation('Collecting facts from ' + host.name + ' (' + (index + 1) + ' of ' + targets.length + ')…', index, targets.length);
       try {
         const password = await passwordFor(host);
         if (cancelled) break;
@@ -2428,13 +2578,150 @@ async function fleetCollectFacts(hosts) {
     summary.textContent = (cancelled || stopping)
       ? 'Stopped. Collected ' + ok + ', failed ' + failed + ', skipped ' + skipped + '.'
       : 'Finished. Collected ' + ok + ', failed ' + failed + ', skipped ' + skipped + '.';
-    await loadAll();
+    finishOperation('Facts collection finished', 'Collected ' + ok + ' · failed ' + failed + ' · skipped ' + skipped, failed > 0);
+    await loadAll({ force: true });
   }
+}
+
+function previewCounts(preview) {
+  const counts = (preview && preview.counts) || {};
+  return {
+    upgrade: Number(counts.upgrade || 0),
+    install: Number(counts.install || 0),
+    remove: Number(counts.remove || 0),
+    downgrade: Number(counts.downgrade || 0),
+    reinstall: Number(counts.reinstall || 0),
+  };
+}
+
+function previewTotal(preview) {
+  const counts = previewCounts(preview);
+  return counts.upgrade + counts.install + counts.remove + counts.downgrade + counts.reinstall;
+}
+
+function previewChips(preview) {
+  const counts = previewCounts(preview);
+  const wrap = el('div', 'preview-summary');
+  const add = (label, value, cls) => {
+    const chip = el('span', 'preview-count ' + cls);
+    chip.append(document.createTextNode(label + ' '), el('b', '', String(value)));
+    wrap.append(chip);
+  };
+  add('Upgrade', counts.upgrade, 'upgrade');
+  add('Install', counts.install, 'install');
+  add('Remove', counts.remove, 'remove');
+  if (counts.downgrade) add('Downgrade', counts.downgrade, 'upgrade');
+  if (counts.reinstall) add('Reinstall', counts.reinstall, 'install');
+  return wrap;
+}
+
+function appendPreviewGroup(parent, title, action, changes) {
+  if (!changes.length) return;
+  const group = el('div', 'preview-group');
+  const head = el('div', 'preview-group-head');
+  head.append(document.createTextNode(title), el('span', 'badge ' + (action === 'remove' ? 'red' : action === 'upgrade' || action === 'downgrade' ? 'amber' : 'green'), String(changes.length)));
+  group.append(head);
+  const table = el('table', 'preview-table');
+  const header = el('tr');
+  header.append(el('th', '', 'Package'));
+  if (action === 'remove') {
+    header.append(el('th', '', 'Current version'));
+  } else if (action === 'upgrade' || action === 'downgrade') {
+    header.append(el('th', '', 'From'), el('th', '', 'To'));
+  } else {
+    header.append(el('th', '', 'Version'), el('th', '', 'Repository'));
+  }
+  table.append(header);
+  for (const change of changes) {
+    const row = el('tr');
+    row.append(el('td', '', change.name));
+    if (action === 'remove') {
+      row.append(el('td', 'version remove-version', change.old_version || '—'));
+    } else if (action === 'upgrade' || action === 'downgrade') {
+      row.append(
+        el('td', 'version', change.old_version || '—'),
+        el('td', 'version new-version', change.new_version || '—'),
+      );
+    } else {
+      row.append(
+        el('td', 'version', change.new_version || '—'),
+        el('td', 'version', change.repository || '—'),
+      );
+    }
+    table.append(row);
+  }
+  group.append(table);
+  parent.append(group);
+}
+
+function renderPackagePreview(container, preview) {
+  container.replaceChildren();
+  container.append(previewChips(preview));
+  const packages = preview.packages || [];
+  const groups = [
+    ['Upgrades', 'upgrade'],
+    ['Downgrades', 'downgrade'],
+    ['Installs', 'install'],
+    ['Removals', 'remove'],
+    ['Reinstalls', 'reinstall'],
+  ];
+  for (const [label, action] of groups) {
+    appendPreviewGroup(container, label, action, packages.filter((change) => change.action === action));
+  }
+  if (!packages.length) {
+    container.append(el('div', 'preview-empty', 'No package changes detected. Nothing to apply.'));
+  }
+  for (const warning of preview.warnings || []) {
+    container.append(el('p', 'preview-warning', warning));
+  }
+  if (preview.output) {
+    const raw = el('details', 'preview-raw');
+    raw.append(el('summary', '', 'Raw package-manager output'));
+    raw.append(el('pre', '', preview.output));
+    container.append(raw);
+  }
+}
+
+async function fetchPatchPreview(host, sharedSudo = null) {
+  const password = await passwordFor(host);
+  return requestWithSudo(
+    host,
+    '/api/v1/hosts/' + encodeURIComponent(host.id) + '/patch/preview',
+    (sudoPassword) => ({ password, sudo_password: sudoPassword }),
+    { method: 'POST' },
+    sharedSudo,
+  );
+}
+
+function showPreviewDetailsModal(host, preview) {
+  const body = el('div', 'modal-body');
+  const summary = el('div', 'status-list');
+  const row = (label, value) => {
+    const div = el('div');
+    div.append(el('span', '', label), el('b', '', value));
+    return div;
+  };
+  summary.append(
+    row('Host', host.name),
+    row('Package manager', preview.package_manager || 'unknown'),
+    row('Reboot required', preview.reboot_required ? 'yes' : 'no'),
+  );
+  body.append(summary);
+  const previewBox = el('div');
+  renderPackagePreview(previewBox, preview);
+  body.append(previewBox);
+  const actions = el('div', 'modal-actions');
+  const close = el('button', 'btn', 'Close');
+  close.type = 'button';
+  actions.append(close);
+  body.append(actions);
+  const closeFn = openModal('Package details — ' + host.name, body, null, 'wide');
+  close.addEventListener('click', closeFn);
 }
 
 function showPatchModal(host) {
   const body = el('div', 'modal-body');
-  body.append(el('p', 'muted', 'Dry-run shows what would change. Apply runs the root-owned helper on the target.'));
+  body.append(el('p', 'muted', 'HIBP resolves the package transaction first. Nothing is installed, upgraded, or removed until you review the list and confirm.'));
   const facts = host.facts || {};
   const summary = el('div', 'status-list');
   const row = (label, value) => {
@@ -2444,10 +2731,22 @@ function showPatchModal(host) {
   };
   summary.append(
     row('Host', host.name),
+    row('Package manager', facts.package_manager || 'unknown'),
     row('Pending updates', String(facts.pending_updates || 0)),
-    row('Reboot required', facts.reboot_required ? 'yes' : 'no')
+    row('Reboot required', facts.reboot_required ? 'yes' : 'no'),
   );
   body.append(summary);
+  const previewBox = el('div');
+  previewBox.append(el('div', 'muted', 'Resolving package changes…'));
+  body.append(previewBox);
+  const confirmWrap = el('label', 'field preview-confirm hidden');
+  confirmWrap.append(el('span', '', 'This preview includes removals. Type APPLY to confirm.'));
+  const confirmInput = el('input');
+  confirmInput.type = 'text';
+  confirmInput.autocomplete = 'off';
+  confirmInput.placeholder = 'APPLY';
+  confirmWrap.append(confirmInput);
+  body.append(confirmWrap);
   const rebootAfterPatch = el('label', 'field checkbox-field');
   const rebootCheck = el('input');
   rebootCheck.type = 'checkbox';
@@ -2456,37 +2755,114 @@ function showPatchModal(host) {
   const actions = el('div', 'modal-actions');
   const cancel = el('button', 'btn', 'Cancel');
   cancel.type = 'button';
-  const dry = el('button', 'btn', 'Dry run');
-  dry.type = 'button';
+  const refresh = el('button', 'btn', 'Re-preview');
+  refresh.type = 'button';
   const apply = el('button', 'btn danger', 'Apply updates');
   apply.type = 'button';
-  actions.append(cancel, dry, apply);
+  apply.disabled = true;
+  actions.append(cancel, refresh, apply);
   body.append(actions);
-  const close = openModal('Patch — ' + host.name, body);
-  cancel.addEventListener('click', close);
-  dry.addEventListener('click', () => { close(); patchHost(host, true); });
-  apply.addEventListener('click', () => { close(); patchHost(host, false, rebootCheck.checked); });
+  const close = openModal('Patch preview — ' + host.name, body, null, 'wide');
+  let current = null;
+  let cancelled = false;
+  const syncApply = () => {
+    const counts = current ? previewCounts(current.preview) : { remove: 0 };
+    const total = current ? previewTotal(current.preview) : 0;
+    const confirmed = counts.remove === 0 || confirmInput.value.trim().toUpperCase() === 'APPLY';
+    apply.disabled = !current || total === 0 || !confirmed;
+  };
+  const load = async () => {
+    current = null;
+    apply.disabled = true;
+    refresh.disabled = true;
+    confirmWrap.classList.add('hidden');
+    previewBox.replaceChildren(el('div', 'muted', 'Resolving package changes…'));
+    beginOperation('Patch preview — ' + host.name, 'Resolving package changes with ' + (facts.package_manager || 'the package manager') + '…');
+    try {
+      const response = await fetchPatchPreview(host);
+      if (cancelled) return;
+      current = response;
+      renderPackagePreview(previewBox, response.preview);
+      const counts = previewCounts(response.preview);
+      const total = previewTotal(response.preview);
+      if (counts.remove > 0) {
+        confirmWrap.classList.remove('hidden');
+        confirmInput.value = '';
+      }
+      syncApply();
+      finishOperation(
+        total ? 'Patch preview ready — ' + host.name : 'Everything is up to date — ' + host.name,
+        total ? total + ' package change(s) reviewed' : 'No package changes found.',
+      );
+    } catch (error) {
+      previewBox.replaceChildren(el('div', 'preview-warning', error.message));
+      previewBox.append(el('p', 'muted', 'If this host is running an older HIBP helper, run Setup / Update helpers first so the fixed preview action is installed.'));
+      finishOperation('Patch preview failed — ' + host.name, error.message, true);
+    } finally {
+      refresh.disabled = false;
+    }
+  };
+  cancel.addEventListener('click', () => {
+    cancelled = true;
+    if (operationState.active) finishOperation('Patch preview cancelled', 'No changes were made.');
+    close();
+  });
+  refresh.addEventListener('click', () => {
+    cancelled = false;
+    load();
+  });
+  confirmInput.addEventListener('input', syncApply);
+  apply.addEventListener('click', () => {
+    if (!current) return;
+    const counts = previewCounts(current.preview);
+    if (counts.remove > 0 && confirmInput.value.trim().toUpperCase() !== 'APPLY') return;
+    if (!confirm('Apply these package changes on ' + host.name + '? This runs the root-owned helper on the target.')) return;
+    close();
+    applyPatchHost(host, current.preview, current.preview_hash, rebootCheck.checked);
+  });
+  load();
 }
 
-async function patchHost(host, dryRun, rebootAfterPatch = false) {
-  if (!dryRun && !confirm('Apply updates on ' + host.name + '? This runs the root-owned helper on the target.')) return;
-  toast((dryRun ? 'Checking' : 'Applying updates on') + ' ' + host.name + '…');
+async function applyPatchHost(host, preview, previewHash, rebootAfterPatch = false) {
+  const counts = previewCounts(preview);
+  beginOperation('Applying updates — ' + host.name, 'Running the package manager. Keep this tab open.');
   try {
     const password = await passwordFor(host);
     const result = await requestWithSudo(
       host,
       '/api/v1/hosts/' + encodeURIComponent(host.id) + '/patch',
       (sudoPassword) => ({
-        dry_run: dryRun, confirm: dryRun ? '' : 'apply', password, sudo_password: sudoPassword,
-        reboot_after_patch: !dryRun && rebootAfterPatch,
+        dry_run: false, confirm: 'apply', preview_hash: previewHash,
+        allow_removals: counts.remove > 0,
+        password, sudo_password: sudoPassword,
+        reboot_after_patch: rebootAfterPatch,
       }),
       { method: 'POST' },
     );
-    showOutputModal((dryRun ? 'Patch check' : 'Patch run') + ' — ' + host.name, result);
-    if (!dryRun && result.reboot_requested) toast('Reboot requested on ' + host.name, 'ok');
-    if (!dryRun && result.reboot_error) toast('Patch applied, but reboot failed on ' + host.name + ': ' + result.reboot_error, 'error');
-    await loadAll();
+    if (result.no_changes) {
+      finishOperation('Nothing to apply — ' + host.name, 'The package state is already current.');
+    } else if (result.ok) {
+      finishOperation('Patch complete — ' + host.name, result.facts ? 'Facts refreshed automatically.' : 'Updates applied.');
+    } else {
+      finishOperation('Patch failed — ' + host.name, result.error || 'The package manager reported an error.', true);
+    }
+    showOutputModal('Patch run — ' + host.name, result);
+    if (!result.ok && result.error) toast(result.error, 'error');
+    await loadAll({ force: true });
   } catch (error) {
+    if (error.status === 409 && error.data && error.data.code === 'preview_changed') {
+      finishOperation('Preview changed — ' + host.name, 'The package list changed before apply. Re-open the preview.', true);
+      toast('The package list changed. Review it again before applying.', 'error');
+      showPatchModal(host);
+      return;
+    }
+    if (error.status === 400 && error.data && error.data.code === 'removals_not_confirmed') {
+      finishOperation('Removals need confirmation — ' + host.name, 'The preview includes removals.', true);
+      toast('This preview includes package removals. Confirm them first.', 'error');
+      showPatchModal(host);
+      return;
+    }
+    finishOperation('Patch failed — ' + host.name, error.message, true);
     if (error.message !== 'cancelled') toast(error.message, 'error');
   }
 }
@@ -2502,7 +2878,7 @@ function showFleetPatchModal(hosts) {
     return;
   }
   const body = el('div', 'modal-body');
-  body.append(el('p', 'muted', 'Dry-run shows what would change. Apply runs the root-owned helper on each selected host, one at a time. Keep this tab open.'));
+  body.append(el('p', 'muted', 'HIBP previews every selected host first. Nothing is changed until you review the package lists and confirm.'));
   const summary = el('div', 'status-list');
   const row = (label, value) => {
     const div = el('div');
@@ -2510,67 +2886,165 @@ function showFleetPatchModal(hosts) {
     return div;
   };
   const pending = targets.reduce((sum, host) => sum + Number((host.facts || {}).pending_updates || 0), 0);
-  const reboots = targets.filter((host) => (host.facts || {}).reboot_required).length;
   summary.append(
     row('Selected hosts', String(targets.length)),
     row('Pending updates', String(pending)),
-    row('Reboot required', String(reboots)),
   );
   body.append(summary);
-  const wrap = el('div', 'scroll-list');
+  const wrap = el('div', 'fleet-update-list');
   const table = el('table');
   const head = el('tr');
-  for (const label of ['Host', 'Pending', 'Reboot']) head.append(el('th', '', label));
+  for (const label of ['Host', 'Status', 'Upgrade', 'Install', 'Remove', 'Reboot', 'Details']) head.append(el('th', '', label));
   table.append(head);
-  for (const host of targets) {
-    const facts = host.facts || {};
-    const tr = el('tr');
-    tr.append(
-      el('td', '', host.name),
-      el('td', '', String(facts.pending_updates || 0)),
-      el('td', '', facts.reboot_required ? 'yes' : 'no'),
-    );
-    table.append(tr);
-  }
   wrap.append(table);
   body.append(wrap);
-  body.append(el('p', 'muted', 'Hosts with an untrusted key, missing helper, or failed SSH connection are reported individually and do not stop the rest of the batch.'));
+  const confirmWrap = el('label', 'field preview-confirm hidden');
+  confirmWrap.append(el('span', '', 'At least one host has package removals. Type APPLY to confirm all removals.'));
+  const confirmInput = el('input');
+  confirmInput.type = 'text';
+  confirmInput.autocomplete = 'off';
+  confirmInput.placeholder = 'APPLY';
+  confirmWrap.append(confirmInput);
+  body.append(confirmWrap);
   const rebootAfterPatch = el('label', 'field checkbox-field');
   const rebootCheck = el('input');
   rebootCheck.type = 'checkbox';
-  rebootAfterPatch.append(rebootCheck, document.createTextNode('Reboot automatically after apply when the target reports a reboot is required'));
+  rebootAfterPatch.append(rebootCheck, document.createTextNode('Reboot automatically after apply when a target reports a reboot is required'));
   body.append(rebootAfterPatch);
   const actions = el('div', 'modal-actions');
   const cancel = el('button', 'btn', 'Cancel');
   cancel.type = 'button';
-  const dry = el('button', 'btn', 'Dry run');
-  dry.type = 'button';
-  const apply = el('button', 'btn danger', 'Apply updates');
+  const refresh = el('button', 'btn', 'Re-preview all');
+  refresh.type = 'button';
+  const apply = el('button', 'btn danger', 'Apply reviewed updates');
   apply.type = 'button';
-  actions.append(cancel, dry, apply);
+  apply.disabled = true;
+  actions.append(cancel, refresh, apply);
   body.append(actions);
-  const close = openModal((targets.length === 1 ? 'Patch selected host' : 'Patch ' + targets.length + ' selected hosts'), body);
-  cancel.addEventListener('click', close);
-  dry.addEventListener('click', () => { close(); fleetPatchHosts(targets, true); });
-  apply.addEventListener('click', () => {
-    if (!confirm('Apply updates on ' + targets.length + ' selected host(s)? This runs the root-owned helper on each target.')) return;
+  const close = openModal('Patch preview — ' + targets.length + ' selected host' + (targets.length === 1 ? '' : 's'), body, null, 'wide');
+  const rows = new Map();
+  const previews = new Map();
+  let totalRemovals = 0;
+  let cancelled = false;
+  const rowFor = (host) => {
+    let entry = rows.get(host.id);
+    if (entry) return entry;
+    const status = el('span', 'pill unknown', 'pending');
+    const statusCell = el('td');
+    statusCell.append(status);
+    const upgrade = el('td', '', '—');
+    const install = el('td', '', '—');
+    const remove = el('td', '', '—');
+    const reboot = el('td', '', (host.facts || {}).reboot_required ? 'yes' : 'no');
+    const details = el('td');
+    const detailsButton = el('button', 'link-button preview-detail-link', 'View');
+    detailsButton.type = 'button';
+    detailsButton.disabled = true;
+    details.append(detailsButton);
+    const tr = el('tr');
+    tr.append(el('td', '', host.name), statusCell, upgrade, install, remove, reboot, details);
+    table.append(tr);
+    entry = { row: tr, status, upgrade, install, remove, details: detailsButton };
+    rows.set(host.id, entry);
+    detailsButton.addEventListener('click', () => {
+      const preview = previews.get(host.id);
+      if (preview) showPreviewDetailsModal(host, preview.preview);
+    });
+    return entry;
+  };
+  const syncApply = () => {
+    const confirmed = totalRemovals === 0 || confirmInput.value.trim().toUpperCase() === 'APPLY';
+    const withChanges = [...previews.values()].some((entry) => previewTotal(entry.preview) > 0);
+    apply.disabled = !withChanges || !confirmed;
+  };
+  const previewAll = async () => {
+    cancelled = false;
+    previews.clear();
+    totalRemovals = 0;
+    apply.disabled = true;
+    refresh.disabled = true;
+    confirmWrap.classList.add('hidden');
+    for (const host of targets) {
+      const entry = rowFor(host);
+      entry.status.textContent = 'pending';
+      entry.status.className = 'pill unknown';
+      entry.upgrade.textContent = entry.install.textContent = entry.remove.textContent = '—';
+      entry.details.disabled = true;
+    }
+    beginOperation('Patch preview — ' + targets.length + ' host' + (targets.length === 1 ? '' : 's'), 'Resolving package changes…', targets.length);
+    const sharedSudo = { value: '' };
+    let ready = 0;
+    let failed = 0;
+    for (let index = 0; index < targets.length; index++) {
+      if (cancelled) break;
+      const host = targets[index];
+      const entry = rowFor(host);
+      entry.status.textContent = 'previewing';
+      entry.status.className = 'pill unknown';
+      updateOperation('Resolving ' + host.name + ' (' + (index + 1) + ' of ' + targets.length + ')…', index, targets.length);
+      try {
+        const response = await fetchPatchPreview(host, sharedSudo);
+        if (cancelled) break;
+        const counts = previewCounts(response.preview);
+        previews.set(host.id, response);
+        totalRemovals += counts.remove;
+        entry.status.textContent = previewTotal(response.preview) ? 'ready' : 'up to date';
+        entry.status.className = 'pill ' + (previewTotal(response.preview) ? 'review' : 'reachable');
+        entry.upgrade.textContent = String(counts.upgrade + counts.downgrade + counts.reinstall);
+        entry.install.textContent = String(counts.install);
+        entry.remove.textContent = String(counts.remove);
+        entry.details.disabled = false;
+        ready++;
+      } catch (error) {
+        entry.status.textContent = 'preview failed';
+        entry.status.className = 'pill unreachable';
+        entry.upgrade.textContent = entry.install.textContent = entry.remove.textContent = '—';
+        failed++;
+      }
+      updateOperation('Previewed ' + (index + 1) + ' of ' + targets.length + ' hosts', index + 1, targets.length);
+    }
+    refresh.disabled = false;
+    if (totalRemovals > 0) confirmWrap.classList.remove('hidden');
+    syncApply();
+    finishOperation(
+      failed ? 'Patch preview finished with errors' : 'Patch preview ready',
+      ready + ' ready' + (failed ? ' · ' + failed + ' failed' : '') + ' · ' + totalRemovals + ' removal(s)',
+      failed > 0,
+    );
+  };
+  cancel.addEventListener('click', () => {
+    cancelled = true;
+    if (operationState.active) finishOperation('Patch preview cancelled', 'No changes were made.');
     close();
-    fleetPatchHosts(targets, false, rebootCheck.checked);
   });
+  refresh.addEventListener('click', previewAll);
+  confirmInput.addEventListener('input', syncApply);
+  apply.addEventListener('click', () => {
+    const confirmed = totalRemovals === 0 || confirmInput.value.trim().toUpperCase() === 'APPLY';
+    if (!confirmed) return;
+    const selected = targets.filter((host) => previews.has(host.id) && previewTotal(previews.get(host.id).preview) > 0);
+    if (!selected.length) {
+      toast('No package changes to apply', 'error');
+      return;
+    }
+    if (!confirm('Apply the reviewed package changes on ' + selected.length + ' host(s)? This runs the root-owned helper on each target.')) return;
+    close();
+    fleetApplyHosts(selected, previews, rebootCheck.checked);
+  });
+  previewAll();
 }
 
-async function fleetPatchHosts(hosts, dryRun, rebootAfterPatch = false) {
+async function fleetApplyHosts(hosts, previews, rebootAfterPatch = false) {
   if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning || fleetCleanupRunning) {
     toast('Another fleet operation is already running', 'error');
     return;
   }
   const targets = hosts.slice();
   if (!targets.length) return;
-
   fleetPatchRunning = true;
   let cancelled = false;
   const body = el('div', 'modal-body');
-  body.append(el('p', 'muted', (dryRun ? 'Checking' : 'Applying updates') + ' sequentially. Keep this tab open.'));
+  body.append(el('p', 'muted', 'Applying the reviewed package lists sequentially. Keep this tab open. HIBP re-checks each preview immediately before applying and refuses if the package list changed.'));
   const summary = el('div', 'muted', 'Preparing…');
   const wrap = el('div', 'fleet-update-list');
   const table = el('table');
@@ -2584,28 +3058,27 @@ async function fleetPatchHosts(hosts, dryRun, rebootAfterPatch = false) {
   stop.type = 'button';
   actions.append(stop);
   body.append(actions);
-  const close = openModal(dryRun ? 'Selected patch check' : 'Selected patch run', body, () => { cancelled = true; });
+  const close = openModal('Apply reviewed updates', body, () => { cancelled = true; });
   const rows = new Map();
   const rowFor = (host) => {
-    let row = rows.get(host.id);
-    if (row) return row;
+    let entry = rows.get(host.id);
+    if (entry) return entry;
     const status = el('span', 'pill unknown', 'pending');
     const statusCell = el('td');
     statusCell.append(status);
     const detail = el('td', 'muted', '—');
-    row = el('tr');
-    row.append(el('td', '', host.name), statusCell, detail);
-    table.append(row);
-    row.status = status;
-    row.detail = detail;
-    rows.set(host.id, row);
-    return row;
+    const tr = el('tr');
+    tr.append(el('td', '', host.name), statusCell, detail);
+    table.append(tr);
+    entry = { status, detail };
+    rows.set(host.id, entry);
+    return entry;
   };
   const setStatus = (host, label, cls, detail) => {
-    const row = rowFor(host);
-    row.status.textContent = label;
-    row.status.className = 'pill ' + cls;
-    row.detail.textContent = detail || '—';
+    const entry = rowFor(host);
+    entry.status.textContent = label;
+    entry.status.className = 'pill ' + cls;
+    entry.detail.textContent = detail || '—';
   };
   let stopping = false;
   stop.addEventListener('click', () => {
@@ -2619,43 +3092,52 @@ async function fleetPatchHosts(hosts, dryRun, rebootAfterPatch = false) {
     }
     close();
   });
-
   const sharedSudo = { value: '' };
   let ok = 0;
   let failed = 0;
   let skipped = 0;
+  beginOperation('Applying reviewed updates', 'Starting with ' + targets.length + ' host(s)…', targets.length);
   try {
     for (let index = 0; index < targets.length; index++) {
       if (cancelled) break;
       const host = targets[index];
-      setStatus(host, 'running', 'unknown', 'connecting…');
-      summary.textContent = (dryRun ? 'Checking ' : 'Updating ') + (index + 1) + ' of ' + targets.length + '…';
+      const preview = previews.get(host.id);
+      if (!preview) {
+        setStatus(host, 'skipped', 'review', 'no preview available');
+        skipped++;
+        continue;
+      }
+      setStatus(host, 'running', 'unknown', 're-checking preview…');
+      summary.textContent = 'Applying ' + (index + 1) + ' of ' + targets.length + '…';
+      updateOperation('Applying ' + host.name + ' (' + (index + 1) + ' of ' + targets.length + ')…', index, targets.length);
       try {
         const password = await passwordFor(host);
         if (cancelled) break;
+        const counts = previewCounts(preview.preview);
         const result = await requestWithSudo(
           host,
           '/api/v1/hosts/' + encodeURIComponent(host.id) + '/patch',
           (sudoPassword) => ({
-            dry_run: dryRun, confirm: dryRun ? '' : 'apply', password, sudo_password: sudoPassword,
-            reboot_after_patch: !dryRun && rebootAfterPatch,
+            dry_run: false, confirm: 'apply', preview_hash: preview.preview_hash,
+            allow_removals: counts.remove > 0,
+            password, sudo_password: sudoPassword,
+            reboot_after_patch: rebootAfterPatch,
           }),
           { method: 'POST' },
           sharedSudo,
         );
-        const exitCode = Number(result.exit_code ?? 0);
-        let detail = dryRun
-          ? (exitCode === 100 ? 'updates available' : 'up to date')
-          : (result.ok ? 'patched' : 'exit ' + exitCode);
-        if (!dryRun && result.reboot_requested) detail += ' · reboot requested';
-        if (!dryRun && result.reboot_required && !result.reboot_requested) detail += ' · reboot still required';
-        if (!dryRun && result.reboot_error) detail += ' · reboot failed: ' + result.reboot_error;
-        if (result.ok) {
-          const needsReview = !dryRun && (result.reboot_error || (result.reboot_required && !result.reboot_requested));
-          setStatus(host, dryRun ? 'checked' : 'patched', needsReview ? 'review' : 'reachable', detail);
+        if (result.no_changes) {
+          setStatus(host, 'up to date', 'reachable', 'no package changes');
+          skipped++;
+        } else if (result.ok) {
+          let detail = result.facts ? 'patched · facts refreshed' : 'patched';
+          if (result.reboot_requested) detail += ' · reboot requested';
+          if (result.reboot_required && !result.reboot_requested) detail += ' · reboot still required';
+          if (result.reboot_error) detail += ' · reboot failed: ' + result.reboot_error;
+          setStatus(host, 'patched', result.reboot_error ? 'review' : 'reachable', detail);
           ok++;
         } else {
-          setStatus(host, 'failed', 'unreachable', detail);
+          setStatus(host, 'failed', 'unreachable', result.error || ('exit ' + Number(result.exit_code ?? 0)));
           failed++;
         }
       } catch (error) {
@@ -2664,6 +3146,13 @@ async function fleetPatchHosts(hosts, dryRun, rebootAfterPatch = false) {
           skipped++;
           cancelled = true;
           break;
+        }
+        if (error.status === 409 && error.data && error.data.code === 'preview_changed') {
+          setStatus(host, 'review', 'review', 'package list changed — re-run preview');
+          skipped++;
+        } else if (error.status === 400 && error.data && error.data.code === 'removals_not_confirmed') {
+          setStatus(host, 'review', 'review', 'removals were not confirmed');
+          skipped++;
         } else if (error.status === 409 && error.data && error.data.code === 'host_busy') {
           setStatus(host, 'failed', 'unreachable', 'another operation is running');
           failed++;
@@ -2672,6 +3161,7 @@ async function fleetPatchHosts(hosts, dryRun, rebootAfterPatch = false) {
           failed++;
         }
       }
+      updateOperation('Applied ' + (index + 1) + ' of ' + targets.length + ' hosts', index + 1, targets.length);
     }
   } finally {
     fleetPatchRunning = false;
@@ -2681,7 +3171,8 @@ async function fleetPatchHosts(hosts, dryRun, rebootAfterPatch = false) {
     summary.textContent = (cancelled || stopping)
       ? 'Stopped. Succeeded ' + ok + ', failed ' + failed + ', skipped ' + skipped + '.'
       : 'Finished. Succeeded ' + ok + ', failed ' + failed + ', skipped ' + skipped + '.';
-    await loadAll();
+    finishOperation('Patch run finished', 'Succeeded ' + ok + ' · failed ' + failed + ' · skipped ' + skipped, failed > 0);
+    await loadAll({ force: true });
   }
 }
 
@@ -2840,12 +3331,14 @@ async function fleetRebootHosts(hosts) {
   let failed = 0;
   let skipped = 0;
   let unconfirmed = 0;
+  beginOperation('Rebooting selected hosts', 'Starting with ' + targets.length + ' host(s)…', targets.length);
   try {
     for (let index = 0; index < targets.length; index++) {
       if (cancelled) break;
       const host = targets[index];
       setStatus(host, 'running', 'unknown', 'connecting…');
       summary.textContent = 'Rebooting ' + (index + 1) + ' of ' + targets.length + '…';
+      updateOperation('Rebooting ' + host.name + ' (' + (index + 1) + ' of ' + targets.length + ')…', index, targets.length);
       try {
         const password = await passwordFor(host);
         if (cancelled) break;
@@ -2894,13 +3387,15 @@ async function fleetRebootHosts(hosts) {
     summary.textContent = (cancelled || stopping)
       ? 'Stopped. Requested ' + ok + ', failed ' + failed + ', skipped ' + skipped + suffix + '.'
       : 'Finished. Requested ' + ok + ', failed ' + failed + ', skipped ' + skipped + suffix + '.';
-    await loadAll();
+    finishOperation('Reboot request finished', 'Requested ' + ok + ' · failed ' + failed + ' · skipped ' + skipped + suffix, failed > 0);
+    await loadAll({ force: true });
   }
 }
 
 async function rebootHost(host) {
   if (!confirm('Reboot ' + host.name + ' now? The host will go down immediately and the SSH connection may drop.')) return;
   toast('Rebooting ' + host.name + '…');
+  beginOperation('Rebooting — ' + host.name, 'Requesting a reboot through the fixed helper…');
   try {
     const password = await passwordFor(host);
     const result = await requestWithSudo(
@@ -2913,8 +3408,10 @@ async function rebootHost(host) {
       ...result,
       output: result.output || 'Reboot request accepted. The host may disconnect now.',
     });
-    await loadAll();
+    finishOperation('Reboot requested — ' + host.name, 'The host may disconnect now.', !result.ok);
+    await loadAll({ force: true });
   } catch (error) {
+    finishOperation('Reboot failed — ' + host.name, error.message, true);
     if (error.message !== 'cancelled') toast(error.message, 'error');
   }
 }
@@ -2924,6 +3421,7 @@ function showCleanupModal(host) {
   body.append(el('p', 'muted', 'Checking for orphaned packages on ' + host.name + '…'));
   const close = openModal('Cleanup — ' + host.name, body);
   (async () => {
+    beginOperation('Cleanup preview — ' + host.name, 'Scanning for orphaned packages…');
     try {
       const password = await passwordFor(host);
       const result = await requestWithSudo(
@@ -2933,9 +3431,11 @@ function showCleanupModal(host) {
         { method: 'POST' },
       );
       close();
+      finishOperation('Cleanup preview ready — ' + host.name, (result.packages || []).length + ' orphaned package(s)');
       showCleanupPreview(host, result);
     } catch (error) {
       close();
+      finishOperation('Cleanup preview failed — ' + host.name, error.message, true);
       if (error.message !== 'cancelled') toast(error.message, 'error');
     }
   })();
@@ -3031,6 +3531,7 @@ function showCleanupPreview(host, preview) {
 
 async function applyCleanup(host) {
   toast('Removing orphaned packages on ' + host.name + '…');
+  beginOperation('Removing orphaned packages — ' + host.name, 'Running the fixed helper on the target…');
   try {
     const password = await passwordFor(host);
     const result = await requestWithSudo(
@@ -3047,13 +3548,17 @@ async function applyCleanup(host) {
       output: result.output || result.error || 'Cleanup finished.',
     });
     if (result.ok) {
+      finishOperation('Cleanup complete — ' + host.name,
+        result.remaining >= 0 ? result.remaining + ' package(s) remaining' : 'Removal finished.');
       toast('Cleanup finished on ' + host.name +
         (result.remaining >= 0 ? ', ' + result.remaining + ' package(s) remaining' : ''), 'ok');
-    } else if (result.error) {
-      toast(result.error, 'error');
+    } else {
+      finishOperation('Cleanup failed — ' + host.name, result.error || 'The helper reported an error.', true);
+      if (result.error) toast(result.error, 'error');
     }
-    await loadAll();
+    await loadAll({ force: true });
   } catch (error) {
+    finishOperation('Cleanup failed — ' + host.name, error.message, true);
     if (error.message !== 'cancelled') toast(error.message, 'error');
   }
 }
@@ -3729,6 +4234,7 @@ async function applyDockerProject(host, project, reload) {
 async function checkAllDockerProjects(host, reload) {
   if (!confirm('Pull the latest images for all Compose projects on "' + host.name + '"? Running containers will not be restarted.')) return;
   toast('Checking all Docker Compose projects on ' + host.name + '…');
+  beginOperation('Docker check — ' + host.name, 'Pulling images and comparing project state…');
   try {
     const password = await passwordFor(host);
     const response = await requestWithSudo(
@@ -3773,8 +4279,10 @@ async function checkAllDockerProjects(host, reload) {
     body.append(actions);
     const closeFn = openModal('Docker check all — ' + ((result.results || []).length) + ' projects', body, null, 'wide');
     close.addEventListener('click', closeFn);
+    finishOperation('Docker check complete — ' + host.name, 'No containers were restarted.');
     await reload();
   } catch (error) {
+    finishOperation('Docker check failed — ' + host.name, error.message, true);
     if (error.message !== 'cancelled') toast(error.message, 'error');
   }
 }
@@ -3788,6 +4296,7 @@ async function updateSelectedDockerProjects(host, projects, reload) {
   const answer = prompt('Type UPDATE to pull images and recreate the ' + selected.length + ' selected Compose project(s) on "' + host.name + '":');
   if (answer !== 'UPDATE') return;
   toast('Updating selected Docker Compose projects on ' + host.name + '…');
+  beginOperation('Docker update — ' + host.name, 'Pulling images and recreating ' + selected.length + ' project(s)…');
   try {
     const password = await passwordFor(host);
     const response = await requestWithSudo(
@@ -3797,8 +4306,10 @@ async function updateSelectedDockerProjects(host, projects, reload) {
       { method: 'POST' },
     );
     showDockerUpdateAllResult(response, 'Docker update selected');
+    finishOperation('Docker update complete — ' + host.name, 'Reviewed projects were recreated.');
     await reload();
   } catch (error) {
+    finishOperation('Docker update failed — ' + host.name, error.message, true);
     if (error.message !== 'cancelled') toast(error.message, 'error');
   }
 }
@@ -3807,6 +4318,7 @@ async function updateAllDockerProjects(host, reload) {
   const answer = prompt('Type UPDATE to pull images and recreate only changed Compose projects on "' + host.name + '":');
   if (answer !== 'UPDATE') return;
   toast('Updating all Docker Compose projects on ' + host.name + '…');
+  beginOperation('Docker update all — ' + host.name, 'Pulling images and recreating changed projects…');
   try {
     const password = await passwordFor(host);
     const response = await requestWithSudo(
@@ -3816,8 +4328,10 @@ async function updateAllDockerProjects(host, reload) {
       { method: 'POST' },
     );
     showDockerUpdateAllResult(response.result || {});
+    finishOperation('Docker update complete — ' + host.name, 'Changed projects were recreated.');
     await reload();
   } catch (error) {
+    finishOperation('Docker update failed — ' + host.name, error.message, true);
     if (error.message !== 'cancelled') toast(error.message, 'error');
   }
 }
@@ -5007,8 +5521,11 @@ function bind() {
   for (const button of document.querySelectorAll('.nav-item[data-view]')) {
     button.addEventListener('click', () => setView(button.dataset.view));
   }
-  $('top-refresh').addEventListener('click', loadAll);
-  $('refresh-button').addEventListener('click', loadAll);
+  $('top-refresh').addEventListener('click', () => loadAll({ force: true }));
+  $('refresh-button').addEventListener('click', () => loadAll({ force: true }));
+  $('auto-refresh-toggle').checked = autoRefreshState.enabled;
+  $('auto-refresh-toggle').addEventListener('change', (event) => setAutoRefresh(event.target.checked));
+  window.setInterval(renderOperationBar, 1000);
   $('top-add-host').addEventListener('click', () => showAddHostModal());
   $('empty-add').addEventListener('click', () => showAddHostModal());
   $('import-button').addEventListener('click', showImportModal);
