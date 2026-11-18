@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -55,6 +56,11 @@ func testServerWithUser(t *testing.T, seedUser bool) (*httptest.Server, *store.S
 
 func testServerWithApp(t *testing.T, seedUser bool) (*httptest.Server, *store.Store, *Server) {
 	t.Helper()
+	return testServerWithConfig(t, seedUser, nil)
+}
+
+func testServerWithConfig(t *testing.T, seedUser bool, mutate func(*Config)) (*httptest.Server, *store.Store, *Server) {
+	t.Helper()
 	dir := t.TempDir()
 	db, err := store.Open(filepath.Join(dir, "inventory.hibp"), []byte("correct horse battery staple"), store.Options{
 		Create: true, KDFTime: 1, KDFMemory: 64 * 1024, KDFThreads: 1,
@@ -74,7 +80,11 @@ func testServerWithApp(t *testing.T, seedUser bool) (*httptest.Server, *store.St
 	if seedUser {
 		seedTestSession(t, db)
 	}
-	app, err := New(Config{Store: db, Version: "test", SSHConfigPath: sshConfigPath})
+	cfg := Config{Store: db, Version: "test", SSHConfigPath: sshConfigPath}
+	if mutate != nil {
+		mutate(&cfg)
+	}
+	app, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,6 +337,72 @@ func TestWebAuthnConfigRequiresLocalhost(t *testing.T) {
 	request.Host = "evil.example:8443"
 	if _, _, err := s.webAuthnConfig(request); err == nil {
 		t.Fatal("expected non-localhost RP ID to be rejected")
+	}
+}
+
+func TestConfiguredPublicURLAllowsLANHost(t *testing.T) {
+	ts, _, app := testServerWithConfig(t, true, func(cfg *Config) {
+		cfg.PublicURL = "https://hibp.lan:8443"
+	})
+	if !app.hostAllowed("hibp.lan") || !app.hostAllowed("localhost") || !app.hostAllowed("127.0.0.1") {
+		t.Fatal("expected the public host and loopback hosts to be allowed")
+	}
+	if app.hostAllowed("evil.example") {
+		t.Fatal("unexpected host was allowed")
+	}
+	if app.webAuthnRPID != "hibp.lan" || app.webAuthnOrigin != "https://hibp.lan:8443" {
+		t.Fatalf("unexpected WebAuthn config: rpID=%q origin=%q", app.webAuthnRPID, app.webAuthnOrigin)
+	}
+	for _, host := range []string{"hibp.lan:8443", "localhost:8443", "127.0.0.1:8443"} {
+		req, err := http.NewRequest(http.MethodGet, ts.URL+"/healthz", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Host = host
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("host %s: expected 200, got %d", host, resp.StatusCode)
+		}
+	}
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/healthz", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "evil.example:8443"
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for an unconfigured Host header, got %d", resp.StatusCode)
+	}
+}
+
+func TestWebAuthnConfigForPublicHost(t *testing.T) {
+	app := &Server{webAuthnRPID: "hibp.lan", webAuthnOrigin: "https://hibp.lan:8443"}
+	request := httptest.NewRequest(http.MethodPost, "https://hibp.lan:8443/api/v1/auth/passkey/register/begin", nil)
+	request.Host = "hibp.lan:8443"
+	request.TLS = &tls.ConnectionState{}
+	rpID, origin, err := app.webAuthnConfig(request)
+	if err != nil || rpID != "hibp.lan" || origin != "https://hibp.lan:8443" {
+		t.Fatalf("unexpected public WebAuthn config: rpID=%q origin=%q err=%v", rpID, origin, err)
+	}
+
+	request.TLS = nil
+	if _, _, err := app.webAuthnConfig(request); err == nil {
+		t.Fatal("expected plain HTTP to be rejected for the public host")
+	}
+
+	request.Host = "localhost:8443"
+	request.TLS = &tls.ConnectionState{}
+	rpID, origin, err = app.webAuthnConfig(request)
+	if err != nil || rpID != "localhost" || origin != "https://localhost:8443" {
+		t.Fatalf("unexpected localhost WebAuthn config: rpID=%q origin=%q err=%v", rpID, origin, err)
 	}
 }
 

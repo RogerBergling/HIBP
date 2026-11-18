@@ -1,12 +1,13 @@
 # HIBP - Have I Been Patched
 
-> **Status: v0.11.0 standalone web-service monitoring release. It adds
-> controller-side HTTP, TCP, and TLS probes that do not need a host
-> assignment, plus a one-click Web service preset. It also includes the
-> v0.10.0 live patch-preview work: package-level upgrade, install, and removal
-> previews, preview-hash revalidation before apply, explicit removal
-> confirmation, a live operation status bar, automatic page refresh, and
-> post-patch facts refresh.**
+> **Status: v0.12.0 adds an optional LAN HTTPS mode with built-in TLS, an
+> explicit public URL, a strict Host-header allowlist, and WebAuthn-origin
+> handling. The v0.11.0 standalone web-service monitoring work remains:
+> controller-side HTTP, TCP, and TLS probes that do not need a host assignment,
+> plus a one-click Web service preset. The v0.10.0 live patch-preview work also
+> remains: package-level upgrade, install, and removal previews, preview-hash
+> revalidation before apply, explicit removal confirmation, a live operation
+> status bar, automatic page refresh, and post-patch facts refresh.**
 > The repository contains a working Go server, browser UI, SQLCipher storage,
 > host CRUD/import, password + TOTP/passkey authentication with post-enrollment
 > MFA management, SSH host-key approval, remote helper installation, fact
@@ -38,7 +39,8 @@
 HIBP is a Linux-first patch management controller. The intended deployment is an
 always-on server that owns the encrypted database and performs collection,
 monitoring, scheduled checks/applies, and explicit patch operations. The
-operator uses a laptop browser through an SSH tunnel. The current release
+operator uses a laptop browser through an SSH tunnel, or through the optional
+LAN HTTPS listener on a trusted private network. The current release
 inventories hosts, checks for pending updates using each distribution's native
 package manager, applies updates on demand or through cron schedules, reboots
 one or many selected hosts on explicit confirmation, and can reboot
@@ -92,6 +94,7 @@ after the run, so the host table and pending counts update without an F5.
 - [Install a release](#install-a-release-recommended)
 - [Install prerequisites](#install-prerequisites)
 - [Quick start (source build)](#quick-start-source-build)
+- [Server deployment and local migration](docs/server-deployment.md)
 - [Command-line reference](#command-line-reference)
 - [Windows client](#windows-client)
 - [100-host go-live gate](#100-host-go-live-gate)
@@ -138,8 +141,9 @@ different Linux distributions.
 
 HIBP is designed for **self-hosted, single-operator** use. It is not a
 multi-tenant SaaS product. The browser UI is the client and can be used from
-Windows, Linux, or macOS over an SSH tunnel, so a Windows administrator gets the
-same UI and actions as a Linux administrator. The controller and target helper
+Windows, Linux, or macOS over an SSH tunnel (or the optional LAN HTTPS
+listener), so a Windows administrator gets the same UI and actions as a Linux
+administrator. The controller and target helper
 must run on Linux. There is no native desktop client on any operating system,
 no Windows controller, and no Windows target support. See
 [Windows client](#windows-client).
@@ -163,7 +167,7 @@ End users should not need Go or a compiler.
 
    ```bash
    # Install a specific version
-   sh install.sh --version v0.11.0
+   sh install.sh --version v0.12.0
 
    # Install system-wide (run as a user with write access to /usr/local/bin)
    sudo HIBP_PREFIX=/usr/local/bin sh install.sh
@@ -426,6 +430,9 @@ method above.
 ## Quick start (source build)
 
 For a prebuilt binary, use [Install a release](#install-a-release-recommended) instead.
+To move an existing local database to a server, run under systemd, survive a
+reboot, and optionally enable LAN HTTPS, see
+[Server deployment and local migration](docs/server-deployment.md).
 
 ```bash
 # Install the prerequisites above first.
@@ -490,7 +497,10 @@ Server flags:
 | Flag | Default | Notes |
 | --- | --- | --- |
 | `-db` | `$XDG_DATA_HOME/hibp/hibp.db` or `~/.local/share/hibp/hibp.db` | Database file. The `.meta` sidecar is created next to it. |
-| `-listen` | `127.0.0.1:8443` | Only `127.0.0.1:<port>` or `localhost:<port>` is accepted. |
+| `-listen` | `127.0.0.1:8443` | Loopback by default. A non-loopback address is refused unless `-tls-cert`, `-tls-key`, and `-public-url` are set. |
+| `-tls-cert` | none | PEM certificate for LAN HTTPS mode. The certificate SAN must match the `-public-url` hostname. |
+| `-tls-key` | none | PEM private key for LAN HTTPS mode. Must be readable by the service account and not group/world-readable. |
+| `-public-url` | none | Public HTTPS URL for LAN mode, for example `https://hibp.lan:8443`. Defines the allowed Host header and the WebAuthn origin. Required for a non-loopback listener. |
 | `-create` | off | One-time database creation. Fails if the database or sidecar already exists. |
 | `-passphrase-file` | prompt | Must be group/world-inaccessible. Omit it to prompt on the terminal. |
 | `-key-dir` | `~/.ssh` | Comma-separated SSH key browser roots. The API can still reference any absolute path the service account can read. |
@@ -507,7 +517,7 @@ or shell fragments from the controller.
 Important constraints:
 
 - The server requires the database passphrase before it starts. There is no
-  locked/paused browser UI in v0.11.0. If the process stops, the UI, collector,
+  locked/paused browser UI in v0.12.0. If the process stops, the UI, collector,
   scheduler, and monitoring stop with it.
 - `-create` is not an upgrade or reset flag. It refuses an existing database.
 - `-demo` writes sample hosts and is not a production mode.
@@ -528,7 +538,7 @@ against them without pinning and testing a release.
 `hibp version` and `hibp server --version` print the complete build identity:
 
 ```text
-hibp 0.11.0
+hibp 0.12.0
 build:  1234
 commit: abc123def456
 date:   2026-11-11T12:00:00Z
@@ -557,7 +567,7 @@ Build metadata is generated by `make`:
 Override the inferred values for a controlled build:
 
 ```bash
-make build VERSION=0.11.0 BUILD_NUMBER=1234 BUILD_COMMIT=abc123def456
+make build VERSION=0.12.0 BUILD_NUMBER=1234 BUILD_COMMIT=abc123def456
 ```
 
 `make production` passes the same values as Docker build arguments and records
@@ -569,7 +579,8 @@ run number, commit, date, and `linux/amd64` explicitly.
 There is no native Windows client binary and no native Linux desktop client
 either. The client is the embedded browser UI. That is intentional: the
 controller owns the database, SSH keys, scheduler, and audit log, while the
-administrator workstation only needs a browser and an SSH tunnel.
+administrator workstation only needs a browser and either an SSH tunnel or the
+optional LAN HTTPS listener.
 
 Windows 10/11 includes the OpenSSH client. From PowerShell or Windows Terminal:
 
@@ -584,16 +595,19 @@ or use a passkey; TOTP works with either name. If your SSH config already has an
 alias for the controller, use the alias in place of `<user>@<linux-controller>`.
 
 The Windows client needs no HIBP installation and no database access. It never
-holds the controller SSH keys. Do not expose port 8443 directly; the supported
-remote-access model remains an SSH tunnel to the loopback listener. Native
-Windows controller support and Windows target patching are not implemented.
+holds the controller SSH keys. The default remote-access model is an SSH tunnel
+to the loopback listener. On a trusted private LAN, the optional HTTPS listener
+can be used instead; see [Server deployment and local migration](docs/server-deployment.md).
+Do not port-forward port 8443 or expose it to the internet. Native Windows
+controller support and Windows target patching are not implemented.
 
 ## 100-host go-live gate
 
 This is the short gate for the intended deployment: one controller, roughly 100
-Fedora/Ubuntu/Kali x86_64 targets, SSH-tunnel-only UI access, LAN-only runtime,
-and no internet egress. It complements, and does not replace, the detailed
-checklist and limitations below.
+Fedora/Ubuntu/Kali x86_64 targets, loopback UI access through an SSH tunnel (or
+the optional LAN HTTPS mode), LAN-only runtime, and no internet egress. It
+complements, and does not replace, the detailed checklist and limitations
+below.
 
 ### Confirmed deployment profile
 
@@ -749,8 +763,10 @@ This profile still requires the canary and restore tests below.
 
 ### Observability and security sign-off
 
-- Keep the UI loopback-only and use an SSH tunnel with
-  `-o ExitOnForwardFailure=yes`. Do not expose port 8443 to the LAN.
+- Default to loopback and use an SSH tunnel with
+  `-o ExitOnForwardFailure=yes`. If you enable LAN HTTPS mode, require TLS,
+  restrict the port to the LAN subnet with a firewall, and never port-forward it
+  to the internet.
 - Protect the controller with full-disk encryption, a dedicated service
   account, restricted sudo, and a firewall that permits only the required
   outbound flows and administrator SSH.
@@ -774,7 +790,7 @@ This profile still requires the canary and restore tests below.
 ## Production deployment checklist
 
 This is the minimum operational and security review before using HIBP against
-real hosts. It reflects the current v0.11.0 implementation; treat it as a
+real hosts. It reflects the current v0.12.0 implementation; treat it as a
 gate, not as a suggestion.
 
 ### 1. Confirm the deployment model
@@ -783,9 +799,12 @@ gate, not as a suggestion.
   account. Ubuntu 24.04/26.04 is the CI-tested baseline; Fedora is
   build-supported but not covered by the release CI matrix. Test the exact
   controller OS you deploy.
-- Keep the browser UI on loopback and reach it through an SSH tunnel. The
-  current code does not terminate TLS and has no supported reverse-proxy mode.
-  Do not publish port 8443 or the Unix-equivalent API to a network.
+- Keep the browser UI on loopback and reach it through an SSH tunnel by default.
+  The optional LAN HTTPS mode binds to a private address and requires TLS plus an
+  explicit public URL. There is no supported reverse-proxy mode. Do not publish
+  HIBP to the internet or port-forward it on your router. See
+  [Server deployment and local migration](docs/server-deployment.md) for the
+  full migration, systemd, reboot, and LAN certificate steps.
 - HIBP is single-operator in this release. There is no RBAC, approval workflow,
   or separation between an operator and an auditor.
 - The current release implements cron-based check/apply schedules, bounded
@@ -814,11 +833,17 @@ sudo install -d -o hibp -g hibp -m 0700 /etc/hibp/ssh
   `ReadWritePaths` are writable. Put backups under `/var/lib/hibp` or add an
   explicit writable backup directory to the unit. The web UI accepts arbitrary
   absolute paths, but the unit may still deny them.
+- For LAN HTTPS, put `tls.crt` and `tls.key` in `/etc/hibp`, keep the private key
+  at `0600`, and make the certificate SAN match the `--public-url` hostname.
+  The `hibp` service account must be able to read both files.
 
 ### 3. Network and firewall
 
-- Keep the UI on controller loopback. Do not expose TCP `8443` to the LAN or
-  internet. Administrator access is SSH to the controller plus a local tunnel.
+- Default: keep the UI on controller loopback and use SSH to the controller plus
+  a local tunnel. Optional: on a trusted private intranet, enable LAN HTTPS with
+  `--listen <lan-ip>:8443`, `--public-url https://<dns-name>:8443`,
+  `--tls-cert`, and `--tls-key`. Restrict TCP `8443` to the LAN subnet. Do not
+  expose it to the internet or port-forward it on your router.
 - Controller outbound: SSH (`22/tcp` or your target port) to managed hosts,
   SMTP to the relay, and optional HTTP/HTTPS to LAN integrations/monitored
   endpoints. No internet access is required at runtime.
@@ -883,10 +908,10 @@ Recommended for this rollout — headless systemd with a passphrase file:
 
 ### 5. Complete first-run setup immediately
 
-Start the controller once with `--create`, open it through the SSH tunnel, and
-create the administrator plus MFA. Until the first account is created, any
-local user who can reach the loopback port could claim the administrator
-account. Do not leave a freshly created database unattended.
+Start the controller once with `--create`, open it through the SSH tunnel or
+the configured LAN HTTPS URL, and create the administrator plus MFA. Until the
+first account is created, anyone who can reach that listener could claim the
+administrator account. Do not leave a freshly created database unattended.
 
 The UI supports TOTP and passkeys at enrollment. After sign-in, **Account
 security** in the sidebar lets you add another passkey, replace the TOTP
@@ -1010,7 +1035,8 @@ access log, or alert on its own disk/database/backup failures. At minimum:
 
 Before declaring go-live:
 
-- Confirm the UI is reachable only through the SSH tunnel.
+- Confirm the UI is reachable only through the SSH tunnel or the intended LAN
+  HTTPS URL, not from the internet.
 - Confirm the service runs as a non-root user and the database directory is
   `0700`.
 - Confirm host keys were verified out of band and the helper sudoers rule was
@@ -1069,9 +1095,11 @@ after creating the database; do not leave a fresh database running unattended.
   12-hour absolute limit and a 30-minute idle timeout.
 - A successful MFA step rotates the session token and deletes the pending one,
   preventing session fixation.
-- The UI binds to loopback and only accepts loopback Host headers. There is no
-  TLS; use an SSH tunnel. Do not expose it directly to a network. A reverse
-  proxy on a custom domain would also need Host and WebAuthn-origin changes.
+- The UI binds to loopback by default and accepts loopback Host headers.
+  LAN HTTPS mode requires `--listen`, `--public-url`, `--tls-cert`, and
+  `--tls-key`; it accepts only the configured public hostname plus loopback and
+  uses TLS. A reverse proxy is still not supported and would also need Host and
+  WebAuthn-origin changes.
 
 ### TOTP
 
@@ -1138,12 +1166,15 @@ and sessions.
 
 - **Single-user, no RBAC.** The authenticated account is the administrator.
 - **The session cookie is the admin credential.** Protect the browser profile,
-  the SSH tunnel, and the controller.
+  the SSH tunnel or LAN HTTPS session, and the controller.
 - **The database passphrase is separate from the account password.** Neither one
   unlocks the other.
-- **The UI is loopback-only.** Do not expose it directly to a network.
+- **The UI is loopback-only by default.** LAN HTTPS mode is an explicit,
+  TLS-only opt-in for a trusted private network. Do not expose it to the
+  internet.
 - **MFA is mandatory after setup.** A stolen password alone cannot reach hosts.
-- **Passkeys need `localhost`; TOTP is the fallback on `127.0.0.1`.**
+- **Passkeys need `localhost` or the configured LAN HTTPS hostname; TOTP is
+  the fallback on `127.0.0.1` and IP-address URLs.**
 - **SSH transport is limited.** The current transport supports an unencrypted
   private-key file or a manual password. `ssh-agent`, hardware-backed keys, and
   SSH certificate authentication are not implemented; `agent` and `certificate`
@@ -1153,7 +1184,7 @@ and sessions.
 
 ## Docker, system information, and monitoring
 
-> **Status: v0.11.0 adds standalone web-service monitors: controller-side HTTP, TCP, and TLS probes with no host assignment, plus a one-click Web service preset. The v0.10.0 live patch-preview work remains: package-level previews, preview-hash revalidation, a global operation status bar, automatic page refresh, and post-patch facts refresh.**
+> **Status: v0.12.0 adds optional LAN HTTPS access with built-in TLS and a strict public-URL allowlist. The v0.11.0 standalone web-service monitors remain: controller-side HTTP, TCP, and TLS probes with no host assignment, plus a one-click Web service preset. The v0.10.0 live patch-preview work also remains: package-level previews, preview-hash revalidation, a global operation status bar, automatic page refresh, and post-patch facts refresh.**
 > Read-only system information, Docker inventory, host details, metric history,
 > configurable collection, explicit Docker check/apply and bulk Compose update,
 > monitoring definitions,
@@ -2060,7 +2091,8 @@ as core features rather than afterthoughts.
 
 - `hibp server` runs on an always-on Linux host. It owns the encrypted database,
   scheduler, job queue, SSH credentials, and audit log.
-- The laptop uses the browser UI through an SSH tunnel. A future `hibp client`
+- The laptop uses the browser UI through an SSH tunnel, or through the optional
+  LAN HTTPS listener on a trusted private network. A future `hibp client`
   command can provide a native shell; it would still never open the database
   directly.
 - The laptop can also be enrolled as a managed target. It is still a client, not
@@ -2166,10 +2198,11 @@ as core features rather than afterthoughts.
   Email is implemented; webhook/ntfy channels remain design targets.
 - Schedules run on the always-on server, not on the laptop. Closing the laptop
   must not affect a schedule.
-- The server requires the database passphrase before it starts. After a reboot,
-  an operator must start the process and unlock the database; until then there
-  is no UI, collector, or scheduler. There is no locked/paused browser state in
-  v0.11.0, and no database key is persisted.
+- The server requires the database passphrase before it starts. With the
+  packaged systemd unit and `--passphrase-file`, it starts unattended after a
+  reboot. Without that file, an operator must start the process and unlock the
+  database; until then there is no UI, collector, or scheduler. There is no
+  locked/paused browser state in v0.12.0, and no database key is persisted.
 
 ### History and drill-down
 
@@ -2254,10 +2287,10 @@ Additional distribution rules:
 
 ## Recommended architecture
 
-> The current release is a loopback-only server with helper actions and a
-> single-process cron scheduler. A durable job queue, client mode, Unix-socket
-> listener, and TLS/reverse-proxy support are design targets, not implemented
-> features.
+> The current release is a loopback-first server with optional LAN HTTPS,
+> helper actions, and a single-process cron scheduler. A durable job queue,
+> client mode, Unix-socket listener, and reverse-proxy support are design
+> targets, not implemented features.
 
 ### Deployment model
 
@@ -2267,9 +2300,9 @@ The primary deployment is server-authoritative:
    database, scheduler, job queue, SSH credentials, and audit log. It runs under
    systemd and binds its local UI/API to a Unix socket or `127.0.0.1`.
 2. **Laptop client (`hibp client` or a browser).** The operator connects to the
-   server through an SSH tunnel (`ssh -L`) or, if explicitly enabled, TLS. The
-   laptop never opens the database and never holds the SSH credentials used for
-   patching. The laptop can also be enrolled as a managed target; it is still a
+   server through an SSH tunnel (`ssh -L`) or the optional LAN HTTPS listener.
+   The laptop never opens the database and never holds the SSH credentials used
+   for patching. The laptop can also be enrolled as a managed target; it is still a
    client, not the server.
 3. **Optional standalone mode (`hibp --local`).** A local database for travel, a
    lab, or a demo. It does not sync with the server in v1. Treat it as a separate
@@ -2328,7 +2361,7 @@ same narrow helper.
 │ no local database            │
 │ optional managed target      │
 └──────────────┬───────────────┘
-               │ SSH tunnel (recommended) or TLS
+               │ SSH tunnel (default) or LAN HTTPS
 ┌──────────────▼───────────────────────────────────────────────┐
 │ Always-on Linux server: hibp server (one ELF)                │
 │  ├─ encrypted SQLCipher database + .meta sidecar             │
@@ -2357,7 +2390,7 @@ hibp agent (systemd timer) ── outbound mTLS ──► hibp server
 
 ### Execution flow
 
-> This is the design target. v0.11.0 implements collection, check/apply through
+> This is the design target. v0.12.0 implements collection, check/apply through
 > the fixed helper, per-host locking, retries, run history, and audit, but not
 > package plans/diffs, approval gates, cancellation, post-reboot verification,
 > or retention.
@@ -2488,7 +2521,7 @@ The current release derives the SQLCipher key directly from the database
 passphrase with Argon2id and keeps SMTP/integration secrets inside the encrypted
 database. It does **not** implement a separate credential vault, envelope/DEK
 wrapping, or passphrase rotation. The following is a future design goal, not a
-claim about v0.11.0:
+claim about v0.12.0:
 
 - Generate a random data encryption key (DEK) for a credential vault.
 - Derive a key-encryption key (KEK) from the database passphrase with Argon2id,
@@ -2550,9 +2583,10 @@ Rules:
 ### Single-user access
 
 - v1 has one operator and no RBAC. "Single user" does not mean unauthenticated.
-- The implemented server binds only to loopback (`127.0.0.1`/`localhost`); a
-  Unix-socket listener is planned. The laptop connects through an SSH tunnel, so
-  the server's remote surface is SSH, not an exposed web port.
+- The server binds to loopback (`127.0.0.1`/`localhost`) by default; a
+  Unix-socket listener is planned. On a trusted private network, LAN HTTPS mode
+  can bind a private address with TLS. The default laptop path remains an SSH
+  tunnel, so the server's remote surface is SSH, not an exposed web port.
 - The UI requires a local password plus TOTP and/or a passkey. The database
   passphrase is a separate startup secret and is not reused for the web login.
 - The browser receives an HttpOnly, SameSite=Strict session cookie. Only a
@@ -2561,9 +2595,9 @@ Rules:
 - The database is unlocked manually before the server starts after a reboot.
   The server does not persist the database key in v1. There is no locked/paused
   UI: if the process is not running, schedules and collection do not run.
-- If a TCP listener is enabled for the UI/API, require TLS and an explicit
-  opt-in. The current implementation only accepts loopback Host headers. Do not
-  expose it to the internet.
+- LAN HTTPS mode requires TLS and an explicit `--public-url`; it accepts only
+  the configured hostname plus loopback Host headers. Do not expose the listener
+  to the internet or use it without a firewall rule limited to the LAN.
 - The audit actor is the authenticated username in v1. The schema keeps an actor
   column so RBAC can be added later.
 - Do not share the database file or passphrase between users. Do not run two
@@ -2681,10 +2715,10 @@ Agent mode is optional and later; v1 uses SSH from the always-on server.
   `rsa-sha2-512`), connection timeouts, keepalives, and rate limits. Password
   fallback, when explicitly enabled, uses SSH password/keyboard-interactive
   authentication over the encrypted channel and never plaintext.
-- The local API binds only to loopback in this release; a Unix-socket mode is
-  planned. If a TCP listener is exposed beyond loopback in a later release,
-  require TLS, authentication, CSRF protection where relevant, and an explicit
-  opt-in. Do not expose the GUI or API to the network by default.
+- The local API binds only to loopback by default; a Unix-socket mode is
+  planned. The optional LAN HTTPS listener requires TLS, authentication, CSRF
+  and Origin checks, an explicit public URL, and a firewall rule limited to the
+  LAN. Do not expose the GUI or API to the internet.
 
 ### Audit and logging
 
@@ -2741,6 +2775,20 @@ Current status:
 - Auto-update HIBP only from signed artifacts. An unsigned self-update path is a
   remote-code-execution feature.
 - Consider reproducible builds for the server and agent binaries.
+
+### Implemented in v0.12.0
+
+- Optional LAN HTTPS mode. A non-loopback listener requires `--tls-cert`,
+  `--tls-key`, and `--public-url`; the server refuses to expose plain HTTP on a
+  network. TLS 1.2 is the minimum.
+- The public URL defines a strict Host-header allowlist and the WebAuthn
+  relying-party ID/origin. Loopback hosts remain allowed for local recovery.
+- Session cookies are `Secure` over TLS. The Origin check requires the same
+  scheme and host as the request.
+- A separate `packaging/hibp-lan.service` example. The default
+  `packaging/hibp.service` remains loopback-only.
+- The full migration, systemd, reboot, TLS-certificate, firewall, and
+  troubleshooting runbook is in `docs/server-deployment.md`.
 
 ### Implemented in v0.11.0
 
@@ -2978,9 +3026,10 @@ Current status:
 - The host CSV export endpoint is authenticated but is not exposed in the UI
   and does not write an audit entry. If you use it for evidence handling, add an
   external audit step.
-- The UI has no TLS termination or supported reverse-proxy mode and must stay on
-  loopback. There is no Unix-socket listener, request access log, Prometheus
-  endpoint, or built-in controller self-monitoring.
+- The UI has built-in TLS for LAN mode but no supported reverse-proxy mode.
+  Keep it on loopback by default; use LAN HTTPS only on a trusted private network.
+  There is no Unix-socket listener, request access log, Prometheus endpoint, or
+  built-in controller self-monitoring.
 - Release archives are checksummed but not signed. The installer obtains
   `SHA256SUMS` from the same GitHub release, so it provides integrity checking
   but not independent publisher authentication. The Docker build uses a mutable
@@ -3045,7 +3094,8 @@ Current status:
   alert/run/audit retention and external log retention still require planning.
 - Login and MFA rate limits are in-memory per process and reset when the server
   restarts. They reduce online guessing but are not a durable account-lockout
-  policy. The UI is loopback-only, so this is a secondary control.
+  policy. The default UI is loopback-only; LAN HTTPS mode widens exposure to
+  the LAN, so keep the firewall and rate limits in place.
 - The browser UI test suites used during release validation are not part of this
   repository; CI runs Go/race/vet/static/production-build/README checks and
   `govulncheck`, but not Playwright or a real SSH target matrix.
@@ -3128,7 +3178,7 @@ Schema rules:
 
 ## Scheduling and job semantics
 
-> This section is the target semantics. v0.11.0 implements five-field cron,
+> This section is the target semantics. v0.12.0 implements five-field cron,
 > per-schedule time zones, jitter, a late-start window, skip/latest-missed
 > catch-up, per-schedule concurrency, a controller-wide cap, bounded retries,
 > an optional reboot after a successful apply when `reboot-check` reports it is
@@ -3422,8 +3472,9 @@ Define the constraint precisely:
 - **No runtime dependency:** one statically linked ELF; no Python, Node, JVM,
   database server, web server, or OpenSSL shared library.
 - **Browser UI:** the UI is embedded HTML/CSS/JS served by the binary on
-  `127.0.0.1`. The laptop uses its browser through an SSH tunnel. No GTK/WebKit
-  and no Unix-socket listener in this release.
+  `127.0.0.1` by default, or on a private LAN address with built-in TLS. The
+  laptop uses its browser through an SSH tunnel or LAN HTTPS. No GTK/WebKit and
+  no Unix-socket listener in this release.
 - **No separate assets:** the UI is compiled into the binary with `embed`.
 - **Not "no target requirements":** managed hosts still need SSH and their
   native package manager. That is the point of the tool.
@@ -3493,8 +3544,9 @@ manager.
   server.
 - `make static` builds the development ELF; `make production` builds the
   current-SQLCipher production image via `packaging/Dockerfile`.
-- systemd unit example in `packaging/hibp.service`; target helper and sudoers
-  example in `packaging/`.
+- systemd unit examples in `packaging/hibp.service` (loopback) and
+  `packaging/hibp-lan.service` (LAN HTTPS); target helper and sudoers example
+  in `packaging/`.
 - Primary artifact: the production image or the binary extracted from it.
   `.deb`/`.rpm` are future convenience wrappers around the same binary.
 - No Flatpak in v1. The sandbox complicates SSH agent/key access, and the
@@ -3729,9 +3781,10 @@ These are settled unless you explicitly change them:
   matrix. The static binary may run on other distributions; record and test the
   exact controller OS you deploy.
 - **UI:** browser-based. The server embeds the HTML/CSS/JS and serves it on
-  loopback (`127.0.0.1`/`localhost`); the laptop uses a browser through an SSH
-  tunnel. There is no Unix-socket listener, TLS termination, or supported
-  reverse-proxy mode in this release. No GTK/WebKit dependency.
+  loopback (`127.0.0.1`/`localhost`) by default, with optional built-in TLS on a
+  private LAN address. The laptop uses a browser through an SSH tunnel or LAN
+  HTTPS. There is no Unix-socket listener or supported reverse-proxy mode in
+  this release. No GTK/WebKit dependency.
 - **Stack:** Go. The development build uses the 2020 `mutecomm/go-sqlcipher`
   driver and prints a warning. The production SQLCipher driver is a locally
   patched, maintained `mattn/go-sqlite3` linked against current SQLCipher built
@@ -3871,6 +3924,10 @@ Current validation status:
 - `go vet ./...` passes.
 - `go test -race ./...` passes.
 - `make static` produces a development ELF with no dynamic dependencies.
+- The v0.12.0 LAN HTTPS changes were validated with listener-policy tests,
+  Host/Origin allowlist tests, WebAuthn public-origin tests, a manual HTTPS
+  setup/login flow, Secure-cookie checks, `go vet`, the full Go suite, and a
+  headless-browser check. The default loopback tests remain unchanged.
 - The v0.11.0 standalone-monitor changes were validated with server validation,
   resolution, state, and alert tests for assignment-free HTTP/TCP/TLS probes,
   the full Go suite, `go vet`, the README/Python validators, JavaScript syntax
@@ -3899,7 +3956,7 @@ Current validation status:
 - The current-SQLCipher production Docker build and release pipeline passed for
   `v0.7.1`; the published archive checksum, installed binary, and SQLCipher
   production driver were verified.
-- Pushing the `v0.11.0` tag runs the production image/archive release workflow;
+- Pushing the `v0.12.0` tag runs the production image/archive release workflow;
   verify its checksum and installed binary before fleet deployment.
 - The store/server suite passes against the production driver with current
   system `libsqlcipher`, including backup, restore, audit-chain verification,

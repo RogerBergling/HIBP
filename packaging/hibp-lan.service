@@ -1,0 +1,53 @@
+[Unit]
+Description=HIBP - Have I Been Patched (LAN HTTPS)
+Documentation=https://github.com/RogerBergling/HIBP
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hibp
+Group=hibp
+Environment=HOME=/var/lib/hibp
+WorkingDirectory=/var/lib/hibp
+# Replace the listen address, public URL, and certificate paths with your LAN
+# layout. The hostname in --public-url must match the TLS certificate SAN and
+# the URL operators open in the browser. The port must match --listen.
+ExecStart=/usr/local/bin/hibp server --db /var/lib/hibp/hibp.db --listen 192.168.1.10:8443 --public-url https://hibp.lan:8443 --tls-cert /etc/hibp/tls.crt --tls-key /etc/hibp/tls.key --key-dir /etc/hibp/ssh --ssh-config /etc/hibp/ssh/config --passphrase-file /etc/hibp/db.passphrase
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/hibp
+StateDirectory=hibp
+StateDirectoryMode=0700
+RuntimeDirectory=hibp
+RuntimeDirectoryMode=0700
+LimitCORE=0
+LimitNOFILE=4096
+CapabilityBoundingSet=
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
+
+# LAN HTTPS notes:
+# - Bind to the controller's LAN address, not the public internet. If you use
+#   0.0.0.0, restrict TCP 8443 to the LAN subnet with a firewall.
+# - A non-loopback listener is refused unless --tls-cert, --tls-key, and
+#   --public-url are all set.
+# - The certificate must be trusted by the client machines. Passkeys require a
+#   DNS-name origin and a trusted certificate; an IP-address public URL disables
+#   passkeys and leaves TOTP as the fallback.
+# - Do not install this unit and hibp.service at the same time. Both use the
+#   same database. Install one unit as /etc/systemd/system/hibp.service.
+#
+# Backups: ProtectSystem=strict makes everything except /var/lib/hibp read-only.
+# Use a backup path under /var/lib/hibp or add your backup directory to
+# ReadWritePaths after reviewing the permissions.

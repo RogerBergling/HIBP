@@ -34,6 +34,10 @@ type Config struct {
 	Build         buildinfo.Info
 	KeyDirs       []string
 	SSHConfigPath string
+	// PublicURL is the HTTPS URL users open in LAN mode. It also defines the
+	// allowed Host header and the WebAuthn relying-party origin. Empty keeps
+	// the server loopback-only.
+	PublicURL string
 }
 
 // Server is the HIBP HTTP server.
@@ -66,6 +70,9 @@ type Server struct {
 	schedulerSlots     chan struct{}
 	hostLocksMu        sync.Mutex
 	hostLocks          map[string]bool
+	allowedHosts       map[string]bool
+	webAuthnRPID       string
+	webAuthnOrigin     string
 	mux                *http.ServeMux
 }
 
@@ -109,6 +116,24 @@ func New(cfg Config) (*Server, error) {
 	if strings.TrimSpace(build.Version) == "" {
 		build.Version = "dev"
 	}
+	publicURL, err := parsePublicURL(cfg.PublicURL)
+	if err != nil {
+		return nil, err
+	}
+	allowedHosts := map[string]bool{"127.0.0.1": true, "localhost": true, "::1": true}
+	webAuthnRPID := ""
+	webAuthnOrigin := ""
+	if publicURL != nil {
+		hostname := strings.ToLower(publicURL.Hostname())
+		if publicURL.Scheme == "http" && !isLoopbackHostname(hostname) {
+			return nil, errors.New("public URL must use https for a non-loopback host")
+		}
+		allowedHosts[hostname] = true
+		if publicURL.Scheme == "https" && hostname != "localhost" && net.ParseIP(hostname) == nil {
+			webAuthnRPID = hostname
+			webAuthnOrigin = publicOrigin(publicURL)
+		}
+	}
 	s := &Server{
 		store:              cfg.Store,
 		build:              build,
@@ -127,6 +152,9 @@ func New(cfg Config) (*Server, error) {
 		schedulerWake:      make(chan struct{}, 1),
 		schedulerSlots:     make(chan struct{}, 20),
 		hostLocks:          make(map[string]bool),
+		allowedHosts:       allowedHosts,
+		webAuthnRPID:       webAuthnRPID,
+		webAuthnOrigin:     webAuthnOrigin,
 		mux:                http.NewServeMux(),
 	}
 	s.routes()
@@ -233,26 +261,27 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 
 func (s *Server) hostCheck(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host := r.Host
-		if parsed, _, err := net.SplitHostPort(host); err == nil {
-			host = parsed
-		}
-		host = strings.Trim(host, "[]")
-		switch host {
-		case "127.0.0.1", "localhost", "::1":
-		default:
+		hostname := requestHostname(r.Host)
+		if !s.hostAllowed(hostname) {
 			writeError(w, http.StatusForbidden, "unexpected Host header")
 			return
 		}
 		if origin := r.Header.Get("Origin"); origin != "" {
 			parsed, err := url.Parse(origin)
-			if err != nil || parsed.Host != r.Host {
+			if err != nil || !strings.EqualFold(parsed.Host, r.Host) || !strings.EqualFold(parsed.Scheme, requestScheme(r)) {
 				writeError(w, http.StatusForbidden, "unexpected Origin header")
 				return
 			}
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) hostAllowed(hostname string) bool {
+	if isLoopbackHostname(hostname) {
+		return true
+	}
+	return s.allowedHosts[hostname]
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {

@@ -108,6 +108,47 @@ The included `hibp.service` is a hardening baseline, not a universal unit.
 Adjust `SystemCallFilter`, `ProtectSystem`, key paths, and backup paths if your
 distribution or SQLCipher build needs different access.
 
+## LAN HTTPS access
+
+The default unit serves the UI on loopback and is reached through an SSH tunnel.
+For a trusted private intranet, use the separate `hibp-lan.service` example.
+It adds:
+
+```text
+--listen 192.168.1.10:8443
+--public-url https://hibp.lan:8443
+--tls-cert /etc/hibp/tls.crt
+--tls-key /etc/hibp/tls.key
+```
+
+A non-loopback listener is refused unless TLS and a public URL are configured.
+The public URL must use the exact scheme, host, and port that users open. It
+defines the Host-header allowlist and the WebAuthn origin. The certificate SAN
+must match the hostname.
+
+Create the certificate with an internal CA, `mkcert`, or OpenSSL. For example:
+
+```bash
+mkcert -install
+mkcert -cert-file /tmp/hibp-tls.crt -key-file /tmp/hibp-tls.key \
+  hibp.lan 192.168.1.10
+
+sudo install -o root -g hibp -m 0644 /tmp/hibp-tls.crt /etc/hibp/tls.crt
+sudo install -o hibp -g hibp -m 0600 /tmp/hibp-tls.key /etc/hibp/tls.key
+```
+
+Then edit the listen address, public URL, and certificate paths in
+`hibp-lan.service`, install it as `/etc/systemd/system/hibp.service`, and
+enable it. Do not install both units at once; they use the same database.
+
+Restrict TCP `8443` to the LAN subnet with the host firewall and do not create a
+router port-forward. Clients must trust the certificate. Passkeys require a
+DNS-name origin; an IP-address public URL leaves TOTP as the only second factor.
+
+The full migration and deployment runbook, including moving an existing
+database and passphrase, is in
+[`docs/server-deployment.md`](../docs/server-deployment.md).
+
 ## Target helper
 
 The app can install the helper from the host row's **Setup** button. It uploads

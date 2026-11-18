@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"crypto/subtle"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -116,7 +117,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `HIBP - Have I Been Patched
 
 Usage:
-  hibp server [flags]     Run the local browser UI and API
+  hibp server [flags]     Run the browser UI and API
   hibp helper <action>    Run a fixed target action (facts|preview|check|apply|cleanup-check|cleanup-apply|reboot|reboot-check|system-info|metrics|docker-list|docker-check|docker-apply|docker-update-all)
   hibp user reset         Reset the local account password, TOTP, and passkeys
   hibp version            Print the version and build identity
@@ -124,6 +125,9 @@ Usage:
 Server flags:
   -db string              Database path (default: XDG data directory)
   -listen string          Listen address (default: 127.0.0.1:8443)
+  -tls-cert string        PEM certificate for LAN HTTPS mode
+  -tls-key string         PEM private key for LAN HTTPS mode
+  -public-url string      Public HTTPS URL for LAN mode, e.g. https://hibp.lan:8443
   -create                 Create the database if it does not exist
   -passphrase-file string Read the database passphrase from a 0600 file
   -key-dir string         SSH key directory, comma-separated (default: ~/.ssh)
@@ -190,6 +194,9 @@ func runServer(args []string) error {
 	flags := flag.NewFlagSet("server", flag.ContinueOnError)
 	dbPath := flags.String("db", defaultDBPath(), "database path")
 	listen := flags.String("listen", "127.0.0.1:8443", "listen address")
+	tlsCert := flags.String("tls-cert", "", "PEM certificate for LAN HTTPS mode")
+	tlsKey := flags.String("tls-key", "", "PEM private key for LAN HTTPS mode")
+	publicURL := flags.String("public-url", "", "public HTTPS URL for LAN mode, for example https://hibp.lan:8443")
 	create := flags.Bool("create", false, "create the database if it does not exist")
 	passphraseFile := flags.String("passphrase-file", "", "read passphrase from a 0600 file")
 	keyDir := flags.String("key-dir", defaultKeyDir(), "SSH key directory, comma-separated for multiple")
@@ -203,8 +210,9 @@ func runServer(args []string) error {
 		printVersion()
 		return nil
 	}
-	if *listen != "127.0.0.1:8443" && !strings.HasPrefix(*listen, "127.0.0.1:") && !strings.HasPrefix(*listen, "localhost:") {
-		return fmt.Errorf("refusing to listen on %q: use 127.0.0.1 or localhost; use an SSH tunnel for remote access", *listen)
+	listenConfig, err := validateServerListen(*listen, *tlsCert, *tlsKey, *publicURL)
+	if err != nil {
+		return err
 	}
 
 	passphrase, err := readPassphrase(*passphraseFile)
@@ -236,6 +244,7 @@ func runServer(args []string) error {
 		Build:         buildinfo.Current,
 		KeyDirs:       splitList(*keyDir),
 		SSHConfigPath: *sshConfig,
+		PublicURL:     listenConfig.PublicURL,
 	})
 	if err != nil {
 		return err
@@ -249,14 +258,25 @@ func runServer(args []string) error {
 	if err != nil {
 		return err
 	}
-	url := "http://localhost:" + port + "/"
+	openURL := "http://localhost:" + port + "/"
+	if listenConfig.PublicURL != "" {
+		openURL = strings.TrimSuffix(listenConfig.PublicURL, "/") + "/"
+	}
 	fmt.Fprintf(os.Stderr, "HIBP %s\n", buildinfo.Current.String())
 	fmt.Fprintf(os.Stderr, "SQLCipher: %s\n", store.DriverName)
 	if !store.ProductionDriver {
 		fmt.Fprintln(os.Stderr, "WARNING: this is the M1 spike driver. Build with `make production` before deployment.")
 	}
 	fmt.Fprintf(os.Stderr, "Database: %s\n", db.Path())
-	fmt.Fprintf(os.Stderr, "Open:     %s\n", url)
+	fmt.Fprintf(os.Stderr, "Open:     %s\n", openURL)
+	if listenConfig.TLS {
+		fmt.Fprintln(os.Stderr, "TLS:      enabled (TLS 1.2 minimum)")
+	} else {
+		fmt.Fprintln(os.Stderr, "TLS:      disabled (loopback only)")
+	}
+	if host, _, _ := net.SplitHostPort(*listen); host == "0.0.0.0" || host == "::" {
+		fmt.Fprintf(os.Stderr, "WARNING: listening on all interfaces; restrict TCP %s to your LAN with a firewall.\n", port)
+	}
 	fmt.Fprintln(os.Stderr, "Auth:     password + TOTP/passkey (create the account on first visit)")
 	fmt.Fprintln(os.Stderr, "Press Ctrl+C to stop.")
 
@@ -264,6 +284,7 @@ func runServer(args []string) error {
 		Handler:           app.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12},
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -272,7 +293,11 @@ func runServer(args []string) error {
 	go app.RunIntegrations(ctx)
 	go app.RunScheduler(ctx)
 	errCh := make(chan error, 1)
-	go func() { errCh <- httpServer.Serve(listener) }()
+	if listenConfig.TLS {
+		go func() { errCh <- httpServer.ServeTLS(listener, *tlsCert, *tlsKey) }()
+	} else {
+		go func() { errCh <- httpServer.Serve(listener) }()
+	}
 	select {
 	case err := <-errCh:
 		if err != nil && err != http.ErrServerClosed {

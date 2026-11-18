@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -60,23 +59,21 @@ func (s *Server) webAuthnUser(user store.User) (*webAuthnUser, error) {
 // WebAuthn rejects IP-address RP IDs, so 127.0.0.1 gets a clear TOTP-only path.
 func (s *Server) webAuthnConfig(r *http.Request) (string, string, error) {
 	host := r.Host
-	hostname := host
-	if parsed, _, err := net.SplitHostPort(host); err == nil {
-		hostname = parsed
+	hostname := requestHostname(host)
+	if s.webAuthnRPID != "" && strings.EqualFold(hostname, s.webAuthnRPID) {
+		if r.TLS == nil {
+			return "", "", fmt.Errorf("passkeys require %s", s.webAuthnOrigin)
+		}
+		return s.webAuthnRPID, s.webAuthnOrigin, nil
 	}
-	hostname = strings.Trim(hostname, "[]")
 	switch hostname {
 	case "localhost":
 	case "127.0.0.1", "::1":
 		return "", "", errors.New("passkeys require http://localhost:<port>; 127.0.0.1 is not a valid WebAuthn RP ID")
 	default:
-		return "", "", errors.New("passkeys are only enabled for localhost")
+		return "", "", errors.New("passkeys are only enabled for localhost or the configured HTTPS public URL")
 	}
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	return hostname, scheme + "://" + host, nil
+	return hostname, requestScheme(r) + "://" + host, nil
 }
 
 func (s *Server) webAuthnForRequest(r *http.Request) (*webauthn.WebAuthn, error) {

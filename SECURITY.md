@@ -71,10 +71,11 @@ Out of scope:
   not supported.
 - The browser session cookie is an administrator credential. It is HttpOnly,
   SameSite=Strict, and only a SHA-256 hash is stored in SQLCipher. Protect the
-  browser profile, SSH tunnel, and controller.
-- Login uses Argon2id and is rate-limited. TOTP replay is rejected. Passkeys are
-  bound to a `localhost` origin; `127.0.0.1` is TOTP-only because WebAuthn
-  relying party IDs cannot be IP addresses.
+  browser profile, SSH tunnel (or LAN HTTPS session), and controller.
+- Login uses Argon2id and is rate-limited. TOTP replay is rejected. Passkeys
+  are bound to the `localhost` origin or the configured LAN HTTPS public URL.
+  `127.0.0.1` and IP-address LAN URLs are TOTP-only because WebAuthn relying
+  party IDs cannot be IP addresses.
 - Account recovery is local-only: `hibp user reset` requires the database
   passphrase and access to the controller. There is no email or remote reset.
   An MFA-verified session can add/remove passkeys and replace/remove TOTP from
@@ -97,8 +98,9 @@ Out of scope:
   full audit chain. There is no backup-without-secrets mode. Timestamped backups
   created by HIBP are pruned to the configured retention count; custom-named
   files are not.
-- A fresh database is claimed through the loopback UI. Until the first account
-  and MFA exist, any local user who can reach the port could claim it.
+- A fresh database is claimed through the loopback UI or the configured LAN
+  HTTPS UI. Until the first account and MFA exist, anyone who can reach that
+  listener could claim it.
 - The packaged systemd unit needs path and unlock customization:
   `ProtectHome=true` blocks `~/.ssh`, a passphrase file is required for a
   headless start, and backups outside `ReadWritePaths` are denied.
@@ -114,9 +116,12 @@ Out of scope:
 - Fleet monitors can emit one email per host; there is no aggregation or global
   rate limit. Audit, alert, and integration-event retention is not implemented.
   Integration poll failures are visible on the source card but not emailed.
-- There is no TLS termination or supported reverse-proxy mode; the UI must stay
-  on loopback. There is no Unix-socket listener, request access log, Prometheus
-  endpoint, or built-in controller self-monitoring.
+- The UI has built-in TLS for the optional LAN HTTPS mode, but no supported
+  reverse-proxy mode. The default remains loopback-only. LAN mode requires a
+  non-loopback bind, `--tls-cert`, `--tls-key`, and an explicit `--public-url`;
+  it accepts only the configured hostname plus loopback Host headers. There is
+  no Unix-socket listener, request access log, Prometheus endpoint, or built-in
+  controller self-monitoring.
 - Release archives are checksummed but not signed. There is no SBOM or
   provenance attestation. The installer reads `SHA256SUMS` from the same GitHub
   release, which is not independent publisher authentication. The Docker base
@@ -242,9 +247,11 @@ cron-based patch schedules are implemented.
 
 ## Operational guidance
 
-- Use a unique database passphrase and full-disk encryption.
-- Complete first-run account and MFA setup immediately; until then any local
-  user who can reach the loopback UI could claim the administrator account.
+- Use a unique database passphrase and full-disk encryption. For LAN HTTPS,
+  use a certificate trusted by the clients and restrict the listener to the LAN
+  subnet with a firewall.
+- Complete first-run account and MFA setup immediately; until then anyone who
+  can reach the loopback or LAN HTTPS UI could claim the administrator account.
 - If using the packaged systemd unit, create `/etc/hibp/ssh`,
   `/etc/hibp/ssh/config`, and `/etc/hibp/db.passphrase` with the documented
   ownership/modes, or adjust the unit. Keep backups under `/var/lib/hibp` or add
@@ -289,6 +296,7 @@ cron-based patch schedules are implemented.
   the static release build, keep the host key pinned, and use the Setup flow
   only against hosts you intend to manage.
 - Keep at least one encrypted backup off the controller and test restores.
-- Treat the session cookie, the SSH tunnel, and the controller as credentials.
+- Treat the session cookie, the SSH tunnel or LAN HTTPS session, and the
+  controller as credentials.
 - Review any future approved playbooks before activation. Arbitrary shell is
   intentionally disabled in this release.

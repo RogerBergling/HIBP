@@ -47,3 +47,7 @@ WantedBy=multi-user.target
 # Backups: ProtectSystem=strict makes everything except /var/lib/hibp read-only.
 # Use a backup path under /var/lib/hibp or add your backup directory to
 # ReadWritePaths after reviewing the permissions.
+#
+# LAN access: this unit is loopback-only. For HTTPS access from a trusted
+# private intranet, use packaging/hibp-lan.service instead. Do not install both
+# units; they use the same database.
