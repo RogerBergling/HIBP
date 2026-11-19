@@ -40,6 +40,9 @@ type Config struct {
 	PublicURL string
 	// Demo enables the public demo behavior. Only the demo binary sets this.
 	Demo bool
+	// AllowInsecureHTTP lets the demo accept a non-loopback http:// PublicURL.
+	// It is intended for a demo on a trusted LAN, never for the internet.
+	AllowInsecureHTTP bool
 	// TrustProxy trusts X-Forwarded-Proto for Origin and cookie decisions. It
 	// is intended only for the demo behind a TLS-terminating proxy.
 	TrustProxy bool
@@ -130,9 +133,9 @@ func New(cfg Config) (*Server, error) {
 	webAuthnOrigin := ""
 	if publicURL != nil {
 		hostname := strings.ToLower(publicURL.Hostname())
-		if publicURL.Scheme == "http" && !isLoopbackHostname(hostname) {
+		if publicURL.Scheme == "http" && !isLoopbackHostname(hostname) && !(cfg.Demo && cfg.AllowInsecureHTTP) {
 			if cfg.Demo {
-				return nil, errors.New("demo public URL must use https for a non-loopback host; set HIBP_DEMO_PUBLIC_URL to the external HTTPS origin, for example https://demo.example.com, not the internal http address")
+				return nil, errors.New("demo public URL must use https for a non-loopback host; set HIBP_DEMO_PUBLIC_URL to the external HTTPS origin, or set HIBP_DEMO_ALLOW_INSECURE_HTTP=true for a trusted LAN-only deployment")
 			}
 			return nil, errors.New("public URL must use https for a non-loopback host")
 		}

@@ -653,6 +653,18 @@ tmpfs `/tmp`, drops capabilities, and applies memory/CPU limits. For a public
 host, set `HIBP_DEMO_PUBLIC_URL` to the exact HTTPS origin and put a
 TLS-terminating proxy in front of `127.0.0.1:8080`.
 
+For direct access on a trusted LAN at port `8011`, set:
+
+```dotenv
+HIBP_DEMO_PUBLIC_URL=http://192.168.1.50:8011
+HIBP_DEMO_ALLOW_INSECURE_HTTP=true
+HIBP_DEMO_BIND=0.0.0.0
+HIBP_DEMO_PORT=8011
+```
+
+Use the Docker host's LAN address in both the public URL and the browser. Never
+expose that plain-HTTP port to the internet.
+
 See [Public demo container](docs/demo.md) for image tags, environment variables,
 Caddy/Nginx examples, reset behavior, and security guidance. The production
 Compose example is `compose.production.yaml` with `.env.production.example`.

@@ -136,10 +136,23 @@ HIBP_DEMO_PORT=8011
 This maps host `8011` to container `8080`; open <http://localhost:8011/>. Do not
 change `HIBP_DEMO_LISTEN` to `8011`; the container target must stay `8080`.
 
-`HIBP_DEMO_BIND=127.0.0.1` makes the host port local-only. For access from
-another machine, set `HIBP_DEMO_BIND=0.0.0.0`, allow the port in the host
-firewall, and put an HTTPS reverse proxy in front. Direct non-loopback HTTP is
-rejected by the demo's public-URL policy; use an HTTPS origin in
+`HIBP_DEMO_BIND=127.0.0.1` makes the host port local-only. To listen on all
+interfaces at port `8011` for a trusted LAN:
+
+```dotenv
+HIBP_DEMO_PUBLIC_URL=http://192.168.1.50:8011
+HIBP_DEMO_ALLOW_INSECURE_HTTP=true
+HIBP_DEMO_BIND=0.0.0.0
+HIBP_DEMO_PORT=8011
+```
+
+Replace `192.168.1.50` with the Docker host's LAN address, and use exactly that
+name or address in the browser. Then open <http://192.168.1.50:8011/>. This is a
+demo-only opt-in; never expose port `8011` directly to the internet. For a LAN
+hostname instead of an IP, set `HIBP_DEMO_PUBLIC_URL` to that hostname.
+
+Without the opt-in, a direct non-loopback HTTP URL is rejected. In that case,
+put an HTTPS reverse proxy in front and use an `https://` origin in
 `HIBP_DEMO_PUBLIC_URL`.
 
 Check the rendered mapping:
@@ -154,7 +167,8 @@ docker compose --env-file .env.demo config | sed -n '/ports:/,/restart:/p'
 |---|---|---|
 | `HIBP_DEMO_LISTEN` | `0.0.0.0:8080` | Container listener. |
 | `PORT` | none | Used when `HIBP_DEMO_LISTEN` is empty. |
-| `HIBP_DEMO_PUBLIC_URL` | `http://localhost:8080` | Exact public origin. Set this in production. |
+| `HIBP_DEMO_PUBLIC_URL` | `http://localhost:8080` | Exact public origin. Set this for LAN or public access. |
+| `HIBP_DEMO_ALLOW_INSECURE_HTTP` | `false` | Demo-only opt-in for a non-loopback `http://` LAN origin. Never enable on an internet-facing host. |
 
 ## Reset
 
@@ -175,6 +189,9 @@ hosts; a restart restores the seed data.
 - Backup and restore return simulated success without writing arbitrary paths.
 - The sign-in page and application expose demo-only credentials and TOTP data.
 - `X-Robots-Tag: noindex, nofollow` is set on demo responses.
+- `HIBP_DEMO_ALLOW_INSECURE_HTTP=true` disables the HTTPS requirement for a
+  non-loopback origin. It is only for a trusted LAN; do not use it on an
+  internet-facing host.
 - Use container resource limits and proxy rate limiting for a public deployment.
 
 Recommended container flags. The demo runs as UID/GID `65532`; the `/tmp`
@@ -225,9 +242,17 @@ the exact **external HTTPS origin** the browser uses:
 HIBP_DEMO_PUBLIC_URL=https://demo.example.com
 ```
 
+For a trusted LAN-only deployment over plain HTTP, opt in explicitly:
+
+```dotenv
+HIBP_DEMO_PUBLIC_URL=http://192.168.1.50:8011
+HIBP_DEMO_ALLOW_INSECURE_HTTP=true
+```
+
 Do not use the internal container URL (`http://hibp-demo:8080`), an IP address
-without TLS, or the proxy's backend URL. If the public origin has a non-default
-port, include it exactly as the browser sees it:
+without TLS (unless the LAN opt-in above is set), or the proxy's backend URL. If
+the public origin has a non-default port, include it exactly as the browser
+sees it:
 
 ```dotenv
 HIBP_DEMO_PUBLIC_URL=https://demo.example.com:8443

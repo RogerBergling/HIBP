@@ -25,6 +25,7 @@ services:
     environment:
       - HIBP_DEMO_LISTEN=0.0.0.0:8080
       - HIBP_DEMO_PUBLIC_URL=${HIBP_DEMO_PUBLIC_URL:-http://localhost:8080}
+      - HIBP_DEMO_ALLOW_INSECURE_HTTP=${HIBP_DEMO_ALLOW_INSECURE_HTTP:-false}
     read_only: true
     # /tmp must be writable by the image UID/GID 65532 for the ephemeral DB and
     # demo SSH files. mode=1777 is the standard sticky world-writable /tmp mode

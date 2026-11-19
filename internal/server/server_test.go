@@ -383,6 +383,41 @@ func TestConfiguredPublicURLAllowsLANHost(t *testing.T) {
 	}
 }
 
+func TestDemoInsecureLANHTTPRequiresOptIn(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "inventory.hibp"), []byte("correct horse battery staple"), store.Options{
+		Create: true, KDFTime: 1, KDFMemory: 64 * 1024, KDFThreads: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	cfg := Config{
+		Store:         db,
+		Version:       "test",
+		SSHConfigPath: filepath.Join(t.TempDir(), "missing-config"),
+		PublicURL:     "http://192.168.1.50:8011",
+		Demo:          true,
+	}
+	if _, err := New(cfg); err == nil || !strings.Contains(err.Error(), "HIBP_DEMO_ALLOW_INSECURE_HTTP") {
+		t.Fatalf("expected demo opt-in error, got %v", err)
+	}
+	cfg.AllowInsecureHTTP = true
+	app, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !app.hostAllowed("192.168.1.50") {
+		t.Fatal("expected the configured LAN address to be allowed")
+	}
+	if app.publicHTTPS {
+		t.Fatal("expected cookies to be non-Secure for plain HTTP")
+	}
+	cfg.Demo = false
+	if _, err := New(cfg); err == nil {
+		t.Fatal("expected non-demo HTTP LAN URL to be rejected")
+	}
+}
+
 func TestWebAuthnConfigForPublicHost(t *testing.T) {
 	app := &Server{webAuthnRPID: "hibp.lan", webAuthnOrigin: "https://hibp.lan:8443"}
 	request := httptest.NewRequest(http.MethodPost, "https://hibp.lan:8443/api/v1/auth/passkey/register/begin", nil)

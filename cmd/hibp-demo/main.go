@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -103,15 +104,23 @@ Host demo-db01
 	if publicURL == "" {
 		publicURL = "http://localhost:" + listenPort
 	}
+	allowInsecureHTTP := false
+	if raw := strings.TrimSpace(os.Getenv("HIBP_DEMO_ALLOW_INSECURE_HTTP")); raw != "" {
+		allowInsecureHTTP, err = strconv.ParseBool(raw)
+		if err != nil {
+			return fmt.Errorf("invalid HIBP_DEMO_ALLOW_INSECURE_HTTP %q: %w", raw, err)
+		}
+	}
 	app, err := server.New(server.Config{
-		Store:         db,
-		Version:       version,
-		Build:         buildinfo.Current,
-		KeyDirs:       []string{keyDir},
-		SSHConfigPath: sshConfig,
-		PublicURL:     publicURL,
-		Demo:          true,
-		TrustProxy:    strings.HasPrefix(strings.ToLower(publicURL), "https://"),
+		Store:             db,
+		Version:           version,
+		Build:             buildinfo.Current,
+		KeyDirs:           []string{keyDir},
+		SSHConfigPath:     sshConfig,
+		PublicURL:         publicURL,
+		Demo:              true,
+		AllowInsecureHTTP: allowInsecureHTTP,
+		TrustProxy:        strings.HasPrefix(strings.ToLower(publicURL), "https://"),
 	})
 	if err != nil {
 		return err
@@ -138,6 +147,9 @@ Host demo-db01
 	fmt.Fprintf(os.Stderr, "Login:    %s / %s + TOTP shown on the sign-in page\n", "guest", "guest")
 	fmt.Fprintln(os.Stderr, "Mode:     fake data, simulated SSH/email/network/package actions")
 	fmt.Fprintln(os.Stderr, "Reset:    restart the container; the demo database is ephemeral")
+	if allowInsecureHTTP && strings.HasPrefix(strings.ToLower(publicURL), "http://") {
+		fmt.Fprintln(os.Stderr, "WARNING:  insecure HTTP allowed; use this on a trusted LAN only")
+	}
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- httpServer.Serve(listener) }()
