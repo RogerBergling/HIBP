@@ -153,13 +153,14 @@ hosts; a restart restores the seed data.
 - Use container resource limits and proxy rate limiting for a public deployment.
 
 Recommended container flags. The demo runs as UID/GID `65532`; the `/tmp`
-tmpfs must be owned by that user or the container cannot create its ephemeral
-database and demo SSH files.
+tmpfs must be writable by that user or the container cannot create its ephemeral
+database and demo SSH files. `mode=1777` is the standard sticky `/tmp` mode and
+is accepted by Docker/Compose versions that reject `uid`/`gid` tmpfs options.
 
 ```bash
 docker run --rm \
   --read-only \
-  --tmpfs /tmp:rw,noexec,nosuid,size=256m,uid=65532,gid=65532,mode=0700 \
+  --tmpfs /tmp:rw,noexec,nosuid,size=256m,mode=1777 \
   --cap-drop ALL \
   --security-opt no-new-privileges \
   --memory 512m \

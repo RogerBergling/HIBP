@@ -42,10 +42,11 @@ services:
       - ${HIBP_SSH_DIR:-/etc/hibp/ssh}:/etc/hibp/ssh:ro
       - ${HIBP_PASSPHRASE_FILE:-/etc/hibp/db.passphrase}:/etc/hibp/db.passphrase:ro
     read_only: true
-    # The controller runs as UID/GID 65532. Keep the writable tmpfs owned by that
-    # user; a default root-owned tmpfs is not writable by the service account.
+    # The controller runs as UID/GID 65532. mode=1777 is the standard sticky
+    # world-writable /tmp mode and is accepted by Docker/Compose versions that
+    # reject uid/gid tmpfs options.
     tmpfs:
-      - /tmp:rw,noexec,nosuid,size=256m,uid=65532,gid=65532,mode=0700
+      - /tmp:rw,noexec,nosuid,size=256m,mode=1777
     cap_drop:
       - ALL
     security_opt:
