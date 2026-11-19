@@ -74,8 +74,11 @@ func TestDemoGuestCanLogInWithDisplayedTOTP(t *testing.T) {
 		Store:         db,
 		Version:       "test",
 		SSHConfigPath: filepath.Join(t.TempDir(), "missing-config"),
-		PublicURL:     "http://localhost:8080",
-		Demo:          true,
+		// The test client reaches the server over HTTP. A configured HTTPS
+		// public URL must not force a Secure cookie over that HTTP transport,
+		// or the cookie jar drops it and the demo loops back to the login form.
+		PublicURL: "https://demo.example:8443",
+		Demo:      true,
 	})
 	if err != nil {
 		t.Fatal(err)

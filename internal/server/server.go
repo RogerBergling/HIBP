@@ -78,7 +78,7 @@ type Server struct {
 	allowedHosts      map[string]bool
 	webAuthnRPID      string
 	webAuthnOrigin    string
-	publicHTTPS       bool
+	sessionCookie     string
 	trustProxy        bool
 	demo              demoHooks
 	mux               *http.ServeMux
@@ -145,6 +145,12 @@ func New(cfg Config) (*Server, error) {
 			webAuthnOrigin = publicOrigin(publicURL)
 		}
 	}
+	sessionCookie := sessionCookieName
+	if cfg.Demo {
+		// Keep the demo session separate from a production controller or another
+		// demo on the same hostname. Cookies are not scoped by port.
+		sessionCookie = "hibp_demo_session"
+	}
 	s := &Server{
 		store:             cfg.Store,
 		build:             build,
@@ -165,7 +171,7 @@ func New(cfg Config) (*Server, error) {
 		allowedHosts:      allowedHosts,
 		webAuthnRPID:      webAuthnRPID,
 		webAuthnOrigin:    webAuthnOrigin,
-		publicHTTPS:       publicURL != nil && strings.EqualFold(publicURL.Scheme, "https"),
+		sessionCookie:     sessionCookie,
 		trustProxy:        cfg.TrustProxy && cfg.Demo,
 		mux:               http.NewServeMux(),
 	}

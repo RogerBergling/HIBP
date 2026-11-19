@@ -92,7 +92,7 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	session, user, err := s.loadSession(r)
 	if err != nil {
-		if _, cookieErr := r.Cookie(sessionCookieName); cookieErr == nil {
+		if _, cookieErr := r.Cookie(s.sessionCookie); cookieErr == nil {
 			s.clearSessionCookie(w, r)
 		}
 		writeJSON(w, http.StatusOK, response)
@@ -807,7 +807,7 @@ func (s *Server) withSession(next http.HandlerFunc, requireMFA bool) http.Handle
 }
 
 func (s *Server) loadSession(r *http.Request) (*store.Session, *store.User, error) {
-	cookie, err := r.Cookie(sessionCookieName)
+	cookie, err := r.Cookie(s.sessionCookie)
 	if err != nil || cookie.Value == "" {
 		return nil, nil, errLoginRequired
 	}
@@ -863,24 +863,28 @@ func (s *Server) completeMFA(w http.ResponseWriter, r *http.Request, value *auth
 
 func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, token string, ttl time.Duration) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
+		Name:     s.sessionCookie,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		Secure:   s.publicHTTPS || r.TLS != nil,
-		MaxAge:   int(ttl.Seconds()),
+		// Follow the scheme the browser actually used. Forcing Secure from the
+		// configured public URL breaks LAN HTTP access: browsers silently
+		// discard Secure cookies received over HTTP, which looks like a login
+		// loop. Behind a TLS proxy requestScheme uses X-Forwarded-Proto.
+		Secure: s.requestScheme(r) == "https",
+		MaxAge: int(ttl.Seconds()),
 	})
 }
 
 func (s *Server) clearSessionCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
+		Name:     s.sessionCookie,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		Secure:   s.publicHTTPS || r.TLS != nil,
+		Secure:   s.requestScheme(r) == "https",
 		MaxAge:   -1,
 	})
 }

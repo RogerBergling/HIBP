@@ -236,6 +236,39 @@ make demo-image
 
 ## Troubleshooting
 
+### Sign-in returns to the login page
+
+The demo keeps its session in the `hibp_demo_session` cookie. The demo cookie
+name is separate from the production `hibp_session` cookie so multiple HIBP
+instances on the same hostname do not overwrite each other.
+
+If sign-in succeeds but the page returns to the login form, the browser did not
+keep the cookie. Check:
+
+1. **The browser URL matches the configured origin.** Compare the address bar
+   with:
+
+   ```bash
+   docker compose --env-file .env.demo config | grep HIBP_DEMO_PUBLIC_URL
+   ```
+
+   `http://` and `https://` are different origins. Do not configure `https://`
+   and browse over `http://`, or the reverse.
+
+2. **Cookies are allowed for this host.** Private browsing, cookie blockers, or
+   a site setting can discard the session cookie.
+
+3. **You are using the expected hostname.** The Host header must match
+   `HIBP_DEMO_PUBLIC_URL` or be a loopback name. A different LAN IP gets
+   `403 unexpected Host header`, not a login loop.
+
+4. **An HTTPS proxy sets `X-Forwarded-Proto: https`.** Without it the demo may
+   treat the backend request as plain HTTP.
+
+Clear the site's cookies for the demo host and retry. If the problem persists,
+check the browser developer tools console and the response headers for
+`Set-Cookie`.
+
 ### `demo public URL must use https for a non-loopback host`
 
 `HIBP_DEMO_PUBLIC_URL` is set to an `http://` URL for a non-loopback hostname.

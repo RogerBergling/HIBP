@@ -409,13 +409,37 @@ func TestDemoInsecureLANHTTPRequiresOptIn(t *testing.T) {
 	if !app.hostAllowed("192.168.1.50") {
 		t.Fatal("expected the configured LAN address to be allowed")
 	}
-	if app.publicHTTPS {
-		t.Fatal("expected cookies to be non-Secure for plain HTTP")
+	recorder := httptest.NewRecorder()
+	app.setSessionCookie(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", nil), "token", time.Hour)
+	cookie := recorder.Result().Cookies()[0]
+	if cookie.Name != "hibp_demo_session" || cookie.Secure {
+		t.Fatalf("unexpected demo cookie over HTTP: name=%q secure=%v", cookie.Name, cookie.Secure)
 	}
 	cfg.Demo = false
 	if _, err := New(cfg); err == nil {
 		t.Fatal("expected non-demo HTTP LAN URL to be rejected")
 	}
+}
+
+func TestSessionCookieSecureFollowsRequestScheme(t *testing.T) {
+	app := &Server{sessionCookie: "hibp_demo_session"}
+	check := func(name string, req *http.Request, wantSecure bool) {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		app.setSessionCookie(recorder, req, "token", time.Hour)
+		cookie := recorder.Result().Cookies()[0]
+		if cookie.Secure != wantSecure {
+			t.Fatalf("%s: expected Secure=%v, got %v", name, wantSecure, cookie.Secure)
+		}
+	}
+	check("plain HTTP", httptest.NewRequest(http.MethodPost, "http://demo.lan:8011/api/v1/auth/login", nil), false)
+	httpsReq := httptest.NewRequest(http.MethodPost, "https://demo.lan:8011/api/v1/auth/login", nil)
+	httpsReq.TLS = &tls.ConnectionState{}
+	check("direct HTTPS", httpsReq, true)
+	app.trustProxy = true
+	proxyReq := httptest.NewRequest(http.MethodPost, "http://demo.lan:8011/api/v1/auth/login", nil)
+	proxyReq.Header.Set("X-Forwarded-Proto", "https")
+	check("HTTPS proxy", proxyReq, true)
 }
 
 func TestWebAuthnConfigForPublicHost(t *testing.T) {

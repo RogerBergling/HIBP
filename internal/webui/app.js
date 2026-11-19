@@ -550,6 +550,7 @@ async function demoLogin() {
     state.auth = status;
     state.demo = status.demo || state.demo;
     updateDemoCode();
+    let completedTOTP = false;
     if (status.mfa_required && !status.mfa_enrollment_required &&
         status.user && status.user.totp_enabled && state.demo) {
       // Fetching the status above gives us a fresh code even if the page has
@@ -558,7 +559,13 @@ async function demoLogin() {
         method: 'POST',
         body: JSON.stringify({ code: state.demo.totp_code || '' }),
       });
+      completedTOTP = true;
       status = await fetchAuthStatus();
+    }
+    if (completedTOTP && !status.authenticated) {
+      await renderAuth(status);
+      showAuthMessage('Sign-in succeeded but the browser did not keep the demo session cookie. Allow cookies for this site and use the same http:// or https:// address as HIBP_DEMO_PUBLIC_URL.');
+      return;
     }
     await renderAuth(status);
   } catch (error) {
