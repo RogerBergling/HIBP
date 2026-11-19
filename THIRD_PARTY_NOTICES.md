@@ -10,7 +10,6 @@ are compiled into or used by the application. Their licenses remain in effect.
 | `github.com/mutecomm/go-sqlcipher` | MIT | Development-only SQLCipher driver |
 | `github.com/go-webauthn/webauthn` | BSD-3-Clause | WebAuthn/passkey authentication |
 | `github.com/shirou/gopsutil/v4` | BSD-3-Clause | Read-only host metrics and system information |
-| `github.com/vmware/govmomi` | Apache-2.0 | Read-only vCenter alarm polling |
 | `github.com/skip2/go-qrcode` | MIT | TOTP enrollment QR |
 | `github.com/robfig/cron/v3` | MIT | Cron expression parsing for patch schedules |
 | `golang.org/x/crypto` | BSD-3-Clause | SSH, Argon2id, BLAKE2b |

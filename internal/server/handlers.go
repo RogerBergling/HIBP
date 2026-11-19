@@ -78,6 +78,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		"audit_entries": entries,
 		"time":          crypto.Now(),
 		"controller":    controllerStatus(),
+		"demo":          s.demo != nil,
 	})
 }
 
@@ -263,7 +264,11 @@ func (s *Server) handleTestHost(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	err = remote.Test(ctx, s.hostTarget(host, password), remoteHostKey(key))
+	if s.demo != nil {
+		err = s.demo.TestHost(ctx, host, password)
+	} else {
+		err = remote.Test(ctx, s.hostTarget(host, password), remoteHostKey(key))
+	}
 	if err != nil {
 		var keyErr *remote.KeyError
 		if errors.As(err, &keyErr) {
@@ -317,7 +322,12 @@ func (s *Server) handleTrustKey(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	actual, err := remote.Probe(ctx, s.hostTarget(host, password))
+	var actual remote.HostKey
+	if s.demo != nil {
+		actual, err = s.demo.ProbeHost(ctx, host, password)
+	} else {
+		actual, err = remote.Probe(ctx, s.hostTarget(host, password))
+	}
 	if err != nil {
 		var keyErr *remote.KeyError
 		if errors.As(err, &keyErr) {
@@ -375,7 +385,12 @@ func (s *Server) handleTrustJumpKey(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	actual, err := remote.ProbeJump(ctx, *target.ProxyJump)
+	var actual remote.HostKey
+	if s.demo != nil {
+		actual, err = s.demo.ProbeJump(ctx, *target.ProxyJump)
+	} else {
+		actual, err = remote.ProbeJump(ctx, *target.ProxyJump)
+	}
 	if err != nil {
 		s.auditHostActionFailure(r, "trust-jump-key", host.ID, err)
 		writeError(w, http.StatusBadGateway, err.Error())
@@ -488,6 +503,9 @@ func (s *Server) runHelper(ctx context.Context, host store.Host, action, sshPass
 	helperAction := action
 	if len(args) == 1 {
 		helperAction += " " + args[0]
+	}
+	if s.demo != nil {
+		return s.demo.RunHelper(ctx, host, helperAction, "", timeout)
 	}
 	command := "sudo -n /usr/local/libexec/hibp/hibp-helper " + helperAction
 	input := ""
@@ -1154,6 +1172,26 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "host key is not trusted; test and trust the host first", "code": "host_key_untrusted"})
 		return
 	}
+	if s.demo != nil {
+		if !s.tryLockHost(host.ID) {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "another patch, reboot, or bootstrap operation is already running for this host", "code": "host_busy"})
+			return
+		}
+		defer s.unlockHost(host.ID)
+		output, err := s.demo.InstallHelper(r.Context(), host, nil, request.SudoPassword)
+		if err != nil {
+			s.auditHostActionFailure(r, "bootstrap-helper", host.ID, err)
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		var facts helper.Facts
+		if json.Unmarshal([]byte(output), &facts) == nil {
+			_ = s.store.SaveFactsAs(s.auditActor(r), host.ID, storeFactsFromHelper(facts))
+		}
+		_ = s.store.AddAudit(s.auditActor(r), "bootstrap-helper", "host", host.ID, "demo: installed restricted helper")
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "output": output})
+		return
+	}
 	executable, err := os.Executable()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "locate controller binary: "+err.Error())
@@ -1280,6 +1318,13 @@ type backupRequest struct {
 }
 
 func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
+	if s.demo != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true, "path": "/demo/backups/hibp-demo.bac",
+			"sidecar": "/demo/backups/hibp-demo.bac.meta", "demo": true,
+		})
+		return
+	}
 	var request backupRequest
 	if err := decodeJSON(w, r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -1319,6 +1364,13 @@ type restoreRequest struct {
 }
 
 func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
+	if s.demo != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true, "path": "/demo/restore/hibp-demo.db",
+			"sidecar": "/demo/restore/hibp-demo.db.meta", "demo": true,
+		})
+		return
+	}
 	var request restoreRequest
 	if err := decodeJSON(w, r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())

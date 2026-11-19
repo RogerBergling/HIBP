@@ -10,7 +10,6 @@ require (
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/shirou/gopsutil/v4 v4.26.10
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
-	github.com/vmware/govmomi v0.56.2
 	golang.org/x/crypto v0.59.0
 	golang.org/x/term v0.48.0
 )
@@ -32,7 +31,6 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	golang.org/x/sys v0.50.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 replace github.com/mattn/go-sqlite3 => ./third_party/go-sqlite3

@@ -21,6 +21,22 @@ The Dockerfile:
 - builds with `sqlcipher_mattn libsqlcipher netgo osusergo`
 - verifies that the resulting ELF has no dynamic dependencies
 
+## Compose example
+
+The repository includes `compose.production.yaml` and
+`.env.production.example` for a GHCR-based controller:
+
+```bash
+cp .env.production.example .env.production
+# Prepare /var/lib/hibp, /etc/hibp/ssh, and /etc/hibp/db.passphrase first.
+# First run only: add --create to the command, complete setup, then restart.
+docker compose --env-file .env.production -f compose.production.yaml up -d
+```
+
+The example uses host networking so the controller listens on the Docker host's
+loopback. It is a starting point; review the volumes, resource limits, and
+systemd/SSH-tunnel policy before production use.
+
 The production image runs as UID/GID `65532`. Mount the database directory with
 permissions for that user, for example:
 

@@ -55,6 +55,12 @@ func HashPassword(password string) (string, error) {
 	if err := ValidatePassword(password); err != nil {
 		return "", err
 	}
+	return hashPassword(password)
+}
+
+// hashPassword derives the PHC string without enforcing the interactive
+// password-length policy. Callers outside the demo build must use HashPassword.
+func hashPassword(password string) (string, error) {
 	salt := make([]byte, passwordSaltLength)
 	if _, err := rand.Read(salt); err != nil {
 		return "", fmt.Errorf("generate password salt: %w", err)

@@ -1,34 +1,36 @@
 # HIBP - Have I Been Patched
 
-> **Status: v0.12.0 adds an optional LAN HTTPS mode with built-in TLS, an
-> explicit public URL, a strict Host-header allowlist, and WebAuthn-origin
-> handling. The v0.11.0 standalone web-service monitoring work remains:
-> controller-side HTTP, TCP, and TLS probes that do not need a host assignment,
-> plus a one-click Web service preset. The v0.10.0 live patch-preview work also
-> remains: package-level upgrade, install, and removal previews, preview-hash
-> revalidation before apply, explicit removal confirmation, a live operation
-> status bar, automatic page refresh, and post-patch facts refresh.**
+> **Status: the current tree adds a durable server-side operation queue, a
+> non-blocking activity dock, and file-based package deployment to one or many
+> selected hosts. Helper setup, patch preview/apply, facts collection, cleanup,
+> reboot, and package install now run as persisted jobs instead of foreground
+> browser loops, so a reload no longer cancels the work. It also adds a separate
+> fake-data public demo image (`hibp-demo`) with guest/TOTP login and simulated
+> SSH, email, network, and package actions. The read-only
+> vCenter/HAProxy/OPNsense integration feature and its dependency were removed.
+> The v0.12.0 optional LAN HTTPS mode and the v0.11.0 standalone web-service
+> monitoring work remain.**
 > The repository contains a working Go server, browser UI, SQLCipher storage,
 > host CRUD/import, password + TOTP/passkey authentication with post-enrollment
 > MFA management, SSH host-key approval, remote helper installation, fact
 > collection, read-only system information, Docker inventory and bulk Compose
-> updates, metric history,
-> monitoring, SMTP email alerts, vCenter/HAProxy/OPNsense integrations, CMDB
-> import, cron-based patch schedules with per-host retries and run history,
-> per-host and selected-host reboot control, optional automatic reboot after
-> patching, SSH config import, audit chain, backup/restore with configurable
-> retention, audit-chain verification, per-host helper build reporting,
-> selected-host helper updates, build identity, and automatic pre-migration
-> backups, helper actions, tests, and CI. `make production`
-> builds against current SQLCipher 4.20 in an Alpine/musl image; the development
-> build still uses the 2020 spike driver and prints a warning. SSH password and
-> sudo fallbacks are manual-run only.
+> updates, metric history, monitoring, SMTP email alerts, CMDB import,
+> cron-based patch schedules with per-host retries and run history, per-host and
+> selected-host reboot control, optional automatic reboot after patching, SSH
+> config import, audit chain, backup/restore with configurable retention,
+> audit-chain verification, per-host helper build reporting, selected-host
+> helper updates, build identity, and automatic pre-migration backups, helper
+> actions, tests, and CI. `make production` builds against current SQLCipher
+> 4.20 in an Alpine/musl image; the development build still uses the 2020 spike
+> driver and prints a warning. SSH password and sudo fallbacks are manual-run
+> only.
 >
-> **Not yet production-complete:** approval workflows, a durable job queue with
-> resume across restarts, approved playbooks, agent mode, and RBAC are not
-> implemented. Package-level preflight diffs are implemented, but per-run
-> resulting package diffs are not recorded. The scheduler is a single-process
-> cron engine with bounded per-host retries. Read
+> **Not yet production-complete:** approval workflows, approved playbooks,
+> agent mode, and RBAC are not implemented. Package-level preflight diffs are
+> implemented, but per-run resulting package diffs are not recorded. The
+> scheduler is a single-process cron engine with bounded per-host retries.
+> Durable manual jobs resume non-destructive work after a restart; destructive
+> work is marked interrupted and requires an explicit retry. Read
 > [Production deployment checklist](#production-deployment-checklist) and
 > [Known limitations before production](#known-limitations-before-production)
 > before exposing this to real hosts.
@@ -46,12 +48,14 @@ package manager, applies updates on demand or through cron schedules, reboots
 one or many selected hosts on explicit confirmation, and can reboot
 automatically after a successful patch when the target reports that a reboot is
 required. It can also preview and remove orphaned packages on explicit
-confirmation. Manual patch runs now resolve a package-level preflight diff
-before anything is applied, show upgrades, installs, and removals, revalidate
-that preview immediately before apply, and require explicit removal
-confirmation. It records audit events and per-host run history. It does not yet
-provide a durable job queue, approval workflows, or per-run resulting package
-diffs.
+confirmation, and deploy an uploaded `.deb`, `.rpm`, `.pkg.tar.zst`, or `.apk`
+package to selected hosts with installer environment variables. Manual patch
+runs resolve a package-level preflight diff before anything is applied, show
+upgrades, installs, and removals, revalidate that preview immediately before
+apply, and require explicit removal confirmation. Long-running operations are
+persisted server-side and appear in a non-blocking activity dock. HIBP records
+audit events and per-host run history. Approval workflows and per-run resulting
+package diffs are not implemented.
 
 ## Screenshots
 
@@ -66,37 +70,45 @@ diffs.
 
 ![HIBP web-service monitor with no host assignment](docs/screenshots/web-service-monitor.png)
 
-![HIBP integrations and external alert history](docs/screenshots/integrations.png)
-
 Monitoring checks use collected host snapshots and read-only network probes.
-External integrations poll vCenter, HAProxy, and OPNsense without changing
-them. Alert history is recorded even when email delivery is disabled or fails.
+Alert history is recorded even when email delivery is disabled or fails.
 
-### Live patch preview
+### Live patch preview and activity dock
 
 The manual patch flow resolves the package transaction before it changes
-anything, then shows upgrades, installs, and removals. The page refreshes itself
-after the run, so the host table and pending counts update without an F5.
+anything, then shows upgrades, installs, and removals. Patch preview, helper
+setup, facts collection, cleanup, reboot, and package deployment are persisted
+as server-side jobs; the activity dock shows the current host, stage, percentage,
+elapsed time, and per-host results while you continue using other views. The
+page refreshes itself after the run, so the host table and pending counts update
+without an F5.
 
-| Live operation status | Package-level preview |
-| --- | --- |
-| ![Live operation status bar showing fleet preview progress](docs/screenshots/live-operation-status.png) | ![Patch preview with upgrades, installs, removals, and typed APPLY confirmation](docs/screenshots/patch-preview.png) |
+![Patch preview with upgrades, installs, removals, and typed APPLY confirmation](docs/screenshots/patch-preview.png)
+
+The activity dock is rendered as a fixed, non-blocking panel in the current UI.
+The older top operation bar remains for scheduled-run status and interactive
+per-host fallbacks.
 
 > **Upgrading from v0.9.x:** run **Setup / Update helpers** on each target before
 > the first patch preview. v0.10.0 adds the fixed `preview` helper action and
 > its restricted sudoers entry. Older helpers can still run check/apply, but
 > the preview will fail until the helper is updated.
+>
+> **Upgrading to this build:** run **Update helpers** before using package
+> deployment. The target helper build and sudoers rule must include the
+> `install-package` action; older helpers reject it.
 
 ## Contents
 
 - [Screenshots](#screenshots)
-- [Live patch preview](#live-patch-preview)
+- [Live patch preview and activity dock](#live-patch-preview-and-activity-dock)
 - [Install a release](#install-a-release-recommended)
 - [Install prerequisites](#install-prerequisites)
 - [Quick start (source build)](#quick-start-source-build)
 - [Server deployment and local migration](docs/server-deployment.md)
 - [Command-line reference](#command-line-reference)
 - [Windows client](#windows-client)
+- [Public demo container](#public-demo-container)
 - [100-host go-live gate](#100-host-go-live-gate)
 - [Production deployment checklist](#production-deployment-checklist)
 - [Authentication and MFA](#authentication-and-mfa)
@@ -206,6 +218,10 @@ End users should not need Go or a compiler.
    `--ssh-config`; the scratch image has no home-directory key defaults. Mounted
    key and passphrase files must be readable by UID 65532. Do not place the
    database on a network filesystem.
+
+   A production Compose example is in `compose.production.yaml` with
+   `.env.production.example`; the public demo has `compose.demo.yaml` and
+   `.env.demo.example`.
 
 You do **not** need the prerequisites below unless you are building from source.
 
@@ -511,14 +527,19 @@ Server flags:
 Helper actions are intentionally fixed: `facts`, `preview`, `check`, `apply`,
 `cleanup-check`, `cleanup-apply`, `reboot`, `reboot-check`, `system-info`,
 `metrics`, `docker-list`, `docker-check <project>`, `docker-apply <project>`,
-and `docker-update-all`. The helper does not accept package names, host names,
-or shell fragments from the controller.
+`docker-update-all`, and `install-package`. `install-package` reads one
+validated JSON request (package bytes, SHA-256, and installer environment) from
+stdin and never accepts package names or shell fragments as command-line
+arguments. The other actions do not accept package names, host names, or shell
+fragments from the controller.
 
 Important constraints:
 
 - The server requires the database passphrase before it starts. There is no
   locked/paused browser UI in v0.12.0. If the process stops, the UI, collector,
-  scheduler, and monitoring stop with it.
+  scheduler, monitoring, and job worker stop with it. Durable jobs are
+  recovered on the next start: non-destructive work resumes, destructive work
+  requires an explicit retry.
 - `-create` is not an upgrade or reset flag. It refuses an existing database.
 - `-demo` writes sample hosts and is not a production mode.
 - `hibp user reset` clears the account password, TOTP, passkeys, and all
@@ -601,6 +622,41 @@ can be used instead; see [Server deployment and local migration](docs/server-dep
 Do not port-forward port 8443 or expose it to the internet. Native Windows
 controller support and Windows target patching are not implemented.
 
+## Public demo container
+
+A separate demo artifact is built from the same repository and published to
+`ghcr.io/<owner>/hibp-demo`. It is not the production image.
+
+- Demo login: `guest` / `guest` plus a fixed TOTP secret and current code shown
+  on the sign-in page.
+- Rich fake fleet: hosts, facts, metrics history, system information, Docker
+  inventory, monitors, alerts, schedules, runs, jobs, and audit events.
+- Real UI, database, authentication, job engine, scheduler, and monitoring
+  state.
+- Simulated SSH, helper actions, package installation, SMTP, HTTP/TCP/TLS
+  probes, backup/restore writes, and helper setup.
+- Ephemeral database; restarting the container resets all demo state.
+- Intended for a TLS-terminating reverse proxy. The proxy must preserve the
+  `Host` header and set `X-Forwarded-Proto: https`.
+- Account security is read-only; passkeys are disabled; dangerous demo flows
+  are simulated.
+
+Compose example:
+
+```bash
+cp .env.demo.example .env.demo
+docker compose --env-file .env.demo -f compose.demo.yaml up -d
+```
+
+The Compose file pulls `ghcr.io/rogerbergling/hibp-demo`, runs read-only with a
+tmpfs `/tmp`, drops capabilities, and applies memory/CPU limits. For a public
+host, set `HIBP_DEMO_PUBLIC_URL` to the exact HTTPS origin and put a
+TLS-terminating proxy in front of `127.0.0.1:8080`.
+
+See [Public demo container](docs/demo.md) for image tags, environment variables,
+Caddy/Nginx examples, reset behavior, and security guidance. The production
+Compose example is `compose.production.yaml` with `.env.production.example`.
+
 ## 100-host go-live gate
 
 This is the short gate for the intended deployment: one controller, roughly 100
@@ -664,10 +720,9 @@ This profile still requires the canary and restore tests below.
 - **Network.** Direct SSH from the controller is the default. Optional
   single-hop `ProxyJump` is supported when the controller can reach the jump
   host; multi-hop chains, interactive bastions, and HTTP proxies are not. The
-  controller also needs SMTP to the relay and, if enabled, HTTP/HTTPS to LAN
-  integrations and monitored endpoints. It does not need internet access at
-  runtime. Inbound access should be SSH from the administrator only; the UI
-  stays on loopback.
+  controller also needs SMTP to the relay and, if enabled, HTTP/HTTPS to
+  monitored endpoints. It does not need internet access at runtime. Inbound
+  access should be SSH from the administrator only; the UI stays on loopback.
 - **Time.** Run NTP/chrony on the controller and every target. Scheduler
   decisions and TOTP depend on the controller clock. Target time sync is
   reported as a fact but is not enforced before apply.
@@ -807,12 +862,12 @@ gate, not as a suggestion.
   full migration, systemd, reboot, and LAN certificate steps.
 - HIBP is single-operator in this release. There is no RBAC, approval workflow,
   or separation between an operator and an auditor.
-- The current release implements cron-based check/apply schedules, bounded
-  per-host retries, per-host operation locks, per-host run history, and manual
-  run-now. It does not implement a durable job queue, approval gates,
-  post-run package evidence, resume across a controller restart, host
-  disable/maintenance state, or approved playbooks. Review the scheduler limitations before making
-  it authoritative.
+- The current release implements durable manual jobs, cron-based check/apply
+  schedules, bounded per-host retries, per-host operation locks, per-host run
+  history, and manual run-now. It does not implement approval gates, post-run
+  package evidence, scheduled-job resume across a controller restart, host
+  disable/maintenance state, or approved playbooks. Review the scheduler
+  limitations before making it authoritative.
 
 ### 2. Create the service account and protected paths
 
@@ -830,9 +885,10 @@ sudo install -d -o hibp -g hibp -m 0700 /etc/hibp/ssh
 - Keep the database, sidecar, backups, and passphrase file off network
   filesystems. File locking and SQLCipher consistency assume local storage.
 - If the service unit uses `ProtectSystem=strict`, only paths listed in
-  `ReadWritePaths` are writable. Put backups under `/var/lib/hibp` or add an
-  explicit writable backup directory to the unit. The web UI accepts arbitrary
-  absolute paths, but the unit may still deny them.
+  `ReadWritePaths` are writable. Put backups and the package staging directory
+  under `/var/lib/hibp` or add explicit writable paths to the unit. The package
+  staging directory is `hibp-jobs/` next to the database. The web UI accepts
+  arbitrary absolute paths, but the unit may still deny them.
 - For LAN HTTPS, put `tls.crt` and `tls.key` in `/etc/hibp`, keep the private key
   at `0600`, and make the certificate SAN match the `--public-url` hostname.
   The `hibp` service account must be able to read both files.
@@ -845,8 +901,8 @@ sudo install -d -o hibp -g hibp -m 0700 /etc/hibp/ssh
   `--tls-cert`, and `--tls-key`. Restrict TCP `8443` to the LAN subnet. Do not
   expose it to the internet or port-forward it on your router.
 - Controller outbound: SSH (`22/tcp` or your target port) to managed hosts,
-  SMTP to the relay, and optional HTTP/HTTPS to LAN integrations/monitored
-  endpoints. No internet access is required at runtime.
+  SMTP to the relay, and optional HTTP/HTTPS to monitored endpoints. No
+  internet access is required at runtime.
 - Controller inbound: SSH from the administrator network only. If the
   controller is a VM, apply the same rules in the hypervisor/security group.
 - Targets: allow SSH from the controller address only, and install the
@@ -962,33 +1018,31 @@ and all sessions.
 - There is no alert-event retention policy yet. Plan database growth and
   external log review.
 
-### 8. Configure integrations with least privilege
+### 8. Configure outbound access and package deployment
 
-- vCenter: use a dedicated read-only account that can read all managed entities
-  and alarms. The poller retrieves triggered alarm state and never changes
-  vCenter. Keep TLS verification enabled unless you deliberately accept a
-  self-signed lab.
-- HAProxy: expose only the stats CSV endpoint; do not give HIBP the admin socket
-  or runtime-control credentials. Prefer a dedicated stats user.
-- OPNsense: use a dedicated API key/secret with read-only gateway/status access.
-- Use HTTPS for any credentialed HAProxy or OPNsense endpoint. The current URL
-  validation permits `http://` for those integrations, which would expose Basic
-  auth/API credentials on the network; if you must use HTTP, isolate the
-  management network. vCenter is HTTPS-only.
-- Integration polling originates from the controller and can reach internal
-  networks. Restrict controller egress to the intended endpoints.
 - The runtime does not require internet access or telemetry. It needs SSH to
-  targets, SMTP to the relay, and (if enabled) HTTPS/HTTP to the LAN
-  integrations and monitored endpoints. Installation/upgrades need a release
-  transfer path; use a release tarball on an offline host rather than the
-  GitHub installer when the controller has no internet.
-- For internal-CA vCenter/OPNsense endpoints, add the CA to the controller's
-  trust store (the scratch Docker image includes only the public CA bundle) or
-  use the explicit TLS-verification opt-out only for a controlled lab.
-- Integration poll failures are shown on the source card but are not separately
-  emailed. Monitor the controller's own logs/health.
-- External finding notifications are sent on new findings and severity changes;
-  there is no repeat-reminder policy for integrations in this release.
+  targets, SMTP to the relay, and (if enabled) HTTPS/HTTP to monitored
+  endpoints. Installation/upgrades need a release transfer path; use a release
+  tarball on an offline host rather than the GitHub installer when the
+  controller has no internet.
+- Package deployment accepts an uploaded `.deb`, `.rpm`, `.pkg.tar.zst`, or
+  `.apk` file and one or more hosts. HIBP stages the file under the database
+  directory in `hibp-jobs/`, transfers it over SSH, verifies the SHA-256, and
+  installs it with the target's package manager. Temporary copies are removed
+  after a fully successful job (no skipped hosts) or when the job record is
+  dismissed; they are kept so a failed or partly skipped job can be retried. Run
+  **Update helpers** first: the target helper build and sudoers rule must include
+  the `install-package` action.
+- The package file itself is not encrypted at rest while staged. Keep the
+  controller disk encrypted and the service account isolated. Treat every
+  uploaded package as root-equivalent code: maintainer scripts run as root, and
+  HIBP does not replace the distribution's or vendor's signature policy.
+- Installer environment variables are stored in the encrypted job record and
+  are never returned by the API. Dangerous names such as `PATH`, `LD_PRELOAD`,
+  `SUDO_*`, and language runtime search paths are rejected.
+- Restrict controller egress to the intended SSH targets and SMTP relay. The
+  package staging directory must stay on the same protected local volume as the
+  database; do not place it on a network filesystem.
 
 ### 9. Back up before use and before every upgrade
 
@@ -1017,6 +1071,9 @@ and all sessions.
 - Keep the matching release binary with every backup. HIBP hard-refuses a
   database whose recorded schema version is newer than the running binary, but
   the matching binary is still required for a reliable restore.
+- Backups include the `jobs` and `job_targets` records but **not** the staged
+  package files under `hibp-jobs/`. A package-install job that is pending or
+  interrupted after a restore must be recreated with the original package.
 
 ### 10. Decide what monitoring the controller itself needs
 
@@ -1041,8 +1098,9 @@ Before declaring go-live:
   `0700`.
 - Confirm host keys were verified out of band and the helper sudoers rule was
   reviewed.
-- Confirm SMTP and integration secrets are absent from unit files, shell
-  history, logs, screenshots, and backups that are not access-controlled.
+- Confirm SMTP secrets and package installer environment values are absent from
+  unit files, shell history, logs, screenshots, and backups that are not
+  access-controlled.
 - Confirm release checksums were verified. Release artifacts are checksummed but
   not signed, and the Docker build is not currently reproducible or SBOM-backed;
   see [Supply chain](#supply-chain) and
@@ -1184,20 +1242,29 @@ and sessions.
 
 ## Docker, system information, and monitoring
 
-> **Status: v0.12.0 adds optional LAN HTTPS access with built-in TLS and a strict public-URL allowlist. The v0.11.0 standalone web-service monitors remain: controller-side HTTP, TCP, and TLS probes with no host assignment, plus a one-click Web service preset. The v0.10.0 live patch-preview work also remains: package-level previews, preview-hash revalidation, a global operation status bar, automatic page refresh, and post-patch facts refresh.**
+> **Status: the current tree adds persisted server-side jobs, a non-blocking
+> activity dock, and uploaded-package deployment to selected hosts. The v0.12.0
+> optional LAN HTTPS access and the v0.11.0 standalone web-service monitors
+> remain.**
 > Read-only system information, Docker inventory, host details, metric history,
 > configurable collection, explicit Docker check/apply and bulk Compose update,
-> monitoring definitions,
-> SMTP email alerts, vCenter alarms, HAProxy stats, OPNsense gateways,
-> cmdb-lite CSV/JSON import, patch schedules with per-host retries, run history,
-> MFA management, per-host operation locks, and verified pre-migration backups
-> are available. Package-level diffs, approvals, and a durable job queue remain
-> the next major phases.
+> monitoring definitions, SMTP email alerts, cmdb-lite CSV/JSON import, patch
+> schedules with per-host retries, run history, MFA management, per-host
+> operation locks, and verified pre-migration backups are available.
+> Per-run resulting package diffs and approval gates remain the next major
+> phases.
 
 ### Implemented now
 
-- Fixed helper actions `system-info`, `metrics`, and `docker-list`, plus the
-  existing package/reboot actions.
+- Durable manual jobs for helper setup, patch preview/apply, facts collection,
+  cleanup, reboot, and uploaded-package installation. Jobs persist across a
+  browser reload, are visible in the activity dock, and stop after the current
+  host on request.
+- Uploaded-package deployment: one `.deb`, `.rpm`, `.pkg.tar.zst`, or `.apk`
+  file, one or more selected hosts, optional installer environment variables,
+  SHA-256 verification, and temporary staging cleanup.
+- Fixed helper actions `system-info`, `metrics`, `docker-list`, and
+  `install-package`, plus the existing package/reboot actions.
 - Host detail view: click a host name in the dashboard or Hosts table. Hosts
   with cached Docker inventory also show a **+** control that opens the
   **Containers** tab directly.
@@ -1245,8 +1312,6 @@ and sessions.
 - **Schedules** view with cron-based check/apply jobs, fleet/group/tag/host
   assignments, maintenance windows, jitter, concurrency limits, optional
   catch-up, email summaries, and per-host run history.
-- Read-only **Integrations** view for vCenter active alarms, HAProxy stats,
-  and OPNsense gateway status, with per-integration recipients and event history.
 - Read-only CMDB import (CSV or JSON) with preview, merge/overwrite modes, and
   no write-back to the CMDB.
 
@@ -1268,6 +1333,43 @@ authentication, a trusted host key, and the restricted `NOPASSWD` helper. Use
 **Collect facts (N)** or the per-host **Facts** button when you need an immediate
 refresh, after installing or updating helpers, or when automatic collection is
 disabled. Password-auth and sudo-password hosts are manual only.
+
+### Durable operations and package deployment
+
+Long-running manual actions are persisted in the encrypted `jobs` and
+`job_targets` tables and executed by the controller process. The browser creates
+the job and then polls the activity dock; the work does not depend on the tab
+staying open. Jobs cover helper setup, patch preview, patch apply, facts
+collection, cleanup preview/apply, reboot, and uploaded-package installation.
+
+- A job records the authenticated actor, kind, title, payload, counters,
+  per-host status/stage, bounded output, and audit entries.
+- The worker processes one job at a time and one host at a time within a job.
+  A second active job that targets the same host is rejected.
+- **Stop after current host** sets a cancellation flag; the host currently being
+  processed finishes before the remaining targets are marked cancelled.
+- On a controller restart, non-destructive jobs (setup, facts, preview) resume
+  from the next pending host. Destructive jobs (patch apply, cleanup apply,
+  reboot, package install) are marked interrupted and require an explicit
+  **Retry** after the operator reviews the result.
+- Background jobs require key authentication and a trusted host key. Most
+  actions also require the restricted `NOPASSWD` helper. Helper-setup jobs
+  additionally require non-interactive sudo for the binary install and
+  `visudo` steps; the restricted helper rule alone is not enough. Password-auth
+  and sudo-password hosts remain interactive per-host actions.
+
+**Deploy package** accepts one `.deb`, `.rpm`, `.pkg.tar.zst`, or `.apk` file,
+one or more selected hosts, and optional installer environment variables such as
+`WAZUH_MANAGER=10.0.0.5`. HIBP stages the file under `hibp-jobs/` next to the
+database, transfers it over SSH, verifies its SHA-256, installs it with the
+target's package manager, and removes the temporary copy after a successful
+job. The package filename extension must match the target package manager.
+Installer environment names are validated; `PATH`, `LD_*`, `SUDO_*`, and related
+dangerous variables are rejected. RPM installs use DNF local-package GPG
+checking where available. Debian local `.deb` files are not signature-checked
+by `dpkg`, and pacman/apk depend on the target's configured trust policy. HIBP
+does not replace the distribution or vendor package-signature policy, and
+maintainer scripts run as root.
 
 ### Docker containers
 
@@ -1493,14 +1595,15 @@ stopped controller.
   against the maintenance window before work starts. Failed host attempts are
   retried up to the configured count only for transient transport failures;
   authentication, host-key, sudo-policy, and package-manager failures are not
-  retried. There is no durable job queue or resume across a controller restart
-  and no approval gate. A schedule can opt in to a reboot after a successful
-  apply when `reboot-check` reports it is required; the default remains no
-  reboot.
-- Manual patch, reboot, bootstrap, Docker check/apply, and scheduled patch
-  operations share a process-local per-host lock. A second operation on the same
-  host is rejected or skipped instead of overlapping. The lock does not
-  coordinate multiple controller processes against one database.
+  retried. Scheduled runs are not a durable queue and do not resume across a
+  controller restart, and there is no approval gate. Manual operations use the
+  separate durable job queue. A schedule can opt in to a reboot after a
+  successful apply when `reboot-check` reports it is required; the default
+  remains no reboot.
+- Manual patch, durable jobs, reboot, bootstrap, Docker check/apply, and
+  scheduled patch operations share a process-local per-host lock. A second
+  operation on the same host is rejected or skipped instead of overlapping. The
+  lock does not coordinate multiple controller processes against one database.
 - Every scheduled host attempt is written to **Recent runs** with action,
   status, exit code, duration, and a bounded output excerpt. The audit entry
   includes the attempt count. Manual patch actions are audited but do not create
@@ -1515,39 +1618,6 @@ stopped controller.
 | Patch schedules and run history |
 | --- |
 | ![Patch schedules and run history](docs/screenshots/schedules.png) |
-
-### External integrations
-
-The **Integrations** view configures three read-only sources. All credentials
-are stored only in SQLCipher, are never returned by the API, and are never
-written to logs or audit details. Each source has a configurable poll interval
-and optional recipients; a blank recipient list uses the SMTP defaults. New
-findings and severity changes send email, and a finding that disappears sends a
-recovery notice. External alert history is stored independently of email delivery.
-
-- **vCenter 8+** — HTTPS SDK URL with a dedicated read-only username/password.
-  HIBP retrieves active triggered alarms for all managed entities through the
-  vSphere property collector. It never syncs the vCenter inventory, acknowledges
-  alarms, clears alarms, or changes vCenter objects. The default poll interval is
-  30 seconds; 30 seconds is the minimum. TLS verification is on by default;
-  self-signed labs can opt out explicitly.
-- **HAProxy** — stats HTTP endpoint with optional Basic authentication. HIBP reads
-  the standard CSV statistics view (it tries the `;csv` variant automatically)
-  and reports backend/server `DOWN`, `NOLB`, and related failures. `MAINT` and
-  `DRAIN` rows are ignored as operator intent. No admin socket or runtime
-  command is used.
-- **OPNsense** — REST API URL plus an API key/secret for a least-privilege user.
-  HIBP reads `/api/routes/gateway/status`; `none` is healthy, `loss` is a warning,
-  and `down` is critical.
-
-Integrations poll from the controller, so the controller needs network access to
-the configured endpoints. A polling failure is shown on the source card as
-`Last error`; it does not fabricate a recover or delete active findings. The
-**Check now** action queues an immediate read-only poll.
-
-| Integrations and external alerts | HAProxy read-only settings |
-| --- | --- |
-| ![Integrations and external alerts](docs/screenshots/integrations.png) | ![HAProxy read-only settings](docs/screenshots/integration-settings.png) |
 
 ### CMDB import
 
@@ -1587,12 +1657,14 @@ commit:
    Compose projects, with trust checks and explicit confirmation.
 3. **Implemented:** monitoring definitions, SMTP email, HTTP/TCP/SSL checks,
    Docker/systemd health, alert history, repeat/cooldown/recovery behaviour.
-4. **Implemented:** read-only vCenter alarms, HAProxy stats, OPNsense gateway
-   status, and cmdb-lite CSV/JSON import with preview and merge/overwrite.
+4. **Implemented:** read-only cmdb-lite CSV/JSON import with preview and
+   merge/overwrite, and uploaded-package deployment to selected hosts.
 5. **Implemented:** cron-based check/apply scheduling, maintenance windows,
    jitter, concurrency, run history, and email summaries.
-6. **Next:** durable job queue with retry/resume, approval gates, post-run
-   package evidence, and reboot orchestration.
+6. **Implemented:** durable manual jobs with safe resume, activity-dock
+   progress, cancellation, and explicit retry.
+7. **Next:** approval gates, post-run package evidence, and reboot
+   orchestration.
 
 ### Collection settings
 
@@ -1649,6 +1721,7 @@ docker-list
 docker-check <project>
 docker-apply <project>
 docker-update-all
+install-package
 ```
 
 It does not accept package names, host names, or arbitrary shell fragments. This
@@ -1672,8 +1745,14 @@ static release build and matching CPU architectures. For a different
 architecture or a custom helper path, use the manual instructions below.
 
 The first install needs sudo rights to create `/usr/local/libexec/hibp` and
-write `/etc/sudoers.d`. If the account only has the four fixed helper rules,
+write `/etc/sudoers.d`. If the account only has the restricted helper rules,
 installing a new helper requires a manual root step.
+
+The per-host **Setup** action is interactive and can prompt for an SSH or sudo
+password. **Setup selected** and **Update helpers** create durable background
+jobs and cannot prompt; they require key authentication and non-interactive
+sudo for the install and `visudo` steps. Use the per-host action for a
+locked-down target or the initial bootstrap.
 
 Security notes:
 
@@ -1682,9 +1761,10 @@ Security notes:
 - The uploaded binary is run as the unprivileged SSH account before it replaces
   an existing helper. A dynamically linked or incompatible binary is rejected
   without touching the working helper.
-- The sudo password is sent over SSH stdin and never stored. In a selected-host
-  helper update it can be reused from browser memory for hosts with the same SSH
-  username; a wrong password is discarded and prompted again.
+- The sudo password is sent over SSH stdin and never stored. In the interactive
+  per-host flow it can be reused from browser memory for hosts with the same SSH
+  username; a wrong password is discarded and prompted again. Selected-host and
+  fleet helper updates are background jobs and cannot prompt for a password.
 - The final verification always uses `sudo -n`. If the restricted rule does not
   work, Setup fails instead of reporting success.
 - The temporary sudoers file is dot-named, so sudo ignores it while `visudo`
@@ -1703,38 +1783,38 @@ from the running controller. When facts report orphaned packages, the Pending
 cell also shows an amber `N unused` badge.
 
 Use the checkbox column to select one, several, or all hosts. The header
-checkbox selects the whole fleet. **Setup selected (N)** runs the helper setup
-flow only for the checked hosts, while **Update helpers** still runs it for
-every host in the inventory. Both actions show the same sequential progress
-table.
+checkbox selects the whole fleet. **Setup selected (N)** and **Update helpers**
+create durable helper-setup jobs. They run sequentially on key-auth hosts with a
+trusted key and a working restricted `NOPASSWD` helper; hosts without
+passwordless sudo are skipped with a clear result. Use the per-host **Setup**
+action for the initial interactive bootstrap.
 
-**Collect facts (N)** runs the fixed `facts` action on the checked hosts and
-refreshes OS, pending-update, orphaned-package, reboot, and helper-build data. It
-uses the same sequential progress table, per-host failure isolation,
-shared in-memory sudo reuse, and stop-after-current-host control.
+**Collect facts (N)** creates a durable `facts` job and refreshes OS,
+pending-update, orphaned-package, reboot, and helper-build data. Password-auth
+hosts are skipped; use the per-host **Facts** action for the interactive
+fallback.
 
-**Clean up unused (N)** scans the checked hosts first, lists the orphaned
-packages, and requires typing `CLEAN` before removing anything. It supports apt,
-dnf, zypper, and pacman; unsupported hosts are reported and skipped. The
-controller is excluded from bulk cleanup. The per-host **Cleanup** action runs
-the same preview and confirmation for one host.
+**Clean up unused (N)** creates a durable cleanup-preview job, lists the
+orphaned packages in the activity dock, and requires typing `CLEAN` before the
+cleanup-apply job is queued. It supports apt, dnf, zypper, and pacman;
+unsupported hosts are reported and skipped. The controller is excluded from
+bulk cleanup. The per-host **Cleanup** action runs the same preview and
+confirmation for one host.
 
-**Patch selected (N)** works on the same checkbox selection. It opens a summary
-with pending updates and reboot flags, then offers **Dry run** or **Apply
-updates**. Apply can opt in to **reboot automatically after apply when
-required**. The batch runs sequentially, isolates per-host failures, and allows
-**Stop after current host**. If sudo asks for a password, it is prompted once and
-reused from browser memory for the remaining selected hosts with the same SSH
-username; it is never persisted.
+**Patch selected (N)** creates a durable patch-preview job. Review the package
+lists from the activity dock, then apply reviewed updates as a second durable
+job. Apply can opt in to **reboot automatically after apply when required**.
+Each host re-checks its preview immediately before apply. The job isolates
+per-host failures and supports **Stop after current host**. Password-auth hosts
+use the per-host interactive patch flow.
 
 **Reboot selected (N)** uses the same selection. It summarizes the hosts and
-reboot-required flags, requires typing `REBOOT` (case-insensitive), and requests
-the fixed reboot action sequentially with per-host results and **Stop after
-current host**. A successful request marks the host status `unknown` until a
-later check reconnects. Keep the tab open for the progress table. The controller
-is excluded from the batch in both the UI and the server; an API or batch
-request that targets the controller is refused unless it explicitly carries
-per-host controller approval.
+reboot-required flags, requires typing `REBOOT` (case-insensitive), and queues a
+durable reboot job with per-host results and **Stop after current host**. A
+successful request marks the host status `unknown` until a later check
+reconnects. The controller is excluded from the batch in both the UI and the
+server; an API or batch request that targets the controller is refused unless
+it explicitly carries per-host controller approval.
 
 Use **Add host** for either an IP address or a hostname. The address is the SSH
 target; the name is the display label. Host-key trust still happens on the first
@@ -1745,12 +1825,12 @@ connection test.
   running process uploads its old binary.
 - Hosts with untrusted host keys are skipped with a clear result. Run **Test**
   and trust the key first.
-- Sudo prompts may ask once per SSH username and are then reused in browser
-  memory for the rest of the batch. Password-auth SSH hosts still prompt per
-  host; key authentication is preferred. A working restricted `NOPASSWD` rule
-  makes fleet updates unattended.
-- The operation is foreground: keep the tab open. **Stop after current host**
-  cancels the remaining queue; the host currently being updated finishes.
+- Durable helper jobs require key authentication and non-interactive sudo for
+  the install and `visudo` steps. The restricted helper rule alone cannot
+  replace the helper binary. Password-auth and sudo-password hosts use the
+  per-host interactive **Setup** fallback.
+- The job persists across a browser reload or closed tab. **Stop after current
+  host** cancels the remaining queue; the host currently being updated finishes.
 - Each successful host is recorded as `bootstrap-helper` in the audit log.
 - The update action never trusts host keys automatically and never stores
   passwords.
@@ -1766,13 +1846,14 @@ Configuration is fleet-first with per-host overrides where it makes sense:
 - Monitoring definitions with additive fleet, group, tag, and host assignments.
   Hosts that lack Docker or a systemd unit snapshot are excluded from that
   monitor's host state rather than silently marked healthy.
-- SMTP is a global integration; recipients can be set per monitor or fleet.
-- vCenter, HAProxy, and OPNsense credentials are global read-only integrations
-  with their own poll interval and optional recipients.
-- Helper lifecycle: per-host **Setup**, selected-host **Setup selected**, and
-  fleet-wide **Update helpers**.
-- Secrets (SMTP, vCenter, API tokens) live only in SQLCipher and are never
-  returned by the API.
+- SMTP is a global configuration; recipients can be set per monitor or fleet.
+- Helper lifecycle: per-host interactive **Setup** for the initial sudo rule,
+  selected-host **Setup selected**, and fleet-wide **Update helpers** as durable
+  jobs.
+- Package deployment: one uploaded package per job, with optional installer
+  environment variables and selected hosts.
+- Secrets (SMTP password and installer environment values) live only in
+  SQLCipher and are never returned by the API.
 
 ### Install the helper manually
 
@@ -1803,6 +1884,7 @@ hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-list
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-check *
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-apply *
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-update-all
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper install-package
 EOF
 sudo chmod 0440 /etc/sudoers.d/hibp-helper
 sudo visudo -cf /etc/sudoers.d/hibp-helper
@@ -1825,13 +1907,13 @@ runs the fixed `reboot` helper action as root. The helper uses
 
 Use the host checkboxes and **Reboot selected (N)** to reboot several hosts. The
 confirmation lists the selected hosts and their reboot-required state, requires
-typing `REBOOT` (case-insensitive), and then processes the hosts sequentially
-with per-host results and **Stop after current host**. The controller host is
+typing `REBOOT` (case-insensitive), and then queues a durable reboot job with
+per-host results and **Stop after current host**. The controller host is
 detected from its hostname, short hostname, and local addresses and is excluded
 from the bulk selection; the server also refuses a controller reboot from a
 batch or API request. Use the per-host **Reboot** button only when deliberately
-rebooting the controller. It is a foreground browser operation and does not
-survive closing the tab. A rebooted host is marked `unknown` until a later check
+rebooting the controller; the controller reboot remains an interactive
+per-host action. A rebooted host is marked `unknown` until a later check
 reconnects and reports facts.
 
 ### Orphaned packages and cleanup
@@ -1914,10 +1996,11 @@ so an execution denial is reported instead of silently leaving a broken helper.
 
 ### Manual sudo password fallback
 
-If the target cannot use a `NOPASSWD` rule yet, the UI can prompt for the sudo
-password for **manual** Setup, Facts, Check, Apply, and Reboot actions. **Setup**
-uses the password to install the restricted helper rule; after it succeeds, the
-manual actions use `sudo -n` and no longer need the sudo password.
+If the target cannot use a `NOPASSWD` rule yet, the per-host interactive
+**Setup**, **Facts**, **Patch**, **Cleanup**, and **Reboot** actions can prompt
+for the sudo password. **Setup** uses the password to install the restricted
+helper rule; after it succeeds, later actions use `sudo -n` and no longer need
+the sudo password.
 
 - The server first tries `sudo -n`.
 - If the target answers `sudo_password_required`, the UI prompts.
@@ -1927,23 +2010,23 @@ manual actions use `sudo -n` and no longer need the sudo password.
 - It is held in browser/server memory for the tab/session. Close the tab or
   restart the server to clear it.
 - A wrong password is rejected and the cached value is discarded.
-- The first accepted sudo password is reused in browser memory for other hosts
-  with the same SSH username, including **Collect facts**, **Patch selected**,
-  **Clean up unused**, **Reboot selected**, and **Setup selected**. This avoids
-  repeated typing during interactive work without persisting the password.
-- The batch reuse is deliberately memory-only. It is not written to the
-  database, `localStorage`, `sessionStorage`, a file, an environment variable,
-  or a command line. If the password is wrong for a later host, HIBP discards
-  the cached value, prompts once for that host, and retries it. If the retry is
-  also rejected, the host fails and the batch continues.
+- The interactive per-host flows may reuse an accepted sudo password in browser
+  memory for hosts with the same SSH username. Background jobs never receive a
+  sudo password.
+- The reuse is deliberately memory-only. It is not written to the database,
+  `localStorage`, `sessionStorage`, a file, an environment variable, or a
+  command line. If the password is wrong for a later host, HIBP discards the
+  cached value, prompts once for that host, and retries it.
 
 The safe way to avoid sudo prompts entirely is to install the restricted
-`NOPASSWD` helper rule with **Setup** or **Setup selected**. Do not store a sudo
-password in plaintext configuration, browser storage, or a shared script.
+`NOPASSWD` helper rule with the interactive **Setup** action. Selected-host and
+fleet jobs require key authentication and non-interactive sudo; they do not
+prompt. Do not store a sudo password in plaintext configuration, browser
+storage, or a shared script.
 
-This fallback is for interactive use only. **Scheduled patching still requires
-the restricted `NOPASSWD` helper or agent mode.** An unattended schedule cannot
-answer a sudo prompt.
+This fallback is for interactive use only. **Scheduled patching and durable
+background jobs require the restricted `NOPASSWD` helper or agent mode.** An
+unattended operation cannot answer a sudo prompt.
 
 ### If you cannot change sudoers
 
@@ -2012,7 +2095,8 @@ as core features rather than afterthoughts.
   the encrypted database, scheduler, credentials, and audit log. The laptop is a
   thin client and never opens the database directly; it can also be enrolled as
   a managed host. Agentless SSH is the default; an agent is optional later for
-  segmented networks or scale. A durable job queue is not implemented.
+  segmented networks or scale. Manual operations use a durable job queue; the
+  cron scheduler is still a separate single-process engine.
 - **G3 - Cross-distribution by design.** The helper implements
   Debian/Ubuntu/Kali apt, Fedora/RHEL dnf, SUSE zypper, Arch pacman, and Alpine
   apk. Real-target validation is incomplete. Unknown distributions fail closed.
@@ -2288,9 +2372,9 @@ Additional distribution rules:
 ## Recommended architecture
 
 > The current release is a loopback-first server with optional LAN HTTPS,
-> helper actions, and a single-process cron scheduler. A durable job queue,
-> client mode, Unix-socket listener, and reverse-proxy support are design
-> targets, not implemented features.
+> helper actions, a durable manual-job queue, and a single-process cron
+> scheduler. Client mode, a Unix-socket listener, and reverse-proxy support are
+> design targets, not implemented features.
 
 ### Deployment model
 
@@ -2390,10 +2474,11 @@ hibp agent (systemd timer) ── outbound mTLS ──► hibp server
 
 ### Execution flow
 
-> This is the design target. v0.12.0 implements collection, check/apply through
-> the fixed helper, per-host locking, retries, run history, and audit, but not
-> package plans/diffs, approval gates, cancellation, post-reboot verification,
-> or retention.
+> This is the design target. The current tree implements collection,
+> check/apply through the fixed helper, durable manual jobs with
+> stop-after-current cancellation, per-host locking, scheduler retries, run
+> history, and audit, but not package plans/diffs, approval gates, post-reboot
+> verification, or retention.
 
 1. **Preflight.** Resolve the host, connect, verify the host key, authenticate,
    detect the OS and package manager, check `sudo -n`, check disk space, check
@@ -2445,7 +2530,7 @@ baseline; the current implementation status is called out explicitly.
 - The encrypted database and its backups.
 - The database passphrase and any derived keys.
 - The authority to execute package-manager commands as root on every managed
-  host.
+  host, including uploaded package payloads and installer environment values.
 - Host identity records and known host keys.
 - Patch evidence and audit logs.
 - The integrity of the HIBP binary, its profiles, and its updates.
@@ -2465,8 +2550,8 @@ baseline; the current implementation status is called out explicitly.
   access to the server.
 - Silent modification of the audit log by accident, detected by the hash chain.
 - Credential leakage into logs is avoided by design, but there is no exhaustive
-  secret-redaction test suite yet; review new log statements and integration
-  error output during upgrades.
+  secret-redaction test suite yet; review new log statements and helper error
+  output during upgrades.
 
 **Not protected against:**
 
@@ -2518,8 +2603,8 @@ baseline; the current implementation status is called out explicitly.
   line that other local users can read from `/proc`.
 
 The current release derives the SQLCipher key directly from the database
-passphrase with Argon2id and keeps SMTP/integration secrets inside the encrypted
-database. It does **not** implement a separate credential vault, envelope/DEK
+passphrase with Argon2id and keeps SMTP secrets and package installer
+environment values inside the encrypted database. It does **not** implement a separate credential vault, envelope/DEK
 wrapping, or passphrase rotation. The following is a future design goal, not a
 claim about v0.12.0:
 
@@ -2630,8 +2715,8 @@ That authority must be narrow and auditable.
   restricted sudoers rule. The helper accepts a small allowlist of actions
   (`facts`, `preview`, `check`, `apply`, `cleanup-check`, `cleanup-apply`, `reboot`,
   `reboot-check`, `system-info`, `metrics`, `docker-list`,
-  `docker-check <project>`, `docker-apply <project>`, `docker-update-all`)
-  and validates its arguments.
+  `docker-check <project>`, `docker-apply <project>`, `docker-update-all`,
+  `install-package`) and validates its arguments.
 - Example sudoers shape (illustrative, not a complete hardening guide):
 
   ```sudoers
@@ -2648,6 +2733,7 @@ That authority must be narrow and auditable.
   hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-check *
   hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-apply *
   hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-update-all
+  hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper install-package
   ```
 
 - Do not recommend `ALL=(ALL) NOPASSWD: ALL`. If an operator insists, warn
@@ -2748,7 +2834,8 @@ Agent mode is optional and later; v1 uses SSH from the always-on server.
   recomputes the audit chain. It does not compare the schema version to a
   release manifest; keep the matching binary with the backup.
 - Keep at least one backup off the server and test restore procedures.
-- Backups contain the encrypted database, including SMTP/integration secrets and
+- Backups contain the encrypted database, including SMTP secrets and package
+  installer environment values, and
   host metadata. Treat them as crown jewels. A "backup without secrets" mode is
   planned, not implemented.
 - Apply retention and access controls. Encrypt the backup destination as well
@@ -2916,8 +3003,14 @@ Current status:
   view, systemd unit visibility, and configurable collection settings.
 - Monitoring checks, alert history, SMTP email delivery, repeat/cooldown/
   recovery behaviour, and manual immediate checks.
-- Read-only vCenter active-alarm, HAProxy stats, and OPNsense gateway
-  integrations with event history and email.
+- Durable manual jobs for helper setup, patch preview/apply, facts, cleanup,
+  reboot, and package install, with per-host state, bounded evidence,
+  cancellation after the current host, safe resume, and explicit retry.
+- Non-blocking activity dock with percentage, current host/stage, elapsed time,
+  per-host results, output drill-down, and review-to-apply flows.
+- Uploaded-package deployment to one or many selected hosts with SHA-256
+  verification, package-manager selection, optional installer environment
+  variables, and temporary staging cleanup.
 - Read-only CMDB CSV/JSON import with preview and merge/overwrite modes.
 - Cron-based check/apply schedules with fleet/group/tag/host assignments,
   maintenance windows, jitter, concurrency limits, bounded per-host retries,
@@ -2961,12 +3054,12 @@ Current status:
   renamed, and removing the last remaining factor is blocked. There is no
   separate recovery-code workflow; `hibp user reset` remains the local break-glass
   path and clears all MFA.
-- Patch scheduling is a single-process cron engine, not a durable job queue.
-  Per-host retries are bounded (0–5) and exist only within one schedule run.
-  There is no approval gate, resume across a controller restart, post-run
-  package diff, security-only filtering, package excludes/held-package policy,
-  post-reboot verification, host disabled/maintenance state, or global queue
-  across schedules. A schedule can opt in to a reboot after a successful apply
+- Patch scheduling is a single-process cron engine, separate from the durable
+  manual-job queue. Per-host retries are bounded (0–5) and exist only within one
+  schedule run. There is no approval gate, scheduled-run resume across a
+  controller restart, post-run package diff, security-only filtering, package
+  excludes/held-package policy, post-reboot verification, host
+  disabled/maintenance state, or global queue across schedules. A schedule can opt in to a reboot after a successful apply
   when `reboot-check` reports it is required, but HIBP does not wait for or
   verify the rebooted host. A controller stop interrupts work; runs only happen
   while the database is unlocked and the process is alive. Per-host output is
@@ -3015,14 +3108,21 @@ Current status:
 - Fleet-scoped monitors can generate one alert per host; there is no alert
   aggregation or global rate limiting. SMTP sends are serialized, so a slow or
   unavailable relay can delay later alerts. Email delivery failures are recorded
-  in alert/integration history but are not retried automatically. Audit, alert,
-  integration-event, and run-history retention is not implemented.
-- Integration poll failures are shown on the source card but are not separately
-  emailed. External findings do not have a repeat-reminder policy. vCenter reads
-  active triggered alarms only; HAProxy parsing is best-effort across versions;
-  OPNsense currently covers gateway status only. The HAProxy/OPNsense URL
-  validators allow `http://` even with credentials, so use HTTPS and a
-  restricted management network.
+  in alert history but are not retried automatically. Audit, alert, job,
+  and run-history retention is not implemented.
+- Durable jobs run only on key-auth hosts with a trusted host key. Most actions
+  require the restricted NOPASSWD helper; helper setup additionally requires
+  non-interactive sudo for the install and `visudo` steps. Password-auth and
+  sudo-password hosts remain interactive per-host actions. A destructive job interrupted by a controller
+  restart is marked interrupted and requires an explicit retry; a
+  non-destructive job resumes from the next pending host. Job and staged-package
+  retention is manual: dismiss old jobs to remove their evidence and staged
+  files.
+- Package deployment is root-equivalent. HIBP verifies the uploaded SHA-256 and
+  rejects unsafe installer environment names, but it does not replace the
+  distribution or vendor signature policy. Review the package and its maintainer
+  scripts before deploying to production hosts. Staged package files are not
+  encrypted at rest and are kept until a fully successful job or dismissal.
 - The host CSV export endpoint is authenticated but is not exposed in the UI
   and does not write an audit entry. If you use it for evidence handling, add an
   external audit step.
@@ -3066,11 +3166,11 @@ Current status:
   `dnf-plugins-core`/`dnf-utils`. Alpine has no systemd/timedatectl, and its
   reboot-required detection is heuristic and may not detect kernel changes.
   Verify reboot state independently on those distributions.
-- Bulk reboot and optional reboot-after-patch are foreground/request-time
-  operations. A successful reboot request marks the host `unknown`; HIBP does
-  not wait for SSH to return, verify the boot ID/kernel, or check service health.
-  The browser progress table for **Reboot selected** is not durable and stops
-  when the tab closes.
+- Bulk reboot is a durable job, and optional reboot-after-patch is part of the
+  patch apply job. A successful reboot request marks the host `unknown`; HIBP
+  does not wait for SSH to return, verify the boot ID/kernel, or check service
+  health. A reboot job interrupted by a controller restart is marked
+  interrupted and requires an explicit retry.
 - Manual patch, reboot, helper-install, and host-key approval failures now write
   audit entries before returning the error. The audit log is still local only
   and has no external anchor; ship controller stderr/journald to a persistent
@@ -3089,7 +3189,7 @@ Current status:
   `arm64` architecture name but no matching release asset is currently
   published; build from source on ARM64 and keep the controller/helper
   architecture aligned.
-- Audit, alert, integration-event, run-history, Docker-inventory, and metric
+- Audit, alert, job, run-history, Docker-inventory, and metric
   retention are not automated. Backups have a configurable retention count, but
   alert/run/audit retention and external log retention still require planning.
 - Login and MFA rate limits are in-memory per process and reset when the server
@@ -3109,16 +3209,20 @@ Current status:
 ## Data model
 
 The current schema is implemented in `internal/store/migrations/001_init.sql`
-through `011_schedule_reboot.sql`. Domain objects use UUIDs, timestamps are UTC
-ISO 8601, and durations are stored in seconds.
+through `014_drop_integrations.sql`. Domain objects use UUIDs, timestamps are
+UTC ISO 8601, and durations are stored in seconds.
 
 > **Implemented:** `schema_migrations`, `app_meta`, `hosts`, `host_facts`,
 > `host_keys`, `runs`, `users`, `user_passkeys`, `sessions`,
 > `audit_log`, `host_system_info`, `host_metrics`, `docker_projects`,
 > `docker_containers`, `settings`, `monitors`, `monitor_assignments`,
-> `monitor_state`, `alert_events`, `host_services`, `integration_state`,
-> `integration_events`, `schedules`, and `schedule_assignments`. The remaining
-> tables below are planned.
+> `monitor_state`, `alert_events`, `host_services`, `schedules`,
+> `schedule_assignments`, `jobs`, and `job_targets`. The remaining tables below
+> are planned design targets.
+>
+> Migration 014 drops the removed integration tables and settings. Historical
+> audit entries from the old integration feature remain because the audit chain
+> is append-only and must not be rewritten during an upgrade.
 
 | Table | Purpose | Key fields |
 |---|---|---|
@@ -3138,16 +3242,14 @@ ISO 8601, and durations are stored in seconds.
 | `monitor_state` | Last status per monitor/host. | `monitor_id`, `host_id`, `status`, `message`, `checked_at`, `changed_at`, `last_notified` |
 | `alert_events` | Alert history independent of email delivery. | `id`, `monitor_id`, `host_id`, `status`, `subject`, `detail`, `created_at`, `emailed`, `error` |
 | `host_services` | systemd unit snapshot from metrics. | `host_id`, `unit`, `state`, `last_seen` |
-| `integration_state` | Active external findings. | `source`, `event_key`, `status`, `subject`, `detail`, `first_seen`, `last_seen`, `last_notified` |
-| `integration_events` | External alert history. | `id`, `source`, `event_key`, `status`, `subject`, `detail`, `created_at`, `emailed`, `error` |
 | `credentials` | Encrypted credential metadata and secrets. | `id`, `name`, `auth_type`, `username`, `key_path`, `secret_ref`, `wrapped_dek`, `encrypted_secret`, `sudo_mode`, `created_at`, `rotated_at` |
 | `host_credentials` | Credential assignment and precedence. | `host_id`, `credential_id`, `priority` |
 | `host_keys` | Known host keys. | `host_id`, `key_type`, `fingerprint`, `first_seen`, `last_seen`, `trusted`, `revoked_at` |
 | `groups`, `tags`, `host_tags` | Grouping and filtering. | `id`, `name`; `host_id`, `tag_id` |
 | `patch_policies` | Reusable patch rules. | `id`, `name`, `security_only`, `include_patterns`, `exclude_patterns`, `reboot_mode`, `max_concurrency`, `timeout_seconds` |
 | `schedules` | Per-host or per-group schedules. | `id`, `name`, `target_type`, `target_id`, `cron`, `timezone`, `jitter_seconds`, `window_start`, `window_end`, `missed_run_policy`, `policy_id`, `enabled`, `next_run_at` |
-| `jobs` | A requested patch operation. | `id`, `trigger`, `requested_by`, `policy_snapshot`, `created_at`, `started_at`, `finished_at`, `status`, `cancel_requested` |
-| `job_targets` | Per-host state within a job. | `job_id`, `host_id`, `status`, `started_at`, `finished_at`, `exit_code`, `error`, `run_id` |
+| `jobs` | Durable manual operation, payload, counters, and cancellation state. | `id`, `kind`, `status`, `actor`, `title`, `detail`, `payload`, `total`, `completed`, `failed`, `skipped`, `cancel_requested`, `created_at`, `started_at`, `finished_at`, `heartbeat_at` |
+| `job_targets` | Per-host state and bounded evidence within a job. | `job_id`, `host_id`, `host_name`, `position`, `status`, `stage`, `detail`, `exit_code`, `output`, `error`, `result`, `started_at`, `finished_at` |
 | `runs` | Scheduled per-host execution history; populated by the scheduler, not yet by manual patch actions. | `id`, `schedule_id`, `host_id`, `action`, `started_at`, `finished_at`, `status`, `exit_code`, `output`, `error` |
 | `schedules`, `schedule_assignments` | Cron patch definitions and fleet/group/tag/host assignments. | `id`, `name`, `mode`, `cron`, `timezone`, `window_minutes`, `jitter_seconds`, `max_concurrency`, `retries`, `reboot_after_apply`, `notify`, `recipients`, `scope`, `target` |
 | `run_packages` | Package-level diff for a run. | `run_id`, `package`, `old_version`, `new_version`, `action`, `status`, `security`, `repository` |
@@ -3178,13 +3280,16 @@ Schema rules:
 
 ## Scheduling and job semantics
 
-> This section is the target semantics. v0.12.0 implements five-field cron,
-> per-schedule time zones, jitter, a late-start window, skip/latest-missed
-> catch-up, per-schedule concurrency, a controller-wide cap, bounded retries,
-> an optional reboot after a successful apply when `reboot-check` reports it is
-> required, run history, and email summaries. It does not implement systemd
-> `OnCalendar`, a window-end abort policy, per-group concurrency, cancellation,
-> post-reboot verification, EOL/stale-host notifications, or package diffs.
+> This section is the scheduler target semantics. The current tree implements
+> five-field cron, per-schedule time zones, jitter, a late-start window,
+> skip/latest-missed catch-up, per-schedule concurrency, a controller-wide cap,
+> bounded retries, an optional reboot after a successful apply when
+> `reboot-check` reports it is required, run history, and email summaries. It
+> does not implement systemd `OnCalendar`, a window-end abort policy, per-group
+> concurrency, scheduled-run cancellation, post-reboot verification,
+> EOL/stale-host notifications, or package diffs. Durable manual jobs are a
+> separate queue with stop-after-current cancellation, safe resume, and explicit
+> retry; they do not follow the schedule window semantics below.
 
 - Schedule syntax: five-field cron for simple cases, systemd `OnCalendar` for
   operators who prefer it. Validate and show the next five run times in the GUI.
@@ -3212,9 +3317,8 @@ Schema rules:
 - Post-reboot verification: reconnect, check uptime and boot ID, confirm the
   kernel, and re-check pending updates and service health.
 - Notifications: failure, reboot required, long-running job, host stale, EOL
-  detected, and a daily/weekly summary. Email alerting for host monitoring and
-  external integrations is implemented; webhook, ntfy, Slack, and Teams remain
-  later phases.
+  detected, and a daily/weekly summary. Email alerting for host monitoring is
+  implemented; webhook, ntfy, Slack, and Teams remain later phases.
 - UI: dashboard cards for hosts needing patches, reboot required, failed runs,
   stale hosts, and EOL hosts. A host table with filters, a run timeline, a
   package diff, a log viewer, and a next-run column.
@@ -3345,7 +3449,7 @@ not accept passwords, private keys, or scripts.
   upgrade. The same retention count is applied afterward.
 - Keep at least one backup off the server and test restore procedures.
 - There is no "backup without secrets" mode in this release. Every backup
-  contains the encrypted database and therefore the SMTP/integration secrets and
+  contains the encrypted database and therefore the SMTP secrets and
   host metadata; protect it accordingly.
 - Record backup creation, destination, and result in the audit log, but not the
   passphrase.
@@ -3360,7 +3464,7 @@ not accept passwords, private keys, or scripts.
   metric retention. For 100 hosts, 5-minute metrics produce about 28,800
   samples per day (roughly 864,000 retained samples at 30 days) before indexes
   and other tables.
-- Audit entries, alert events, integration events, run history, system-info
+- Audit entries, alert events, job targets, run history, system-info
   snapshots, Docker inventory, and settings also grow. Only metrics and
   HIBP-created timestamped backups have automatic retention; the other tables do
   not.
@@ -3526,7 +3630,6 @@ Go is the chosen stack:
 - `github.com/google/uuid` — host, user, and run IDs.
 - `github.com/go-webauthn/webauthn` — passkey registration and login.
 - `github.com/shirou/gopsutil/v4` — CPU, memory, disk, load, and host information.
-- `github.com/vmware/govmomi` — read-only vCenter alarm polling.
 - `github.com/skip2/go-qrcode` — TOTP enrollment QR codes.
 - `github.com/robfig/cron/v3` — cron expression parsing for patch schedules.
 - Standard library: `embed`, `net/http`, `database/sql`, `encoding/csv`,
@@ -3586,14 +3689,19 @@ make test           # Go tests (development driver)
 make vet            # go vet
 make static         # development static ELF + ldd check
 make production     # production Docker build: current SQLCipher 4.20
+make demo-test      # tests with the demo build tag
+make demo-build     # fake-data demo binary (development driver)
+make demo-image     # fake-data demo Docker image
 make validate       # tests, vet, README validator, Python tests, git diff check
 
 # Run
 ./dist/hibp server --db ~/.local/share/hibp/hibp.db --create
+./dist/hibp-demo    # local fake-data demo, default http://localhost:8080/
 ```
 
-CI runs development tests, race tests, vet, README/Python validation, the
-development static build, `govulncheck`, and the production Docker build.
+CI runs development and demo-tag tests, race tests, vet, README/Python
+validation, the development static build, `govulncheck`, the production Docker
+build, and the demo image build/smoke test.
 
 ## Repository layout
 
@@ -3603,17 +3711,20 @@ Implemented layout:
 go.mod / go.sum           Go module and pinned dependencies
 Makefile                  build, test, static, validate, package
 cmd/hibp/main.go          server, helper, user reset, and version commands
+cmd/hibp-demo/            demo-only entrypoint (demo build tag)
 internal/buildinfo/       version, build number, commit, date, target, type
 internal/crypto/          Argon2id, sidecar, tokens, zeroization
 internal/store/           SQLCipher, migrations, hosts, schedules, runs, backup, audit
 internal/store/migrations SQL schema
 internal/remote/          SSH transport and host-key policy
 internal/helper/          fixed target actions
-internal/server/          browser UI/API, auth, scheduler, monitoring, integrations
+internal/server/          browser UI/API, auth, scheduler, monitoring, durable jobs, demo hooks
 internal/webui/           embedded HTML/CSS/JS
 third_party/go-sqlite3/   patched mattn driver with sqlite3_key before open
 packaging/Dockerfile          production SQLCipher 4.20 + musl static build
+packaging/Dockerfile.demo     fake-data demo image
 packaging/                systemd unit, sudoers example, install notes
+docs/demo.md              public demo deployment and security guide
 scripts/                  README validator, release installer, interactive session, developer bootstrap
 tests/                    Python validator tests
 docs/screenshots/         current build screenshots
@@ -3651,21 +3762,24 @@ Implemented:
 Not yet:
 
 - Real target matrix and sudo helper install test.
-- Durable job queue, package diffs, playbooks, and agent mode.
+- Package-level result diffs, approved playbooks, and agent mode. Durable
+  manual jobs were added after M1.
 
 ### M2 - Patch execution (partial)
 
 Implemented:
 
 - Fixed helper `check` and `apply` actions.
-- UI patch modal with dry-run and apply confirmation.
+- Package-level `preview` with reviewed apply and removal confirmation.
+- Durable manual patch-preview and patch-apply jobs with per-host state,
+  activity-dock progress, stop-after-current, and explicit retry.
 - Audit entries for patch attempts.
 
 Still missing:
 
-- A durable per-host job queue and manual-patch run history.
-- Cancellation, manual-patch retries, and post-reboot verification.
-- Package diff/security classification and evidence export.
+- Full cancellation of the host currently being patched.
+- Post-reboot verification and per-run package evidence export.
+- Package diff/security classification.
 
 ### M3 - Scheduling and unattended execution (partial)
 
@@ -3674,12 +3788,12 @@ Still missing:
   check/apply modes, optional reboot after a successful apply when required,
   run-now, run history, audit entries, and email summaries.
 - The scheduler runs inside the controller process; no agent is required.
-- The database must be unlocked and the server running. There is no suspended
-  UI state or durable queue across process restarts; an interrupted run is not
-  resumed automatically.
+- The database must be unlocked and the server running. The cron scheduler has
+  no durable queue across process restarts; an interrupted scheduled run is not
+  resumed automatically. Manual operations use the separate durable job queue.
 - Notifications via email are implemented for monitoring and schedules;
   webhook/ntfy channels and scheduler-driven reboot notifications remain.
-- **Still missing:** durable queue, resume across restarts, approval gates,
+- **Still missing:** scheduled-run durable queue/resume, approval gates,
   post-run package evidence, post-reboot verification, and host maintenance
   state.
 
@@ -3705,8 +3819,8 @@ Still missing:
   design targets; only build/unit tests currently run in CI.
 - **Implemented:** read-only `cmdb-lite` import with explicit merge/overwrite
   preview and no write-back.
-- **Implemented:** read-only vCenter alarms, HAProxy stats, and OPNsense gateway
-  integrations with email alert history.
+- **Implemented:** durable manual jobs, a non-blocking activity dock, and
+  uploaded-package deployment to selected hosts.
 - Documentation for operators, backup, upgrade, and troubleshooting.
 
 ### M6 - Agent hardening and scale
@@ -3775,7 +3889,8 @@ These are settled unless you explicitly change them:
   client and can also be enrolled as a managed target. The current release ships
   `server` and `helper` modes; separate client/agent modes are planned. The
   server owns the database, credentials, audit log, collection, monitoring, and
-  cron scheduler. A durable job queue and approval workflow are not implemented.
+  cron scheduler. Manual operations use a durable job queue; an approval
+  workflow is not implemented.
 - **Server OS:** Ubuntu LTS (24.04/26.04; 22.04 best-effort) is the CI-tested
   server baseline. Fedora is build-supported but is not in the release CI
   matrix. The static binary may run on other distributions; record and test the
@@ -3815,8 +3930,8 @@ These are settled unless you explicitly change them:
   the fixed `reboot-check` helper action and reboots only when the target says a
   reboot is required. There is no unconditional automatic reboot and no
   post-reboot verification yet. Plan reboot verification separately.
-- **Notifications:** SMTP email alerting is implemented for host monitoring and
-  external integrations. Webhook, ntfy, Slack, and Teams remain later phases.
+- **Notifications:** SMTP email alerting is implemented for host monitoring.
+  Webhook, ntfy, Slack, and Teams remain later phases.
 - **CMDB integration:** separate application, integrated through read-only
   CSV/JSON import with preview and merge/overwrite. No shared database,
   passphrase, or write-back.
@@ -3982,19 +4097,34 @@ Current validation status:
 - Manual `gosec`, `staticcheck`, and `gitleaks` review found no confirmed
   exploitable issue; remaining findings are low-risk or documented false
   positives. Container/image scanning is not part of CI.
-- Release validation used out-of-tree headless browser checks for monitoring,
-  SMTP settings, CMDB import, schedules, external integration screens, Account
-  security/MFA management, backup directory/retention configuration, Add host
-  with IP/hostname, host selection, build identity, the Docker Host **+**
-  shortcut, persisted Docker status badges, **Check all projects**,
-  **Update selected**, multi-key SSH config import, the ProxyJump
-  jump/target trust flow, and selected-host bulk patch with shared in-memory
-  sudo reuse. Those browser scripts are not part of this repository or CI.
+- Previous release validation used out-of-tree headless browser checks for
+  monitoring, SMTP settings, CMDB import, schedules, Account security/MFA
+  management, backup directory/retention configuration, Add host with
+  IP/hostname, host selection, build identity, the Docker Host **+** shortcut,
+  persisted Docker status badges, **Check all projects**, **Update selected**,
+  multi-key SSH config import, the ProxyJump jump/target trust flow, and
+  selected-host bulk patch with shared in-memory sudo reuse. Those browser
+  scripts are not part of this repository or CI.
+- The durable-job and package-deployment changes in this tree pass the Go test
+  suite, race detector, vet, README/Python validators, and a JavaScript syntax
+  check. A development static build was started against a newly created
+  database, applied migrations 013/014, and served an index containing the
+  activity dock. Browser interaction tests for the new dock and package-upload
+  dialog remain out of tree and need manual validation.
+- The demo build passes `make demo-test`. A local demo binary was smoke-tested
+  for guest/guest plus displayed TOTP login, host trust, package upload, patch
+  preview and apply, helper setup, cleanup, reboot, backup, and SMTP
+  simulation. Demo-tag unit tests cover the fake helper contracts, host trust,
+  package result, and network-monitor evaluation. The `Demo image` workflow
+  builds and smoke-tests the Docker image; it was not built locally in the
+  validation environment because Docker was unavailable.
 - Upgrades from `v0.5.1` and `v0.6.2` databases were manually verified,
   including the automatic pre-migration backup and migration to the current
   schema. CI does not run old-release migration fixtures.
-- vCenter polling is covered by a govmomi simulator test; HAProxy and OPNsense
-  polling are covered by local HTTP fixtures.
+- Durable job tests cover creation, target counting, active-host conflicts,
+  cancellation, explicit retry, safe resume, and interruption. Package tests
+  cover filename/header validation, installer environment filtering, fixed
+  package-manager arguments, and SHA-256 mismatch rejection.
 - A release still needs the cross-distro matrix, real target/helper tests,
   backup-restore drills, and a review of the deployment-specific systemd paths
   before broad production use.

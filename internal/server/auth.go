@@ -75,6 +75,11 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	if waErr != nil {
 		response["webauthn_error"] = waErr.Error()
 	}
+	if s.demo != nil {
+		response["demo"] = s.demo.AuthInfo()
+		response["webauthn_available"] = false
+		response["webauthn_error"] = "passkeys are disabled in the demo"
+	}
 	count, err := s.store.CountUsers()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -114,6 +119,10 @@ type setupRequest struct {
 }
 
 func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
+	if s.demo != nil {
+		writeError(w, http.StatusForbidden, "account setup is disabled in the demo")
+		return
+	}
 	var request setupRequest
 	if err := decodeJSON(w, r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -180,7 +189,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	ipKey := "ip:" + clientIP(r)
 	userKey := "user:" + strings.ToLower(username)
-	if !s.loginIPLimiter.allow(ipKey) || !s.loginUserLimiter.allow(userKey) {
+	if s.demo == nil && (!s.loginIPLimiter.allow(ipKey) || !s.loginUserLimiter.allow(userKey)) {
 		w.Header().Set("Retry-After", "900")
 		writeJSON(w, http.StatusTooManyRequests, map[string]any{
 			"error": "too many login attempts; try again later",
@@ -227,6 +236,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if waErr != nil {
 		response["webauthn_error"] = waErr.Error()
 	}
+	if s.demo != nil {
+		response["webauthn_available"] = false
+		response["webauthn_error"] = "passkeys are disabled in the demo"
+	}
 	writeJSON(w, http.StatusOK, response)
 }
 
@@ -255,6 +268,10 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	}
 	if waErr != nil {
 		response["webauthn_error"] = waErr.Error()
+	}
+	if s.demo != nil {
+		response["webauthn_available"] = false
+		response["webauthn_error"] = "passkeys are disabled in the demo"
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -289,6 +306,10 @@ func (s *Server) handleMFAStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeletePasskey(w http.ResponseWriter, r *http.Request) {
+	if s.demo != nil {
+		writeError(w, http.StatusForbidden, "account security is read-only in the demo")
+		return
+	}
 	value := authFrom(r)
 	passkeyID := strings.TrimSpace(r.PathValue("id"))
 	if passkeyID == "" {
@@ -330,6 +351,10 @@ func (s *Server) handleDeletePasskey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteTOTP(w http.ResponseWriter, r *http.Request) {
+	if s.demo != nil {
+		writeError(w, http.StatusForbidden, "account security is read-only in the demo")
+		return
+	}
 	value := authFrom(r)
 	if !value.user.TOTPEnabled {
 		writeError(w, http.StatusBadRequest, "authenticator is not configured")
@@ -378,6 +403,10 @@ func (s *Server) totpEnrollmentAllowed(value *authContextValue) (bool, error) {
 }
 
 func (s *Server) handleTOTPBegin(w http.ResponseWriter, r *http.Request) {
+	if s.demo != nil {
+		writeError(w, http.StatusForbidden, "MFA enrollment is disabled in the demo")
+		return
+	}
 	value := authFrom(r)
 	allowed, err := s.totpEnrollmentAllowed(value)
 	if err != nil {
@@ -418,7 +447,7 @@ func (s *Server) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	value := authFrom(r)
 	key := "totp:" + value.user.ID
-	if !s.mfaLimiter.allow(key) {
+	if s.demo == nil && !s.mfaLimiter.allow(key) {
 		w.Header().Set("Retry-After", "900")
 		writeJSON(w, http.StatusTooManyRequests, map[string]any{
 			"error": "too many authenticator attempts; sign in again later",
@@ -453,7 +482,7 @@ func (s *Server) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if !pendingSecret && step <= value.user.TOTPLastStep {
+	if s.demo == nil && !pendingSecret && step <= value.user.TOTPLastStep {
 		s.mfaLimiter.fail(key)
 		writeJSON(w, http.StatusUnauthorized, map[string]any{
 			"error": "authenticator code has already been used",
@@ -481,11 +510,15 @@ func (s *Server) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-	} else if err := s.store.SetTOTPLastStep(value.user.ID, step); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+	} else if s.demo == nil {
+		if err := s.store.SetTOTPLastStep(value.user.ID, step); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
-	s.mfaLimiter.reset(key)
+	if s.demo == nil {
+		s.mfaLimiter.reset(key)
+	}
 	if !value.session.MFAVerified {
 		if err := s.completeMFA(w, r, value); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -507,6 +540,10 @@ type passkeyRegisterFinishRequest struct {
 }
 
 func (s *Server) handlePasskeyRegisterBegin(w http.ResponseWriter, r *http.Request) {
+	if s.demo != nil {
+		writeError(w, http.StatusForbidden, "passkeys are disabled in the demo")
+		return
+	}
 	value := authFrom(r)
 	if !value.session.MFAVerified {
 		count, err := s.store.CountPasskeys(value.user.ID)
@@ -546,6 +583,10 @@ func (s *Server) handlePasskeyRegisterBegin(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Request) {
+	if s.demo != nil {
+		writeError(w, http.StatusForbidden, "passkeys are disabled in the demo")
+		return
+	}
 	var request passkeyRegisterFinishRequest
 	if err := decodeJSON(w, r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -616,6 +657,10 @@ type passkeyLoginFinishRequest struct {
 }
 
 func (s *Server) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request) {
+	if s.demo != nil {
+		writeError(w, http.StatusForbidden, "passkeys are disabled in the demo")
+		return
+	}
 	value := authFrom(r)
 	if value.session.MFAVerified {
 		writeError(w, http.StatusBadRequest, "already authenticated")
@@ -657,6 +702,10 @@ func (s *Server) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request) {
+	if s.demo != nil {
+		writeError(w, http.StatusForbidden, "passkeys are disabled in the demo")
+		return
+	}
 	var request passkeyLoginFinishRequest
 	if err := decodeJSON(w, r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -819,7 +868,7 @@ func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, token 
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		Secure:   r.TLS != nil,
+		Secure:   s.publicHTTPS || r.TLS != nil,
 		MaxAge:   int(ttl.Seconds()),
 	})
 }
@@ -831,7 +880,7 @@ func (s *Server) clearSessionCookie(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		Secure:   r.TLS != nil,
+		Secure:   s.publicHTTPS || r.TLS != nil,
 		MaxAge:   -1,
 	})
 }

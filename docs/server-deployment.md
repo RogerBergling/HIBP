@@ -57,9 +57,9 @@ Move all of these together:
 - the same HIBP binary version, or newer
 
 The database contains hosts, credentials references, monitoring, schedules,
-SMTP/integration secrets, audit history, the UI account, TOTP, and passkeys.
-Host-key trust is also stored in the database, so moving the database preserves
-trusted target keys and the audit chain.
+SMTP secrets, durable job records, audit history, the UI account, TOTP, and
+passkeys. Host-key trust is also stored in the database, so moving the database
+preserves trusted target keys and the audit chain.
 
 The SSH **private key files** are not stored in the database. Copy them
 separately and update each host's `key_path` after migration.
@@ -583,8 +583,7 @@ Expected: `403`.
    server, so it needs outbound HTTP/HTTPS.
 
 7. **Review firewall egress.** The controller needs outbound SSH to targets,
-   SMTP to the relay, and optional HTTP/HTTPS to integrations and monitored
-   endpoints.
+   SMTP to the relay, and optional HTTP/HTTPS to monitored endpoints.
 
 ## 9. Backups and upgrades
 

@@ -1,0 +1,38 @@
+# HIBP public demo, pulled from GHCR.
+#
+# Local:
+#   cp .env.demo.example .env.demo
+#   docker compose --env-file .env.demo -f compose.demo.yaml up -d
+#
+# Public deployment: set HIBP_DEMO_PUBLIC_URL to the exact HTTPS origin and put
+# a TLS-terminating reverse proxy in front of 127.0.0.1:8080. The proxy must
+# preserve the Host header and set X-Forwarded-Proto: https.
+#
+# The demo database is ephemeral. Restart the container to reset all fake data.
+
+name: hibp-demo
+
+services:
+  hibp-demo:
+    image: ghcr.io/rogerbergling/hibp-demo:${HIBP_DEMO_TAG:-edge}
+    container_name: hibp-demo
+    restart: unless-stopped
+    ports:
+      - "${HIBP_DEMO_BIND:-127.0.0.1}:${HIBP_DEMO_PORT:-8080}:8080"
+    environment:
+      HIBP_DEMO_LISTEN: 0.0.0.0:8080
+      HIBP_DEMO_PUBLIC_URL: ${HIBP_DEMO_PUBLIC_URL:-http://localhost:8080}
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    cpus: 1.0
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

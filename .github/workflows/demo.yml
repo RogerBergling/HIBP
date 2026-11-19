@@ -1,0 +1,93 @@
+name: Demo image
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+  pull_request:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare image metadata
+        id: meta
+        shell: bash
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/hibp-demo"
+          version="$(git describe --tags --always | sed 's/^v//')"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF_NAME}"
+            tags="${image}:${tag}"
+            tags="${tags}"$'\n'"${image}:latest"
+            push=true
+          elif [[ "${GITHUB_REF}" == refs/heads/main ]]; then
+            tags="${image}:edge"
+            tags="${tags}"$'\n'"${image}:sha-${GITHUB_SHA::12}"
+            push=true
+          else
+            tags="${image}:pr-${GITHUB_SHA::12}"
+            push=false
+          fi
+          {
+            echo "version=${version}"
+            echo "push=${push}"
+            echo "tags<<EOF"
+            echo "${tags}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        if: steps.meta.outputs.push == 'true'
+        run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build demo image
+        shell: bash
+        run: |
+          args=()
+          while IFS= read -r tag; do
+            [[ -z "${tag}" ]] && continue
+            args+=("-t" "${tag}")
+          done <<< "${{ steps.meta.outputs.tags }}"
+          docker build \
+            --build-arg VERSION="${{ steps.meta.outputs.version }}" \
+            --build-arg BUILD_NUMBER="${GITHUB_RUN_NUMBER}" \
+            --build-arg BUILD_COMMIT="${GITHUB_SHA:0:12}" \
+            --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --build-arg BUILD_TARGET="linux/amd64" \
+            --build-arg BUILD_TYPE="demo" \
+            "${args[@]}" \
+            -f packaging/Dockerfile.demo .
+
+      - name: Push demo image
+        if: steps.meta.outputs.push == 'true'
+        shell: bash
+        run: |
+          while IFS= read -r tag; do
+            [[ -z "${tag}" ]] && continue
+            docker push "${tag}"
+          done <<< "${{ steps.meta.outputs.tags }}"
+
+      - name: Smoke test demo image
+        shell: bash
+        run: |
+          trap 'docker stop hibp-demo-ci >/dev/null 2>&1 || true' EXIT
+          tag="$(head -n1 <<< "${{ steps.meta.outputs.tags }}")"
+          docker run --rm -d --name hibp-demo-ci -p 18080:8080 \
+            -e HIBP_DEMO_LISTEN=0.0.0.0:8080 \
+            -e HIBP_DEMO_PUBLIC_URL=http://localhost:18080 \
+            "${tag}"
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:18080/healthz >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:18080/healthz
+          curl -fsS http://127.0.0.1:18080/api/v1/auth/status | grep -q '"demo"'
+          docker stop hibp-demo-ci

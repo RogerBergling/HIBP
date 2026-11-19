@@ -1,0 +1,58 @@
+# HIBP production controller, pulled from GHCR.
+#
+# This example uses host networking so the controller can listen on the Docker
+# host's loopback and reach targets over SSH. Prepare the host first:
+#
+#   sudo useradd --system --home /var/lib/hibp --shell /usr/sbin/nologin hibp
+#   sudo install -d -o 65532 -g 65532 -m 0700 /var/lib/hibp
+#   sudo install -d -o root -g 65532 -m 0750 /etc/hibp
+#   sudo install -d -o 65532 -g 65532 -m 0700 /etc/hibp/ssh
+#   sudo install -o 65532 -g 65532 -m 0600 /secure/id_ed25519 /etc/hibp/ssh/id_ed25519
+#   sudo install -o 65532 -g 65532 -m 0400 /secure/db.passphrase /etc/hibp/db.passphrase
+#
+#   cp .env.production.example .env.production
+#   docker compose --env-file .env.production -f compose.production.yaml up -d
+#
+# First run only: add --create to the command, complete the admin/MFA setup, then
+# remove --create and restart. Do not run two controllers against one database.
+
+name: hibp
+
+services:
+  hibp:
+    image: ghcr.io/rogerbergling/hibp:${HIBP_TAG:-latest}
+    container_name: hibp
+    restart: unless-stopped
+    network_mode: host
+    user: "65532:65532"
+    command:
+      - server
+      - --db
+      - /var/lib/hibp/hibp.db
+      - --listen
+      - ${HIBP_LISTEN:-127.0.0.1:8443}
+      - --key-dir
+      - /etc/hibp/ssh
+      - --ssh-config
+      - /etc/hibp/ssh/config
+      - --passphrase-file
+      - /etc/hibp/db.passphrase
+    volumes:
+      - ${HIBP_DATA_DIR:-/var/lib/hibp}:/var/lib/hibp
+      - ${HIBP_SSH_DIR:-/etc/hibp/ssh}:/etc/hibp/ssh:ro
+      - ${HIBP_PASSPHRASE_FILE:-/etc/hibp/db.passphrase}:/etc/hibp/db.passphrase:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    cpus: 2.0
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"

@@ -13,7 +13,7 @@ BUILD_TARGET ?= $(shell $(GO) env GOOS 2>/dev/null || printf unknown)/$(shell $(
 BUILD_TYPE ?= development
 HIBP_LDFLAGS ?= -X main.version=$(VERSION) -X main.buildNumber=$(BUILD_NUMBER) -X main.buildCommit=$(BUILD_COMMIT) -X main.buildDate=$(BUILD_DATE) -X main.buildTarget=$(BUILD_TARGET) -X main.buildType=$(BUILD_TYPE)
 
-.PHONY: help check-go check-cc check-docker check-sqlcipher bootstrap build build-system test race vet static production static-production validate package clean
+.PHONY: help check-go check-cc check-docker check-sqlcipher bootstrap build build-system test race vet static production static-production demo-build demo-test demo-image validate package clean
 
 help:
 	@echo "HIBP build targets:"
@@ -24,6 +24,9 @@ help:
 	@echo "  make race               race-detector tests"
 	@echo "  make static             development static ELF"
 	@echo "  make production         production Docker image (requires Docker)"
+	@echo "  make demo-build         fake-data demo binary (development driver)"
+	@echo "  make demo-test          tests with the demo build tag"
+	@echo "  make demo-image         fake-data demo Docker image (requires Docker)"
 	@echo "  make validate           tests, vet, README and Python checks"
 	@echo "  make package            static binary + packaging tarball"
 	@echo ""
@@ -114,6 +117,25 @@ static-production: check-go check-cc
 		-o $(BIN) ./cmd/hibp
 	@file $(BIN)
 	@ldd $(BIN) 2>&1 || true
+
+# Public demo artifact. The demo build tag keeps fake SSH, fake email, fake
+# network probes, and the demo seed out of the production binary.
+demo-build: check-go check-cc
+	mkdir -p dist
+	CGO_ENABLED=1 $(GO) build -trimpath -tags "demo $(TAGS)" -ldflags '$(HIBP_LDFLAGS)' -o dist/hibp-demo ./cmd/hibp-demo
+
+demo-test: check-go check-cc
+	CGO_ENABLED=1 $(GO) test -tags demo ./...
+
+demo-image: check-docker
+	docker build \
+		--build-arg VERSION="$(VERSION)" \
+		--build-arg BUILD_NUMBER="$(BUILD_NUMBER)" \
+		--build-arg BUILD_COMMIT="$(BUILD_COMMIT)" \
+		--build-arg BUILD_DATE="$(BUILD_DATE)" \
+		--build-arg BUILD_TARGET="$(BUILD_TARGET)" \
+		--build-arg BUILD_TYPE="demo" \
+		-f packaging/Dockerfile.demo -t hibp-demo .
 
 validate: test vet
 	python3 scripts/validate_readme.py

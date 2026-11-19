@@ -171,6 +171,11 @@ func Run(ctx context.Context, action string, out io.Writer, args ...string) erro
 			return err
 		}
 		return json.NewEncoder(out).Encode(result)
+	case "install-package":
+		if len(args) != 0 {
+			return errors.New("install-package does not accept command-line arguments")
+		}
+		return installPackage(ctx, os.Stdin, out)
 	case "reboot-check":
 		required, err := rebootRequired(ctx)
 		result := Result{Action: "reboot-check", OK: err == nil, ExitCode: 0}

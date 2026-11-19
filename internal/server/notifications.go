@@ -209,12 +209,41 @@ func (s *Server) handleTestSMTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) sendEmail(cfg mailer.Config, to []string, subject, body string) error {
+	if s.demo != nil {
+		return s.demo.SendEmail(cfg, to, subject, body)
+	}
 	if !cfg.Enabled {
 		return errors.New("SMTP notifications are disabled")
 	}
 	s.mailMu.Lock()
 	defer s.mailMu.Unlock()
 	return mailer.Send(cfg, to, subject, body)
+}
+
+// sendNotificationEmail sends through the fleet SMTP configuration. A blank
+// recipient argument uses the configured default recipients.
+func (s *Server) sendNotificationEmail(recipients, subject, body string) (bool, string) {
+	cfg, err := s.loadSMTPConfig()
+	if err != nil {
+		return false, err.Error()
+	}
+	list := cfg.Recipients
+	if strings.TrimSpace(recipients) != "" {
+		list, err = mailer.ParseRecipients(recipients)
+		if err != nil {
+			return false, err.Error()
+		}
+	}
+	if !cfg.Enabled {
+		return false, "SMTP notifications are disabled"
+	}
+	if len(list) == 0 {
+		return false, "no email recipients configured"
+	}
+	if err := s.sendEmail(cfg, list, subject, body); err != nil {
+		return false, err.Error()
+	}
+	return true, ""
 }
 
 func parseRecipientsOptional(value string) ([]string, error) {

@@ -2,6 +2,24 @@
 
 These files are examples, not a complete distribution package.
 
+## Public demo image
+
+`packaging/Dockerfile.demo` builds the separate `hibp-demo` image. It uses the
+same SQLCipher production build path but compiles `cmd/hibp-demo` with the
+`demo` Go build tag. The demo binary seeds fake hosts and simulates SSH, helper
+actions, package installation, email, network probes, backup/restore, and helper
+setup. It is not the production controller.
+
+Build and test locally:
+
+```bash
+make demo-test
+make demo-image
+```
+
+The demo image runs as UID/GID `65532`, listens on `0.0.0.0:8080`, and expects a
+TLS-terminating reverse proxy. See [`docs/demo.md`](../docs/demo.md).
+
 ## Controller server
 
 1. Install the static binary at `/usr/local/bin/hibp` and create the service
@@ -189,10 +207,14 @@ sudo -n /usr/local/libexec/hibp/hibp-helper docker-list
 sudo -n /usr/local/libexec/hibp/hibp-helper docker-check <project>
 sudo -n /usr/local/libexec/hibp/hibp-helper docker-apply <project>
 sudo -n /usr/local/libexec/hibp/hibp-helper docker-update-all
+sudo -n /usr/local/libexec/hibp/hibp-helper install-package
 ```
 
-No package names, host names, or shell fragments are accepted from the
-controller.
+No package names, host names, or shell fragments are accepted as command-line
+arguments from the controller. `install-package` reads one validated JSON
+request from stdin: a package filename, SHA-256, optional installer environment
+variables, and the package bytes. The helper verifies the hash and stages the
+file in a root-owned temporary path before invoking the target package manager.
 
 ## Security debt
 

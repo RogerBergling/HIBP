@@ -4,7 +4,8 @@
 #   /usr/local/libexec/hibp/hibp-helper
 #
 # The helper only accepts the fixed actions below. It never accepts package
-# names, host names, or arbitrary shell fragments from the controller.
+# names, host names, or arbitrary shell fragments as command-line arguments.
+# install-package reads one validated package request from stdin.
 #
 # Replace "hibp" with the account used by the controller for SSH access.
 
@@ -22,3 +23,4 @@ hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-list
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-check *
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-apply *
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-update-all
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper install-package

@@ -562,7 +562,7 @@ func (s *Server) runSchedule(ctx context.Context, schedule store.Schedule, occur
 			body += "No failures."
 		}
 		subject := fmt.Sprintf("[HIBP][SCHEDULE] %s - %s - %s", schedule.Name, schedule.Mode, summary)
-		if _, emailError := s.sendIntegrationEmail(schedule.Recipients, subject, body); emailError != "" {
+		if _, emailError := s.sendNotificationEmail(schedule.Recipients, subject, body); emailError != "" {
 			slog.Warn("scheduler: email not sent", "schedule", schedule.Name, "error", emailError)
 		}
 	}

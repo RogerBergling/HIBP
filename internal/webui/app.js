@@ -6,8 +6,8 @@ const state = {
   audit: [],
   monitors: [],
   alerts: [],
-  integrations: [],
-  integrationEvents: [],
+  jobs: [],
+  jobDetail: null,
   schedules: [],
   runs: [],
   status: {},
@@ -17,14 +17,9 @@ const state = {
   sharedSudoPassword: '',
   sharedSudoUsername: '',
   auth: { user: null, setupRequired: false, authenticated: false, mfaRequired: false, enrollmentRequired: false, webauthnAvailable: false },
+  demo: null,
   totpSetup: null,
 };
-
-let fleetUpdateRunning = false;
-let fleetPatchRunning = false;
-let fleetRebootRunning = false;
-let fleetFactsRunning = false;
-let fleetCleanupRunning = false;
 
 const operationState = {
   active: false,
@@ -44,6 +39,17 @@ const autoRefreshState = {
   timer: null,
   loading: false,
 };
+
+const jobDockState = {
+  open: false,
+  expanded: true,
+  loading: false,
+  timer: null,
+};
+
+let jobPollTimer = null;
+let jobPollingStopped = false;
+let demoCodeTimer = null;
 
 try {
   autoRefreshState.enabled = window.localStorage.getItem('hibp-live-refresh') !== 'off';
@@ -148,7 +154,7 @@ function setAutoRefresh(enabled) {
   }
   if (autoRefreshState.enabled) {
     autoRefreshState.timer = window.setInterval(() => {
-      if (document.visibilityState === 'visible' && !operationState.active && !modalStack.length) {
+      if (document.visibilityState === 'visible' && !modalStack.length) {
         loadAll({ silent: true });
       }
     }, 15000);
@@ -351,8 +357,8 @@ function updateUserDisplay() {
 
 function setView(view) {
   state.view = view;
-  const sections = ['dashboard', 'hosts', 'audit', 'monitoring', 'schedules', 'integrations'];
-  const labels = { dashboard: 'Overview', hosts: 'Hosts', audit: 'Audit log', monitoring: 'Monitoring', schedules: 'Schedules', integrations: 'Integrations' };
+  const sections = ['dashboard', 'hosts', 'audit', 'monitoring', 'schedules'];
+  const labels = { dashboard: 'Overview', hosts: 'Hosts', audit: 'Audit log', monitoring: 'Monitoring', schedules: 'Schedules' };
   for (const section of sections) {
     $('view-' + section).classList.toggle('hidden', section !== view);
   }
@@ -362,7 +368,6 @@ function setView(view) {
   $('crumb-view').textContent = labels[view] || 'Overview';
   if (view === 'monitoring') renderMonitoring();
   if (view === 'schedules') renderSchedules();
-  if (view === 'integrations') renderIntegrations();
 }
 
 async function api(path, options = {}) {
@@ -417,7 +422,10 @@ async function showAuthScreen() {
 
 async function renderAuth(status) {
   state.auth = status;
+  state.demo = status.demo || null;
+  renderDemoLogin();
   if (status.authenticated) {
+    stopDemoCodePolling();
     await enterApp();
     return;
   }
@@ -445,10 +453,71 @@ async function renderAuth(status) {
 }
 
 async function enterApp() {
+  stopDemoCodePolling();
   showApp();
   updateUserDisplay();
   await loadAll();
+  jobPollingStopped = false;
+  await loadJobs({ silent: true });
   setAutoRefresh(autoRefreshState.enabled);
+  scheduleJobPoll();
+}
+
+function updateDemoCode() {
+  if (!state.demo) return;
+  $('demo-totp-secret').textContent = state.demo.totp_secret || '—';
+  $('demo-totp-code').textContent = state.demo.totp_code || '------';
+  const remaining = Number(state.demo.totp_remaining_seconds || 0);
+  $('demo-totp-remaining').textContent = remaining > 0 ? 'refreshes in ' + remaining + 's' : '';
+}
+
+function startDemoCodePolling() {
+  if (demoCodeTimer || !state.demo) return;
+  demoCodeTimer = window.setInterval(async () => {
+    try {
+      const status = await fetchAuthStatus();
+      if (status.demo) {
+        state.demo = status.demo;
+        updateDemoCode();
+      }
+    } catch (error) {
+      // The auth screen handles its own errors.
+    }
+  }, 5000);
+}
+
+function stopDemoCodePolling() {
+  if (demoCodeTimer) {
+    window.clearInterval(demoCodeTimer);
+    demoCodeTimer = null;
+  }
+}
+
+function renderDemoLogin() {
+  const box = $('demo-login');
+  if (!box) return;
+  if (!state.demo) {
+    box.classList.add('hidden');
+    stopDemoCodePolling();
+    return;
+  }
+  box.classList.remove('hidden');
+  updateDemoCode();
+  startDemoCodePolling();
+}
+
+function fillDemoCredentials() {
+  if (!state.demo) return;
+  $('login-username').value = state.demo.username || 'guest';
+  $('login-password').value = state.demo.password || 'guest';
+  if (!$('totp-form').classList.contains('hidden')) {
+    $('totp-code').value = state.demo.totp_code || '';
+    $('totp-code').focus();
+    return;
+  }
+  if (!$('login-form').classList.contains('hidden')) {
+    $('login-password').focus();
+  }
 }
 
 function renderMFA(status) {
@@ -470,6 +539,7 @@ function renderMFA(status) {
     note.classList.add('hidden');
   }
   if (user.totp_enabled) $('totp-code').focus();
+  if (state.demo) fillDemoCredentials();
 }
 
 async function renderEnrollment(status) {
@@ -580,6 +650,14 @@ async function signOut() {
     window.clearInterval(autoRefreshState.timer);
     autoRefreshState.timer = null;
   }
+  jobPollingStopped = true;
+  if (jobPollTimer) {
+    window.clearTimeout(jobPollTimer);
+    jobPollTimer = null;
+  }
+  jobDockState.open = false;
+  jobDockState.expanded = true;
+  jobDockState.lastActiveCount = 0;
   try {
     await api('/api/v1/auth/logout', { method: 'POST', body: '{}' });
   } catch (error) {
@@ -590,7 +668,9 @@ async function signOut() {
   state.sharedSudoPassword = '';
   state.sharedSudoUsername = '';
   state.totpSetup = null;
+  state.demo = null;
   state.auth = { user: null, setupRequired: false, authenticated: false, mfaRequired: false, enrollmentRequired: false, webauthnAvailable: false };
+  stopDemoCodePolling();
   await showAuthScreen();
 }
 
@@ -598,30 +678,36 @@ async function loadAll(options = {}) {
   if (autoRefreshState.loading && !options.force) return;
   autoRefreshState.loading = true;
   try {
-    const [status, hosts, audit, monitors, alerts, integrations, schedules, runs] = await Promise.all([
+    const [status, hosts, audit, monitors, alerts, schedules, runs, jobs] = await Promise.all([
       api('/api/v1/status'),
       api('/api/v1/hosts'),
       api('/api/v1/audit?limit=200'),
       api('/api/v1/monitors'),
       api('/api/v1/alerts?limit=200'),
-      api('/api/v1/integrations'),
       api('/api/v1/schedules'),
       api('/api/v1/runs?limit=100'),
+      api('/api/v1/jobs?limit=40'),
     ]);
     state.status = status;
     state.hosts = hosts.hosts || [];
     state.audit = audit.entries || [];
     state.monitors = monitors.monitors || [];
     state.alerts = alerts.alerts || [];
-    state.integrations = integrations.integrations || [];
-    state.integrationEvents = integrations.events || [];
+    state.jobs = jobs.jobs || [];
     state.schedules = schedules.schedules || [];
     state.runs = runs.runs || [];
     renderAll();
     renderOperationBar();
     $('last-refresh').textContent = 'updated ' + new Date().toLocaleTimeString();
   } catch (error) {
-    if (!options.silent) toast(error.message, 'error');
+    if (error.status === 401) {
+      if (autoRefreshState.timer) {
+        window.clearInterval(autoRefreshState.timer);
+        autoRefreshState.timer = null;
+      }
+    } else if (!options.silent) {
+      toast(error.message, 'error');
+    }
   } finally {
     autoRefreshState.loading = false;
   }
@@ -634,10 +720,419 @@ function renderAll() {
   renderAudit();
   renderMonitoring();
   renderSchedules();
-  renderIntegrations();
+  renderJobs();
+}
+
+async function loadJobs(options = {}) {
+  if (jobDockState.loading) return;
+  jobDockState.loading = true;
+  try {
+    const hadActive = activeJobs().length > 0;
+    const data = await api('/api/v1/jobs?limit=40');
+    state.jobs = data.jobs || [];
+    const summary = currentJobSummary();
+    if (summary) {
+      const needsDetail = !state.jobDetail ||
+        state.jobDetail.id !== summary.id ||
+        state.jobDetail.status !== summary.status ||
+        summary.status === 'running' ||
+        summary.status === 'queued';
+      if (needsDetail) {
+        const detail = await api('/api/v1/jobs/' + encodeURIComponent(summary.id));
+        state.jobDetail = detail.job || null;
+      }
+    } else {
+      state.jobDetail = null;
+    }
+    renderJobs();
+    if (hadActive && activeJobs().length === 0) {
+      await loadAll({ silent: true, force: true });
+    }
+  } catch (error) {
+    if (error.status === 401) {
+      jobPollingStopped = true;
+      if (jobPollTimer) window.clearTimeout(jobPollTimer);
+      jobPollTimer = null;
+      return;
+    }
+    if (!options.silent) toast(error.message, 'error');
+  } finally {
+    jobDockState.loading = false;
+  }
+}
+
+function currentJobSummary() {
+  const jobs = state.jobs || [];
+  return jobs.find((job) => job.status === 'running') ||
+    jobs.find((job) => job.status === 'queued') ||
+    jobs[0] || null;
+}
+
+function scheduleJobPoll() {
+  if (jobPollingStopped) return;
+  if (jobPollTimer) window.clearTimeout(jobPollTimer);
+  const active = (state.jobs || []).some((job) => job.status === 'running' || job.status === 'queued');
+  jobPollTimer = window.setTimeout(async () => {
+    await loadJobs({ silent: true });
+    scheduleJobPoll();
+  }, active ? 1500 : 10000);
+}
+
+function activeJobs() {
+  return (state.jobs || []).filter((job) => job.status === 'running' || job.status === 'queued');
+}
+
+function jobPercent(job) {
+  if (!job || !job.total) return 0;
+  if (job.status === 'succeeded') return 100;
+  return Math.max(0, Math.min(100, Math.round((Number(job.completed || 0) / Number(job.total || 1)) * 100)));
+}
+
+function jobElapsedText(job) {
+  const start = job.started_at || job.created_at;
+  if (!start) return '';
+  const seconds = Math.max(0, Math.floor((Date.now() - new Date(start).getTime()) / 1000));
+  return operationElapsed(seconds);
+}
+
+function jobRunningTarget(job) {
+  return (job.targets || []).find((target) => target.status === 'running');
+}
+
+function jobSubtitle(job) {
+  if (!job) return '—';
+  const running = jobRunningTarget(job);
+  if (job.cancel_requested && (job.status === 'running' || job.status === 'queued')) {
+    return 'Stopping after the current host…';
+  }
+  if (running) {
+    return (running.stage ? running.stage + ' · ' : '') + running.host_name +
+      ' · ' + job.completed + ' of ' + job.total + ' hosts';
+  }
+  if (job.status === 'queued') {
+    return 'Queued · ' + job.total + ' host' + (job.total === 1 ? '' : 's');
+  }
+  const elapsed = jobElapsedText(job);
+  return (job.detail || job.status) + (elapsed ? ' · ' + elapsed : '');
+}
+
+function jobStatusClass(status) {
+  if (status === 'running') return 'running';
+  if (status === 'queued') return 'queued';
+  if (status === 'succeeded') return 'succeeded';
+  if (status === 'failed') return 'failed';
+  if (status === 'cancelled') return 'cancelled';
+  if (status === 'interrupted') return 'interrupted';
+  return 'queued';
+}
+
+function jobTargetPillClass(status) {
+  if (status === 'succeeded') return 'reachable';
+  if (status === 'failed') return 'unreachable';
+  if (status === 'running') return 'unknown';
+  if (status === 'skipped' || status === 'cancelled' || status === 'interrupted') return 'review';
+  return 'unknown';
+}
+
+function jobTargetLabel(target) {
+  const labels = {
+    pending: 'pending', running: 'running', succeeded: 'done', failed: 'failed',
+    skipped: 'skipped', cancelled: 'cancelled', interrupted: 'interrupted',
+  };
+  return labels[target.status] || target.status || 'pending';
+}
+
+function jobTargetDetail(target) {
+  if (target.stage && target.status === 'running') return target.stage;
+  return target.detail || target.error || target.stage || '—';
+}
+
+function targetPreview(target) {
+  const result = target && target.result;
+  return result && result.preview ? result : null;
+}
+
+function targetCleanupResult(target) {
+  const result = target && target.result;
+  if (!result || !Array.isArray(result.packages)) return null;
+  return result;
+}
+
+function renderJobs() {
+  const dock = $('job-dock');
+  if (!dock) return;
+  const jobs = state.jobs || [];
+  const active = activeJobs();
+  const summaryJob = currentJobSummary();
+  const current = state.jobDetail && summaryJob && state.jobDetail.id === summaryJob.id &&
+    (state.jobDetail.status === summaryJob.status || summaryJob.status === 'running' || summaryJob.status === 'queued')
+    ? state.jobDetail
+    : summaryJob;
+  const count = $('activity-count');
+  if (count) {
+    count.textContent = String(active.length);
+    count.classList.toggle('hidden', active.length === 0);
+  }
+  if (!current) {
+    dock.classList.add('hidden');
+    return;
+  }
+  if (active.length > 0 && (jobDockState.lastActiveCount || 0) === 0) {
+    jobDockState.open = true;
+    jobDockState.expanded = true;
+  }
+  jobDockState.lastActiveCount = active.length;
+  if (!jobDockState.open) {
+    dock.classList.add('hidden');
+    return;
+  }
+  dock.classList.remove('hidden');
+  dock.className = 'job-dock ' + jobStatusClass(current.status) +
+    (jobDockState.expanded ? '' : ' collapsed');
+  const running = jobRunningTarget(current);
+  $('job-dock-title').textContent = current.title;
+  $('job-dock-sub').textContent = jobSubtitle(current);
+  $('job-dock-percent').textContent = jobPercent(current) + '%';
+  $('job-dock-fill').style.width = jobPercent(current) + '%';
+  const status = $('job-dock-status');
+  status.textContent = current.status === 'succeeded' ? '✓' :
+    current.status === 'failed' ? '!' :
+    current.status === 'running' ? '' :
+    current.status === 'queued' ? '…' : '!';
+  $('job-dock-minimize').textContent = jobDockState.expanded ? '−' : '+';
+  $('job-dock-minimize').title = jobDockState.expanded ? 'Minimize activity' : 'Expand activity';
+
+  const summary = $('job-dock-summary');
+  summary.textContent = [
+    current.completed + ' of ' + current.total + ' hosts',
+    current.package ? current.package.name : '',
+    current.failed ? current.failed + ' failed' : '',
+    current.skipped ? current.skipped + ' skipped' : '',
+    jobElapsedText(current),
+    active.length > 1 ? (active.length - 1) + ' more queued' : '',
+  ].filter(Boolean).join(' · ');
+
+  const list = $('job-dock-list');
+  list.replaceChildren();
+  const targets = current.targets || [];
+  if (!targets.length) {
+    list.append(el('div', 'job-dock-empty', current.status === 'running' || current.status === 'queued'
+      ? 'Loading host details…'
+      : 'No targets.'));
+  }
+  for (const target of targets) {
+    const row = el('div', 'job-dock-row');
+    row.append(el('div', 'job-dock-host', target.host_name || target.host_id));
+    const pill = el('span', 'pill ' + jobTargetPillClass(target.status), jobTargetLabel(target));
+    row.append(pill);
+    const detail = el('div', 'job-dock-detail', jobTargetDetail(target));
+    detail.title = target.detail || target.error || '';
+    row.append(detail);
+    const actions = el('div', 'job-dock-row-actions');
+    if (current.kind === 'patch-preview' && target.preview_total > 0) {
+      actions.append(dockButton('Review', () => reviewPatchTarget(current, target)));
+    }
+    if (current.kind === 'cleanup-preview' && target.cleanup_count > 0) {
+      actions.append(dockButton('Review', () => reviewCleanupTarget(current, target)));
+    }
+    if (target.has_output && target.status !== 'pending' && target.status !== 'running') {
+      actions.append(dockButton('Output', () => showJobOutputModal(current, target)));
+    }
+    if (actions.childElementCount) row.append(actions);
+    else row.append(el('div', 'job-dock-row-actions'));
+    list.append(row);
+  }
+
+  const actions = $('job-dock-actions');
+  actions.replaceChildren();
+  if (current.status === 'running' || current.status === 'queued') {
+    if (current.cancel_requested) {
+      const stopping = dockButton('Stopping after current host…', () => {}, 'danger');
+      stopping.disabled = true;
+      actions.append(stopping);
+    } else {
+      actions.append(dockButton(current.status === 'running' ? 'Stop after current host' : 'Cancel', () => cancelJob(current), 'danger'));
+    }
+  } else {
+    if (current.status === 'failed' || current.status === 'interrupted' ||
+        current.status === 'cancelled' || (current.status === 'succeeded' && current.skipped > 0)) {
+      if (current.kind === 'patch-apply') {
+        actions.append(dockButton('New preview', () => createJob('patch-preview', (current.targets || []).map((target) => target.host_id)), 'primary'));
+      }
+      actions.append(dockButton('Retry skipped/failed', () => retryJob(current)));
+    }
+    if (current.kind === 'patch-preview' && (current.targets || []).some((target) => target.preview_total > 0)) {
+      actions.append(dockButton('Review & apply', () => reviewPatchJob(current), 'primary'));
+    }
+    if (current.kind === 'cleanup-preview' && (current.targets || []).some((target) => target.cleanup_count > 0)) {
+      actions.append(dockButton('Review cleanup', () => reviewCleanupJob(current), 'primary'));
+    }
+    actions.append(dockButton('Dismiss', () => dismissJob(current)));
+  }
+}
+
+function dockButton(label, handler, cls = '') {
+  const button = el('button', 'btn ' + cls, label);
+  button.type = 'button';
+  button.addEventListener('click', handler);
+  return button;
+}
+
+async function showJobOutputModal(job, target) {
+  const detail = await jobWithTargets(job);
+  const fullTarget = (detail.targets || []).find((entry) => entry.host_id === target.host_id) || target;
+  const body = el('div', 'modal-body');
+  body.append(el('p', 'muted', job.title + ' · ' + target.host_name));
+  const text = [fullTarget.output, fullTarget.error].filter(Boolean).join('\n\n') || 'No output.';
+  body.append(el('pre', 'cleanup-list', text));
+  const actions = el('div', 'modal-actions');
+  const closeButton = el('button', 'btn', 'Close');
+  closeButton.type = 'button';
+  actions.append(closeButton);
+  body.append(actions);
+  const close = openModal('Operation output — ' + target.host_name, body, null, 'wide');
+  closeButton.addEventListener('click', close);
+}
+
+async function createJob(kind, hosts, options = {}) {
+  const list = Array.isArray(hosts) ? hosts : [];
+  if (!list.length) {
+    toast('Select at least one host', 'error');
+    return null;
+  }
+  const payload = {
+    kind,
+    host_ids: list.map((host) => host.id || host),
+    ...options,
+  };
+  try {
+    const result = await api('/api/v1/jobs', { method: 'POST', body: JSON.stringify(payload) });
+    jobDockState.open = true;
+    jobDockState.expanded = true;
+    await loadJobs({ silent: true });
+    toast('Queued: ' + result.job.title, 'ok');
+    return result.job;
+  } catch (error) {
+    toast(error.message, 'error');
+    return null;
+  }
+}
+
+async function cancelJob(job) {
+  try {
+    await api('/api/v1/jobs/' + encodeURIComponent(job.id) + '/cancel', { method: 'POST', body: '{}' });
+    toast(job.status === 'queued' ? 'Job cancelled' : 'Stopping after the current host', 'ok');
+    await loadJobs({ silent: true });
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
+async function retryJob(job) {
+  try {
+    await api('/api/v1/jobs/' + encodeURIComponent(job.id) + '/retry', { method: 'POST', body: '{}' });
+    toast('Job queued for retry', 'ok');
+    await loadJobs({ silent: true });
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
+async function dismissJob(job) {
+  try {
+    await api('/api/v1/jobs/' + encodeURIComponent(job.id), { method: 'DELETE' });
+    if ((state.jobs || []).length <= 1) jobDockState.open = false;
+    await loadJobs({ silent: true });
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
+function hostById(id) {
+  return (state.hosts || []).find((host) => host.id === id);
+}
+
+async function reviewPatchJob(job) {
+  const detail = await jobWithTargets(job);
+  const previews = new Map();
+  const hosts = [];
+  for (const target of detail.targets || []) {
+    const result = targetPreview(target);
+    if (!result) continue;
+    const host = hostById(target.host_id);
+    if (!host) continue;
+    hosts.push(host);
+    previews.set(host.id, { preview: result.preview, preview_hash: result.preview_hash });
+  }
+  if (!previews.size) {
+    toast('No reviewed previews are available', 'error');
+    return;
+  }
+  showPatchReview(hosts, previews);
+}
+
+async function reviewPatchTarget(job, target) {
+  const detail = await jobWithTargets(job);
+  const fullTarget = (detail.targets || []).find((entry) => entry.host_id === target.host_id) || target;
+  const result = targetPreview(fullTarget);
+  const host = hostById(target.host_id);
+  if (!result || !host) {
+    toast('This preview is no longer available; run the preview again', 'error');
+    return;
+  }
+  const previews = new Map([[host.id, { preview: result.preview, preview_hash: result.preview_hash }]]);
+  showPatchReview([host], previews);
+}
+
+async function jobWithTargets(job) {
+  if (job.targets && job.targets.length && job.targets.some((target) =>
+    target.result || target.output || target.error)) {
+    return job;
+  }
+  try {
+    const data = await api('/api/v1/jobs/' + encodeURIComponent(job.id) + '?full=1');
+    if (data.job) {
+      state.jobDetail = data.job;
+      renderJobs();
+      return data.job;
+    }
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+  return job;
+}
+
+async function reviewCleanupJob(job) {
+  const detail = await jobWithTargets(job);
+  const entries = [];
+  for (const target of detail.targets || []) {
+    const result = targetCleanupResult(target);
+    if (!result || !result.count) continue;
+    const host = hostById(target.host_id);
+    if (host) entries.push({ host, result });
+  }
+  if (!entries.length) {
+    toast('No reviewed cleanup list is available', 'error');
+    return;
+  }
+  showCleanupReview(entries);
+}
+
+async function reviewCleanupTarget(job, target) {
+  const detail = await jobWithTargets(job);
+  const fullTarget = (detail.targets || []).find((entry) => entry.host_id === target.host_id) || target;
+  const result = targetCleanupResult(fullTarget);
+  const host = hostById(target.host_id);
+  if (!result || !host) {
+    toast('This cleanup preview is no longer available; scan again', 'error');
+    return;
+  }
+  showCleanupReview([{ host, result }]);
 }
 
 function renderStatus() {
+  const banner = $('demo-banner');
+  if (banner) banner.classList.toggle('hidden', !state.status.demo);
   const build = state.status.build || { version: state.status.version };
   const full = buildIdentity(build);
   $('server-version').textContent = 'HIBP ' + (versionLabel(build.version) || 'dev');
@@ -1387,6 +1882,9 @@ function showMonitorModal(monitor = null, preset = null) {
 async function showSMTPModal() {
   const body = el('div', 'modal-body');
   body.append(el('p', 'muted', 'Alert email uses SMTP with TLS when authentication is configured. The password is stored only in the encrypted database and is never returned by the API.'));
+  if (state.status.demo) {
+    body.append(el('p', 'preview-warning', 'Demo mode: email delivery is simulated and nothing is sent. Do not enter real SMTP credentials or secrets.'));
+  }
   const enabledWrap = el('label', 'field checkbox-field');
   const enabled = el('input');
   enabled.type = 'checkbox';
@@ -1503,241 +2001,6 @@ async function showSMTPModal() {
     } finally {
       test.disabled = false;
       test.textContent = 'Save and send test';
-    }
-  });
-}
-
-function integrationSourceLabel(source) {
-  const view = state.integrations.find((entry) => entry.source === source);
-  return view ? view.label : source;
-}
-
-function renderIntegrations() {
-  const grid = $('integration-grid');
-  if (!grid) return;
-  grid.replaceChildren();
-  for (const integration of state.integrations) {
-    const card = el('div', 'integration-card');
-    const top = el('div', 'integration-top');
-    top.append(el('div', 'integration-title', integration.label));
-    const enabled = el('span', 'badge ' + (integration.enabled ? 'green' : 'amber'), integration.enabled ? 'enabled' : 'disabled');
-    top.append(enabled);
-    card.append(top);
-    const meta = el('div', 'integration-meta');
-    const addMeta = (label, value, cls = '') => {
-      const line = el('div', 'integration-meta-row');
-      const valueNode = el('b', cls, value || '—');
-      valueNode.title = value || '';
-      line.append(el('span', '', label), valueNode);
-      meta.append(line);
-    };
-    addMeta('Polling', formatMonitorInterval(integration.poll_seconds));
-    addMeta('Endpoint', integration.url || 'not configured');
-    addMeta('Last poll', relativeTime(integration.last_polled_at));
-    addMeta('Last result', integration.last_summary || 'not polled');
-    if (integration.last_error) addMeta('Last error', integration.last_error, 'integration-error');
-    card.append(meta);
-    const actions = el('div', 'modal-actions');
-    const configure = el('button', 'btn small', 'Configure');
-    configure.type = 'button';
-    configure.addEventListener('click', () => showIntegrationModal(integration.source));
-    const check = el('button', 'btn small', 'Check now');
-    check.type = 'button';
-    check.disabled = !integration.enabled;
-    if (!integration.enabled) check.title = 'Enable the integration first';
-    check.addEventListener('click', () => checkIntegration(integration));
-    actions.append(configure, check);
-    card.append(actions);
-    grid.append(card);
-  }
-
-  const body = $('integration-events-body');
-  body.replaceChildren();
-  if (!state.integrationEvents.length) {
-    body.append(emptyTableRow(6, 'No external alerts yet. vCenter alarms, HAProxy failures, and OPNsense gateway problems appear here.'));
-  }
-  for (const event of state.integrationEvents) {
-    const row = el('tr');
-    const timeTd = el('td');
-    const time = el('span', 'nowrap', relativeTime(event.created_at));
-    time.title = new Date(event.created_at).toLocaleString();
-    timeTd.append(time);
-    const sourceTd = el('td', '', integrationSourceLabel(event.source));
-    const statusTd = el('td');
-    statusTd.append(monitorStatusPill(event.status, event.status === 'ok' ? 'recovered' : ''));
-    const subjectTd = el('td', 'alert-detail', event.subject || '');
-    subjectTd.title = event.subject || '';
-    const detailTd = el('td', 'alert-detail', event.detail || '');
-    detailTd.title = event.detail || '';
-    const emailTd = el('td');
-    if (event.emailed) {
-      emailTd.append(el('span', 'badge green', 'sent'));
-    } else if (event.error) {
-      const failed = el('span', 'badge red', 'failed');
-      failed.title = event.error;
-      emailTd.append(failed);
-    } else {
-      emailTd.append(el('span', 'badge amber', 'not sent'));
-    }
-    row.append(timeTd, sourceTd, statusTd, subjectTd, detailTd, emailTd);
-    body.append(row);
-  }
-}
-
-async function checkIntegration(integration) {
-  try {
-    await api('/api/v1/integrations/' + encodeURIComponent(integration.source) + '/check', { method: 'POST', body: '{}' });
-    toast('Check requested for ' + integration.label, 'ok');
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    await loadAll();
-  } catch (error) {
-    toast(error.message, 'error');
-  }
-}
-
-async function showIntegrationModal(source) {
-  const descriptions = {
-    vcenter: 'Read-only vCenter alarm polling. Use a dedicated read-only account. HIBP retrieves active alarms for all managed entities; it never synchronizes or changes vCenter objects.',
-    haproxy: 'Read-only HAProxy statistics. The stats URL should point at the CSV view (HIBP also tries appending ;csv). HAProxy runtime state is never changed.',
-    opnsense: 'Read-only OPNsense gateway status from /api/routes/gateway/status. Create an API key/secret for a least-privilege user.',
-  };
-  const body = el('div', 'modal-body');
-  body.append(el('p', 'muted', descriptions[source] || 'Read-only external integration.'));
-  const enabledWrap = el('label', 'field checkbox-field');
-  const enabled = el('input');
-  enabled.type = 'checkbox';
-  enabledWrap.append(enabled, document.createTextNode('Enable this integration'));
-  body.append(enabledWrap);
-  const grid = el('div', 'settings-grid');
-  const url = inputField(grid, source === 'haproxy' ? 'Stats URL' : source === 'vcenter' ? 'vCenter SDK URL' : 'OPNsense URL', 'url',
-    source === 'haproxy' ? 'http://haproxy.example.com:8404/stats' : source === 'vcenter' ? 'https://vcenter.example.com/sdk' : 'https://firewall.example.com');
-  const pollSeconds = inputField(grid, 'Poll interval (seconds)', 'poll_seconds', source === 'vcenter' ? '30' : '60', 'number');
-  if (source === 'opnsense') {
-    const apiKey = inputField(grid, 'API key', 'api_key', 'API key', 'password');
-    apiKey.autocomplete = 'new-password';
-    const apiSecret = inputField(grid, 'API secret', 'api_secret', 'API secret', 'password');
-    apiSecret.autocomplete = 'new-password';
-    apiKey.dataset.secret = 'api_key';
-    apiSecret.dataset.secret = 'api_secret';
-  } else {
-    const username = inputField(grid, source === 'vcenter' ? 'Read-only username' : 'Stats username (optional)', 'username',
-      source === 'vcenter' ? 'readonly@vsphere.local' : 'stats');
-    username.dataset.credential = 'username';
-    const password = inputField(grid, 'Password', 'password', 'Password', 'password');
-    password.autocomplete = 'new-password';
-    password.dataset.secret = 'password';
-  }
-  body.append(grid);
-  const options = el('div', 'form-row');
-  const recipients = inputField(options, 'Alert recipients (optional)', 'recipients', 'ops@example.com');
-  recipients.spellcheck = false;
-  const insecureWrap = el('label', 'field checkbox-field');
-  const insecure = el('input');
-  insecure.type = 'checkbox';
-  insecureWrap.append(insecure, document.createTextNode('Skip TLS verification (self-signed/lab only)'));
-  options.append(insecureWrap);
-  body.append(options);
-  const clearWrap = el('label', 'field checkbox-field hidden');
-  const clearCredentials = el('input');
-  clearCredentials.type = 'checkbox';
-  clearWrap.append(clearCredentials, document.createTextNode(source === 'opnsense' ? 'Clear stored API key and secret' : 'Clear stored username and password'));
-  body.append(clearWrap);
-  body.append(el('p', 'field-note', 'Secrets are stored only in the encrypted database and are never returned by the API. Leave a password or secret blank to keep the stored value.'));
-  const actions = el('div', 'modal-actions');
-  const cancel = el('button', 'btn', 'Cancel');
-  cancel.type = 'button';
-  const test = el('button', 'btn', 'Save and test');
-  test.type = 'button';
-  const save = el('button', 'btn primary', 'Save');
-  save.type = 'button';
-  actions.append(cancel, test, save);
-  body.append(actions);
-  const close = openModal('Integration — ' + integrationSourceLabel(source), body);
-  cancel.addEventListener('click', close);
-
-  const credentialInputs = [...grid.querySelectorAll('[data-credential], [data-secret]')];
-  let previousCredentials = null;
-  clearCredentials.addEventListener('change', () => {
-    if (clearCredentials.checked) {
-      previousCredentials = credentialInputs.map((input) => input.value);
-      for (const input of credentialInputs) {
-        input.value = '';
-        input.disabled = true;
-      }
-    } else {
-      for (const [index, input] of credentialInputs.entries()) {
-        input.disabled = false;
-        if (previousCredentials && previousCredentials[index]) input.value = previousCredentials[index];
-      }
-    }
-  });
-
-  const payload = () => ({
-    enabled: enabled.checked,
-    url: url.value.trim(),
-    username: (grid.querySelector('[name="username"]') || {}).value || '',
-    password: (grid.querySelector('[name="password"]') || {}).value || '',
-    api_key: (grid.querySelector('[name="api_key"]') || {}).value || '',
-    api_secret: (grid.querySelector('[name="api_secret"]') || {}).value || '',
-    clear_credentials: clearCredentials.checked,
-    insecure_skip_verify: insecure.checked,
-    poll_seconds: Number(pollSeconds.value || 60),
-    recipients: recipients.value.trim(),
-  });
-  const persist = async () => {
-    const result = await api('/api/v1/integrations/' + encodeURIComponent(source), { method: 'PUT', body: JSON.stringify(payload()) });
-    const secretInputs = grid.querySelectorAll('[type="password"]');
-    for (const input of secretInputs) input.value = '';
-    clearCredentials.checked = false;
-    previousCredentials = null;
-    for (const input of credentialInputs) input.disabled = false;
-    return result.integration;
-  };
-
-  try {
-    const data = await api('/api/v1/integrations/' + encodeURIComponent(source));
-    const integration = data.integration || {};
-    enabled.checked = Boolean(integration.enabled);
-    url.value = integration.url || '';
-    pollSeconds.value = String(integration.poll_seconds || (source === 'vcenter' ? 30 : 60));
-    recipients.value = integration.recipients || '';
-    insecure.checked = Boolean(integration.insecure_skip_verify);
-    const username = grid.querySelector('[name="username"]');
-    if (username) username.value = integration.username || '';
-    const password = grid.querySelector('[name="password"]');
-    if (password) password.placeholder = integration.password_set ? 'Stored password — leave blank to keep' : 'Password';
-    const apiKey = grid.querySelector('[name="api_key"]');
-    if (apiKey) apiKey.placeholder = integration.api_key_set ? 'Stored API key — leave blank to keep' : 'API key';
-    const apiSecret = grid.querySelector('[name="api_secret"]');
-    if (apiSecret) apiSecret.placeholder = integration.api_secret_set ? 'Stored API secret — leave blank to keep' : 'API secret';
-    if (integration.password_set || integration.api_key_set || integration.api_secret_set) clearWrap.classList.remove('hidden');
-  } catch (error) {
-    toast(error.message, 'error');
-  }
-
-  save.addEventListener('click', async () => {
-    try {
-      await persist();
-      close();
-      toast('Integration settings saved', 'ok');
-      await loadAll();
-    } catch (error) {
-      toast(error.message, 'error');
-    }
-  });
-  test.addEventListener('click', async () => {
-    test.disabled = true;
-    test.textContent = 'Testing…';
-    try {
-      await persist();
-      const result = await api('/api/v1/integrations/' + encodeURIComponent(source) + '/test', { method: 'POST', body: '{}' });
-      toast('Integration test passed: ' + (result.summary || 'read-only connection OK'), 'ok');
-      await loadAll();
-    } catch (error) {
-      toast(error.message, 'error');
-    } finally {
-      test.disabled = false;
-      test.textContent = 'Save and test';
     }
   });
 }
@@ -2364,128 +2627,33 @@ async function bootstrapHost(host) {
 }
 
 async function fleetUpdateHelpers(hosts = null) {
-  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning || fleetCleanupRunning) {
-    toast('Another fleet operation is already running', 'error');
-    return;
-  }
-  const targets = Array.isArray(hosts) ? hosts.slice() : state.hosts.slice();
-  if (targets.length === 0) {
+  const targets = (Array.isArray(hosts) ? hosts.slice() : state.hosts.slice());
+  if (!targets.length) {
     toast(hosts ? 'No hosts selected' : 'No hosts to update', 'error');
     return;
   }
   const scope = hosts
     ? (targets.length === 1 ? 'the selected host' : 'the ' + targets.length + ' selected hosts')
     : ('all ' + targets.length + ' hosts');
-  if (!confirm('Set up or update the HIBP helper on ' + scope + '?\n\nThis uploads the running controller binary, rewrites the sudoers rule, and may prompt for credentials. Hosts with untrusted keys are skipped.')) {
+  if (!confirm('Set up or update the HIBP helper on ' + scope + '?\n\nThis creates a durable background job. It uploads the running controller binary and rewrites the sudoers rule. It requires key authentication and non-interactive sudo for the installation and visudo steps; the restricted helper rule alone is not enough. Hosts that need a sudo password are skipped; use the per-host Setup action for the initial bootstrap or a locked-down target.')) {
     return;
   }
-
-  fleetUpdateRunning = true;
-  let cancelled = false;
-  const body = el('div', 'modal-body');
-  body.append(el('p', 'muted', 'Setting up sequentially. Keep this tab open. Setup installs the version of the HIBP server that is currently running.'));
-  const summary = el('div', 'muted', 'Preparing…');
-  const wrap = el('div', 'fleet-update-list');
-  const table = el('table');
-  const head = el('tr');
-  for (const label of ['Host', 'Status', 'Detail']) head.append(el('th', '', label));
-  table.append(head);
-  wrap.append(table);
-  body.append(summary, wrap);
-  const actions = el('div', 'modal-actions');
-  const stop = el('button', 'btn danger', 'Stop after current host');
-  stop.type = 'button';
-  actions.append(stop);
-  body.append(actions);
-  const close = openModal(hosts ? 'Selected helper setup' : 'Fleet helper setup', body, () => { cancelled = true; });
-  const rows = new Map();
-  const rowFor = (host) => {
-    let row = rows.get(host.id);
-    if (row) return row;
-    const status = el('span', 'pill unknown', 'pending');
-    const statusCell = el('td');
-    statusCell.append(status);
-    const detail = el('td', 'muted', '—');
-    row = el('tr');
-    row.append(el('td', '', host.name), statusCell, detail);
-    table.append(row);
-    row.status = status;
-    row.detail = detail;
-    rows.set(host.id, row);
-    return row;
-  };
-  const setStatus = (host, label, cls, detail) => {
-    const row = rowFor(host);
-    row.status.textContent = label;
-    row.status.className = 'pill ' + cls;
-    row.detail.textContent = detail || '—';
-  };
-  let stopping = false;
-  stop.addEventListener('click', () => {
-    if (fleetUpdateRunning) {
-      stopping = true;
-      cancelled = true;
-      stop.disabled = true;
-      stop.textContent = 'Stopping…';
-      summary.textContent = 'Stopping after the current host…';
-      return;
-    }
-    close();
-  });
-
-  const sharedSudo = { value: '' };
-  let ok = 0;
-  let failed = 0;
-  let skipped = 0;
-  beginOperation('Updating helpers', 'Starting with ' + targets.length + ' host(s)…', targets.length);
-  try {
-    for (let index = 0; index < targets.length; index++) {
-      if (cancelled) break;
-      const host = targets[index];
-      setStatus(host, 'running', 'unknown', 'connecting…');
-      summary.textContent = 'Updating ' + (index + 1) + ' of ' + targets.length + '…';
-      updateOperation('Updating helper on ' + host.name + ' (' + (index + 1) + ' of ' + targets.length + ')…', index, targets.length);
-      try {
-        const password = await passwordFor(host);
-        if (cancelled) break;
-        await requestWithSudo(
-          host,
-          '/api/v1/hosts/' + encodeURIComponent(host.id) + '/bootstrap',
-          (sudoPassword) => ({ password, sudo_password: sudoPassword }),
-          { method: 'POST' },
-          sharedSudo,
-        );
-        setStatus(host, 'ok', 'reachable', 'helper updated');
-        ok++;
-      } catch (error) {
-        if (error.message === 'cancelled') {
-          setStatus(host, 'skipped', 'review', 'credential prompt cancelled');
-          skipped++;
-          cancelled = true;
-          break;
-        } else if (error.status === 409 && error.data && error.data.code === 'host_key_untrusted') {
-          setStatus(host, 'failed', 'unreachable', 'trust the host key first');
-          failed++;
-        } else {
-          setStatus(host, 'failed', 'unreachable', error.message);
-          failed++;
-        }
-      }
-    }
-  } finally {
-    fleetUpdateRunning = false;
-    stop.disabled = false;
-    stop.textContent = 'Close';
-    stop.classList.remove('danger');
-    summary.textContent = (cancelled || stopping)
-      ? 'Stopped. Updated ' + ok + ', failed ' + failed + ', skipped ' + skipped + '.'
-      : 'Finished. Updated ' + ok + ', failed ' + failed + ', skipped ' + skipped + '.';
-    finishOperation('Helper update finished', 'Updated ' + ok + ' · failed ' + failed + ' · skipped ' + skipped, failed > 0);
-    await loadAll({ force: true });
-  }
+  await createJob('helper-setup', targets, { confirm: 'setup' });
 }
 
 async function collectFacts(host) {
+  if (hostCanUseJobs(host)) {
+    await createJob('facts', [host]);
+    return;
+  }
+  await collectFactsInteractive(host);
+}
+
+function hostCanUseJobs(host) {
+  return Boolean(host && host.auth_type === 'key' && host.trusted_key);
+}
+
+async function collectFactsInteractive(host) {
   toast('Collecting facts from ' + host.name + '…');
   beginOperation('Collecting facts — ' + host.name, 'Running the fixed helper…');
   try {
@@ -2506,120 +2674,13 @@ async function collectFacts(host) {
 }
 
 async function fleetCollectFacts(hosts) {
-  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning || fleetCleanupRunning) {
-    toast('Another fleet operation is already running', 'error');
-    return;
-  }
   const targets = hosts.slice();
   if (!targets.length) {
     toast('Select at least one host', 'error');
     return;
   }
-  if (!confirm('Collect facts from ' + targets.length + ' selected host(s)? This uses SSH and the fixed helper.')) return;
-
-  fleetFactsRunning = true;
-  let cancelled = false;
-  const body = el('div', 'modal-body');
-  body.append(el('p', 'muted', 'Collecting facts sequentially. Keep this tab open.'));
-  const summary = el('div', 'muted', 'Preparing…');
-  const wrap = el('div', 'fleet-update-list');
-  const table = el('table');
-  const head = el('tr');
-  for (const label of ['Host', 'Status', 'Detail']) head.append(el('th', '', label));
-  table.append(head);
-  wrap.append(table);
-  body.append(summary, wrap);
-  const actions = el('div', 'modal-actions');
-  const stop = el('button', 'btn danger', 'Stop after current host');
-  stop.type = 'button';
-  actions.append(stop);
-  body.append(actions);
-  const close = openModal('Collect facts from selected hosts', body, () => { cancelled = true; });
-  const rows = new Map();
-  const rowFor = (host) => {
-    let row = rows.get(host.id);
-    if (row) return row;
-    const status = el('span', 'pill unknown', 'pending');
-    const statusCell = el('td');
-    statusCell.append(status);
-    const detail = el('td', 'muted', '—');
-    row = el('tr');
-    row.append(el('td', '', host.name), statusCell, detail);
-    table.append(row);
-    row.status = status;
-    row.detail = detail;
-    rows.set(host.id, row);
-    return row;
-  };
-  const setStatus = (host, label, cls, detail) => {
-    const row = rowFor(host);
-    row.status.textContent = label;
-    row.status.className = 'pill ' + cls;
-    row.detail.textContent = detail || '—';
-  };
-  let stopping = false;
-  stop.addEventListener('click', () => {
-    if (fleetFactsRunning) {
-      stopping = true;
-      cancelled = true;
-      stop.disabled = true;
-      stop.textContent = 'Stopping…';
-      summary.textContent = 'Stopping after the current host…';
-      return;
-    }
-    close();
-  });
-
-  const sharedSudo = { value: '' };
-  let ok = 0;
-  let failed = 0;
-  let skipped = 0;
-  beginOperation('Collecting facts', 'Starting with ' + targets.length + ' host(s)…', targets.length);
-  try {
-    for (let index = 0; index < targets.length; index++) {
-      if (cancelled) break;
-      const host = targets[index];
-      setStatus(host, 'running', 'unknown', 'collecting…');
-      summary.textContent = 'Collecting ' + (index + 1) + ' of ' + targets.length + '…';
-      updateOperation('Collecting facts from ' + host.name + ' (' + (index + 1) + ' of ' + targets.length + ')…', index, targets.length);
-      try {
-        const password = await passwordFor(host);
-        if (cancelled) break;
-        await requestWithSudo(
-          host,
-          '/api/v1/hosts/' + encodeURIComponent(host.id) + '/facts',
-          (sudoPassword) => ({ password, sudo_password: sudoPassword }),
-          { method: 'POST' },
-          sharedSudo,
-        );
-        setStatus(host, 'collected', 'reachable', 'facts updated');
-        ok++;
-      } catch (error) {
-        if (error.message === 'cancelled') {
-          setStatus(host, 'skipped', 'review', 'credential prompt cancelled');
-          skipped++;
-          cancelled = true;
-          break;
-        } else if (error.status === 409 && error.data && error.data.code === 'host_busy') {
-          setStatus(host, 'failed', 'unreachable', 'another operation is running');
-          failed++;
-        } else {
-          setStatus(host, 'failed', 'unreachable', error.message);
-          failed++;
-        }
-      }
-    }
-  } finally {
-    fleetFactsRunning = false;
-    stop.disabled = false;
-    stop.textContent = 'Close';
-    stop.classList.remove('danger');
-    summary.textContent = (cancelled || stopping)
-      ? 'Stopped. Collected ' + ok + ', failed ' + failed + ', skipped ' + skipped + '.'
-      : 'Finished. Collected ' + ok + ', failed ' + failed + ', skipped ' + skipped + '.';
-    finishOperation('Facts collection finished', 'Collected ' + ok + ' · failed ' + failed + ' · skipped ' + skipped, failed > 0);
-    await loadAll({ force: true });
-  }
+  if (!confirm('Collect facts from ' + targets.length + ' selected host(s) as a durable background job?')) return;
+  await createJob('facts', targets);
 }
 
 function previewCounts(preview) {
@@ -2758,7 +2819,15 @@ function showPreviewDetailsModal(host, preview) {
   close.addEventListener('click', closeFn);
 }
 
-function showPatchModal(host) {
+async function showPatchModal(host) {
+  if (hostCanUseJobs(host)) {
+    await createJob('patch-preview', [host]);
+    return;
+  }
+  showPatchModalInteractive(host);
+}
+
+function showPatchModalInteractive(host) {
   const body = el('div', 'modal-body');
   body.append(el('p', 'muted', 'HIBP resolves the package transaction first. Nothing is installed, upgraded, or removed until you review the list and confirm.'));
   const facts = host.facts || {};
@@ -2864,7 +2933,7 @@ function showPatchModal(host) {
 
 async function applyPatchHost(host, preview, previewHash, rebootAfterPatch = false) {
   const counts = previewCounts(preview);
-  beginOperation('Applying updates — ' + host.name, 'Running the package manager. Keep this tab open.');
+  beginOperation('Applying updates — ' + host.name, 'Interactive fallback is running the package manager; keep this tab open. Key-auth hosts use the durable job flow.');
   try {
     const password = await passwordFor(host);
     const result = await requestWithSudo(
@@ -2906,37 +2975,79 @@ async function applyPatchHost(host, preview, previewHash, rebootAfterPatch = fal
   }
 }
 
-function showFleetPatchModal(hosts) {
+async function showFleetPatchModal(hosts) {
   const targets = hosts.slice();
   if (!targets.length) {
     toast('Select at least one host', 'error');
     return;
   }
-  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning || fleetCleanupRunning) {
-    toast('Another fleet operation is already running', 'error');
-    return;
-  }
+  if (!confirm('Preview pending package changes on ' + targets.length + ' selected host(s)?\\n\\nThis creates a durable preview job. You can review the result in the Activity panel and then apply it.')) return;
+  await createJob('patch-preview', targets);
+}
+
+function showPatchReview(hosts, previews) {
+  const targets = hosts.slice();
+  const removals = targets.reduce((sum, host) => {
+    const entry = previews.get(host.id);
+    return sum + (entry ? previewCounts(entry.preview).remove : 0);
+  }, 0);
+  const changes = targets.reduce((sum, host) => {
+    const entry = previews.get(host.id);
+    return sum + (entry ? previewTotal(entry.preview) : 0);
+  }, 0);
   const body = el('div', 'modal-body');
-  body.append(el('p', 'muted', 'HIBP previews every selected host first. Nothing is changed until you review the package lists and confirm.'));
+  body.append(el('p', 'muted', 'This is the reviewed package transaction. Applying it creates a durable server-side job, so you can navigate away or close this dialog. HIBP re-checks every preview immediately before applying and refuses a host if the package list changed.'));
+
   const summary = el('div', 'status-list');
-  const row = (label, value) => {
+  const summaryRow = (label, value) => {
     const div = el('div');
     div.append(el('span', '', label), el('b', '', value));
     return div;
   };
-  const pending = targets.reduce((sum, host) => sum + Number((host.facts || {}).pending_updates || 0), 0);
   summary.append(
-    row('Selected hosts', String(targets.length)),
-    row('Pending updates', String(pending)),
+    summaryRow('Hosts in review', String(targets.length)),
+    summaryRow('Package changes', String(changes)),
+    summaryRow('Removals', String(removals)),
   );
   body.append(summary);
-  const wrap = el('div', 'fleet-update-list');
-  const table = el('table');
-  const head = el('tr');
-  for (const label of ['Host', 'Status', 'Upgrade', 'Install', 'Remove', 'Reboot', 'Details']) head.append(el('th', '', label));
-  table.append(head);
-  wrap.append(table);
-  body.append(wrap);
+
+  if (targets.length === 1) {
+    const entry = previews.get(targets[0].id);
+    const previewBox = el('div');
+    renderPackagePreview(previewBox, entry.preview);
+    body.append(previewBox);
+  } else {
+    const wrap = el('div', 'fleet-update-list');
+    const table = el('table');
+    const head = el('tr');
+    for (const label of ['Host', 'Status', 'Upgrade', 'Install', 'Remove', 'Details']) head.append(el('th', '', label));
+    table.append(head);
+    for (const host of targets) {
+      const entry = previews.get(host.id);
+      if (!entry) continue;
+      const counts = previewCounts(entry.preview);
+      const total = previewTotal(entry.preview);
+      const row = el('tr');
+      row.append(el('td', '', host.name));
+      const statusTd = el('td');
+      statusTd.append(el('span', 'pill ' + (total ? 'review' : 'reachable'), total ? 'ready' : 'up to date'));
+      row.append(statusTd);
+      row.append(el('td', '', String(counts.upgrade + counts.downgrade + counts.reinstall)));
+      row.append(el('td', '', String(counts.install)));
+      row.append(el('td', '', String(counts.remove)));
+      const detailsTd = el('td');
+      const details = el('button', 'link-button preview-detail-link', 'View');
+      details.type = 'button';
+      details.disabled = !total;
+      details.addEventListener('click', () => showPreviewDetailsModal(host, entry.preview));
+      detailsTd.append(details);
+      row.append(detailsTd);
+      table.append(row);
+    }
+    wrap.append(table);
+    body.append(wrap);
+  }
+
   const confirmWrap = el('label', 'field preview-confirm hidden');
   confirmWrap.append(el('span', '', 'At least one host has package removals. Type APPLY to confirm all removals.'));
   const confirmInput = el('input');
@@ -2944,285 +3055,269 @@ function showFleetPatchModal(hosts) {
   confirmInput.autocomplete = 'off';
   confirmInput.placeholder = 'APPLY';
   confirmWrap.append(confirmInput);
+  if (removals > 0) confirmWrap.classList.remove('hidden');
   body.append(confirmWrap);
+
   const rebootAfterPatch = el('label', 'field checkbox-field');
   const rebootCheck = el('input');
   rebootCheck.type = 'checkbox';
   rebootAfterPatch.append(rebootCheck, document.createTextNode('Reboot automatically after apply when a target reports a reboot is required'));
   body.append(rebootAfterPatch);
+
   const actions = el('div', 'modal-actions');
-  const cancel = el('button', 'btn', 'Cancel');
+  const cancel = el('button', 'btn', 'Close');
   cancel.type = 'button';
-  const refresh = el('button', 'btn', 'Re-preview all');
+  const refresh = el('button', 'btn', 'Re-preview');
   refresh.type = 'button';
   const apply = el('button', 'btn danger', 'Apply reviewed updates');
   apply.type = 'button';
-  apply.disabled = true;
+  const syncApply = () => {
+    apply.disabled = changes === 0 || (removals > 0 && confirmInput.value.trim().toUpperCase() !== 'APPLY');
+  };
+  syncApply();
   actions.append(cancel, refresh, apply);
   body.append(actions);
-  const close = openModal('Patch preview — ' + targets.length + ' selected host' + (targets.length === 1 ? '' : 's'), body, null, 'wide');
-  const rows = new Map();
-  const previews = new Map();
-  let totalRemovals = 0;
-  let cancelled = false;
-  const rowFor = (host) => {
-    let entry = rows.get(host.id);
-    if (entry) return entry;
-    const status = el('span', 'pill unknown', 'pending');
-    const statusCell = el('td');
-    statusCell.append(status);
-    const upgrade = el('td', '', '—');
-    const install = el('td', '', '—');
-    const remove = el('td', '', '—');
-    const reboot = el('td', '', (host.facts || {}).reboot_required ? 'yes' : 'no');
-    const details = el('td');
-    const detailsButton = el('button', 'link-button preview-detail-link', 'View');
-    detailsButton.type = 'button';
-    detailsButton.disabled = true;
-    details.append(detailsButton);
-    const tr = el('tr');
-    tr.append(el('td', '', host.name), statusCell, upgrade, install, remove, reboot, details);
-    table.append(tr);
-    entry = { row: tr, status, upgrade, install, remove, details: detailsButton };
-    rows.set(host.id, entry);
-    detailsButton.addEventListener('click', () => {
-      const preview = previews.get(host.id);
-      if (preview) showPreviewDetailsModal(host, preview.preview);
-    });
-    return entry;
-  };
-  const syncApply = () => {
-    const confirmed = totalRemovals === 0 || confirmInput.value.trim().toUpperCase() === 'APPLY';
-    const withChanges = [...previews.values()].some((entry) => previewTotal(entry.preview) > 0);
-    apply.disabled = !withChanges || !confirmed;
-  };
-  const previewAll = async () => {
-    cancelled = false;
-    previews.clear();
-    totalRemovals = 0;
-    apply.disabled = true;
-    refresh.disabled = true;
-    confirmWrap.classList.add('hidden');
-    for (const host of targets) {
-      const entry = rowFor(host);
-      entry.status.textContent = 'pending';
-      entry.status.className = 'pill unknown';
-      entry.upgrade.textContent = entry.install.textContent = entry.remove.textContent = '—';
-      entry.details.disabled = true;
-    }
-    beginOperation('Patch preview — ' + targets.length + ' host' + (targets.length === 1 ? '' : 's'), 'Resolving package changes…', targets.length);
-    const sharedSudo = { value: '' };
-    let ready = 0;
-    let failed = 0;
-    for (let index = 0; index < targets.length; index++) {
-      if (cancelled) break;
-      const host = targets[index];
-      const entry = rowFor(host);
-      entry.status.textContent = 'previewing';
-      entry.status.className = 'pill unknown';
-      updateOperation('Resolving ' + host.name + ' (' + (index + 1) + ' of ' + targets.length + ')…', index, targets.length);
-      try {
-        const response = await fetchPatchPreview(host, sharedSudo);
-        if (cancelled) break;
-        const counts = previewCounts(response.preview);
-        previews.set(host.id, response);
-        totalRemovals += counts.remove;
-        entry.status.textContent = previewTotal(response.preview) ? 'ready' : 'up to date';
-        entry.status.className = 'pill ' + (previewTotal(response.preview) ? 'review' : 'reachable');
-        entry.upgrade.textContent = String(counts.upgrade + counts.downgrade + counts.reinstall);
-        entry.install.textContent = String(counts.install);
-        entry.remove.textContent = String(counts.remove);
-        entry.details.disabled = false;
-        ready++;
-      } catch (error) {
-        entry.status.textContent = 'preview failed';
-        entry.status.className = 'pill unreachable';
-        entry.upgrade.textContent = entry.install.textContent = entry.remove.textContent = '—';
-        failed++;
-      }
-      updateOperation('Previewed ' + (index + 1) + ' of ' + targets.length + ' hosts', index + 1, targets.length);
-    }
-    refresh.disabled = false;
-    if (totalRemovals > 0) confirmWrap.classList.remove('hidden');
-    syncApply();
-    finishOperation(
-      failed ? 'Patch preview finished with errors' : 'Patch preview ready',
-      ready + ' ready' + (failed ? ' · ' + failed + ' failed' : '') + ' · ' + totalRemovals + ' removal(s)',
-      failed > 0,
-    );
-  };
-  cancel.addEventListener('click', () => {
-    cancelled = true;
-    if (operationState.active) finishOperation('Patch preview cancelled', 'No changes were made.');
+  const close = openModal('Patch review — ' + targets.length + ' host' + (targets.length === 1 ? '' : 's'), body, null, 'wide');
+  cancel.addEventListener('click', close);
+  refresh.addEventListener('click', async () => {
     close();
+    await createJob('patch-preview', targets);
   });
-  refresh.addEventListener('click', previewAll);
   confirmInput.addEventListener('input', syncApply);
-  apply.addEventListener('click', () => {
-    const confirmed = totalRemovals === 0 || confirmInput.value.trim().toUpperCase() === 'APPLY';
-    if (!confirmed) return;
-    const selected = targets.filter((host) => previews.has(host.id) && previewTotal(previews.get(host.id).preview) > 0);
+  apply.addEventListener('click', async () => {
+    if (apply.disabled) return;
+    const spec = {};
+    const selected = [];
+    for (const host of targets) {
+      const entry = previews.get(host.id);
+      if (!entry || previewTotal(entry.preview) === 0) continue;
+      selected.push(host);
+      spec[host.id] = {
+        preview_hash: entry.preview_hash,
+        allow_removals: previewCounts(entry.preview).remove > 0,
+      };
+    }
     if (!selected.length) {
       toast('No package changes to apply', 'error');
       return;
     }
-    if (!confirm('Apply the reviewed package changes on ' + selected.length + ' host(s)? This runs the root-owned helper on each target.')) return;
+    if (!confirm('Apply the reviewed package changes on ' + selected.length + ' host' + (selected.length === 1 ? '' : 's') + '? This creates a durable job and runs the root-owned helper on each target.')) return;
     close();
-    fleetApplyHosts(selected, previews, rebootCheck.checked);
+    await createJob('patch-apply', selected, {
+      confirm: 'apply',
+      reboot_after_patch: rebootCheck.checked,
+      previews: spec,
+    });
   });
-  previewAll();
 }
 
-async function fleetApplyHosts(hosts, previews, rebootAfterPatch = false) {
-  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning || fleetCleanupRunning) {
-    toast('Another fleet operation is already running', 'error');
+function showCleanupReview(entries) {
+  const list = entries.filter((entry) => entry.result && entry.result.count > 0);
+  if (!list.length) {
+    toast('No orphaned packages to remove', 'error');
     return;
   }
-  const targets = hosts.slice();
-  if (!targets.length) return;
-  fleetPatchRunning = true;
-  let cancelled = false;
+  const total = list.reduce((sum, entry) => sum + Number(entry.result.count || 0), 0);
   const body = el('div', 'modal-body');
-  body.append(el('p', 'muted', 'Applying the reviewed package lists sequentially. Keep this tab open. HIBP re-checks each preview immediately before applying and refuses if the package list changed.'));
-  const summary = el('div', 'muted', 'Preparing…');
-  const wrap = el('div', 'fleet-update-list');
-  const table = el('table');
-  const head = el('tr');
-  for (const label of ['Host', 'Status', 'Detail']) head.append(el('th', '', label));
-  table.append(head);
-  wrap.append(table);
-  body.append(summary, wrap);
+  body.append(el('p', 'muted', 'Review the orphaned package list. Removal creates a durable server-side job; the helper recomputes the list on each target and removes only what its own package manager reports. This cannot be undone.'));
+  const packages = el('pre', 'cleanup-list');
+  packages.textContent = list.map(({ host, result }) =>
+    host.name + ' (' + (result.package_manager || 'unknown') + '):\n  ' + (result.packages || []).join('\n  ')).join('\n\n');
+  body.append(packages);
+  const confirmWrap = el('label', 'field');
+  confirmWrap.append(el('span', '', 'Type CLEAN to remove these packages (case-insensitive)'));
+  const confirmInput = el('input');
+  confirmInput.type = 'text';
+  confirmInput.autocomplete = 'off';
+  confirmInput.placeholder = 'CLEAN';
+  confirmWrap.append(confirmInput);
+  body.append(confirmWrap);
   const actions = el('div', 'modal-actions');
-  const stop = el('button', 'btn danger', 'Stop after current host');
-  stop.type = 'button';
-  actions.append(stop);
+  const cancel = el('button', 'btn', 'Close');
+  cancel.type = 'button';
+  const remove = el('button', 'btn danger', 'Remove ' + total + ' package' + (total === 1 ? '' : 's'));
+  remove.type = 'button';
+  remove.disabled = true;
+  actions.append(cancel, remove);
   body.append(actions);
-  const close = openModal('Apply reviewed updates', body, () => { cancelled = true; });
-  const rows = new Map();
-  const rowFor = (host) => {
-    let entry = rows.get(host.id);
-    if (entry) return entry;
-    const status = el('span', 'pill unknown', 'pending');
-    const statusCell = el('td');
-    statusCell.append(status);
-    const detail = el('td', 'muted', '—');
-    const tr = el('tr');
-    tr.append(el('td', '', host.name), statusCell, detail);
-    table.append(tr);
-    entry = { status, detail };
-    rows.set(host.id, entry);
-    return entry;
+  const close = openModal('Cleanup review — ' + list.length + ' host' + (list.length === 1 ? '' : 's'), body);
+  cancel.addEventListener('click', close);
+  confirmInput.addEventListener('input', () => {
+    remove.disabled = confirmInput.value.trim().toUpperCase() !== 'CLEAN';
+  });
+  remove.addEventListener('click', async () => {
+    if (remove.disabled) return;
+    close();
+    await createJob('cleanup-apply', list.map((entry) => entry.host), { confirm: 'cleanup' });
+  });
+  confirmInput.focus();
+}
+
+function addPackageEnvRow(container, key = '', value = '') {
+  const row = el('div', 'env-row');
+  const keyInput = el('input');
+  keyInput.type = 'text';
+  keyInput.placeholder = 'WAZUH_MANAGER';
+  keyInput.value = key;
+  keyInput.autocomplete = 'off';
+  keyInput.spellcheck = false;
+  const valueInput = el('input');
+  valueInput.type = 'text';
+  valueInput.placeholder = '10.0.0.5';
+  valueInput.value = value;
+  valueInput.autocomplete = 'off';
+  valueInput.spellcheck = false;
+  const remove = el('button', 'btn small', '×');
+  remove.type = 'button';
+  remove.title = 'Remove variable';
+  remove.addEventListener('click', () => row.remove());
+  row.append(keyInput, valueInput, remove);
+  container.append(row);
+}
+
+function readPackageEnvRows(container) {
+  const env = {};
+  for (const row of container.querySelectorAll('.env-row')) {
+    const [keyInput, valueInput] = row.querySelectorAll('input');
+    const key = keyInput.value.trim();
+    const value = valueInput.value;
+    if (!key && !value) continue;
+    if (!key) throw new Error('Every installer variable needs a name');
+    env[key] = value;
+  }
+  return env;
+}
+
+async function uploadPackageJob(hosts, file, env) {
+  const form = new FormData();
+  form.append('host_ids', JSON.stringify(hosts.map((host) => host.id)));
+  form.append('env', JSON.stringify(env));
+  form.append('confirm', 'install');
+  form.append('package', file, file.name);
+  const response = await fetch('/api/v1/jobs/package', {
+    method: 'POST',
+    body: form,
+    credentials: 'same-origin',
+    cache: 'no-store',
+  });
+  const text = await response.text();
+  let data = {};
+  if (text) {
+    try { data = JSON.parse(text); } catch { data = { error: text }; }
+  }
+  if (!response.ok) {
+    if (response.status === 401 || (response.status === 403 && data.code === 'mfa_required')) {
+      showAuthScreen();
+    }
+    throw new Error(data.error || ('HTTP ' + response.status));
+  }
+  return data;
+}
+
+function openDeployPackageFlow() {
+  if (!selectedHosts().length) {
+    setView('hosts');
+    toast('Select one or more hosts, then click Deploy package again.');
+    return;
+  }
+  showDeployPackageModal();
+}
+
+function showDeployPackageModal(hosts) {
+  const targets = (hosts && hosts.length ? hosts : selectedHosts()).slice();
+  if (!targets.length) {
+    toast('Select one or more hosts first', 'error');
+    return;
+  }
+  const body = el('div', 'modal-body');
+  body.append(el('p', 'muted', 'Upload one signed package and deploy it to the selected hosts. HIBP stages the file in a temporary directory on the controller, transfers it over SSH, verifies its SHA-256, installs it with the target package manager, and removes the temporary copies. The package maintainer scripts run as root.'));
+  body.append(el('p', 'preview-warning', 'Only deploy packages you obtained from a trusted source. HIBP verifies the upload hash but does not replace your distribution or vendor signature policy. Installer environment values are stored in the encrypted job record and are never returned by the API. Targets must already run a helper build and sudoers rule that include install-package; run Update helpers first after a controller upgrade.' + (state.status.demo ? ' Demo mode discards the upload and simulates installation; do not enter real secrets.' : '')));
+  const drop = el('div', 'package-drop');
+  const fileInput = el('input');
+  fileInput.type = 'file';
+  fileInput.accept = '.deb,.rpm,.pkg.tar.zst,.apk';
+  const fileLabel = el('div', 'package-file', 'No package selected');
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files && fileInput.files[0];
+    fileLabel.textContent = file ? file.name + ' · ' + (file.size / (1024 * 1024)).toFixed(1) + ' MiB' : 'No package selected';
+  });
+  drop.append(fileInput, fileLabel);
+  body.append(drop);
+  body.append(el('div', 'muted', 'Selected hosts'));
+  body.append(el('div', 'package-hosts', targets.map((host) => {
+    let note = '';
+    if (host.auth_type !== 'key') note = ' · password auth (will be skipped)';
+    else if (!host.trusted_key) note = ' · key not trusted (will be skipped)';
+    return host.name + ' · ' + host.address + note;
+  }).join('\n')));
+  const envSection = el('div');
+  envSection.append(el('div', 'muted', 'Installer environment variables (optional)'));
+  const envList = el('div', 'env-list');
+  envSection.append(envList);
+  const addEnv = el('button', 'link-button', '+ Add variable');
+  addEnv.type = 'button';
+  addEnv.addEventListener('click', () => addPackageEnvRow(envList));
+  envSection.append(addEnv);
+  body.append(envSection);
+  const confirmWrap = el('label', 'field');
+  confirmWrap.append(el('span', '', 'Type INSTALL to confirm deployment (case-insensitive)'));
+  const confirmInput = el('input');
+  confirmInput.type = 'text';
+  confirmInput.autocomplete = 'off';
+  confirmInput.placeholder = 'INSTALL';
+  confirmWrap.append(confirmInput);
+  body.append(confirmWrap);
+  const actions = el('div', 'modal-actions');
+  const cancel = el('button', 'btn', 'Cancel');
+  cancel.type = 'button';
+  const deploy = el('button', 'btn danger', 'Upload and install');
+  deploy.type = 'button';
+  deploy.disabled = true;
+  actions.append(cancel, deploy);
+  body.append(actions);
+  const close = openModal('Deploy package to ' + targets.length + ' host' + (targets.length === 1 ? '' : 's'), body, null, 'wide');
+  cancel.addEventListener('click', close);
+  const sync = () => {
+    deploy.disabled = !(fileInput.files && fileInput.files.length) || confirmInput.value.trim().toUpperCase() !== 'INSTALL';
   };
-  const setStatus = (host, label, cls, detail) => {
-    const entry = rowFor(host);
-    entry.status.textContent = label;
-    entry.status.className = 'pill ' + cls;
-    entry.detail.textContent = detail || '—';
-  };
-  let stopping = false;
-  stop.addEventListener('click', () => {
-    if (fleetPatchRunning) {
-      stopping = true;
-      cancelled = true;
-      stop.disabled = true;
-      stop.textContent = 'Stopping…';
-      summary.textContent = 'Stopping after the current host…';
+  fileInput.addEventListener('change', sync);
+  confirmInput.addEventListener('input', sync);
+  deploy.addEventListener('click', async () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file || confirmInput.value.trim().toUpperCase() !== 'INSTALL') return;
+    const limitMiB = state.status.demo ? 8 : 100;
+    if (file.size > limitMiB * 1024 * 1024) {
+      toast('Package exceeds the ' + limitMiB + ' MiB limit', 'error');
       return;
     }
-    close();
-  });
-  const sharedSudo = { value: '' };
-  let ok = 0;
-  let failed = 0;
-  let skipped = 0;
-  beginOperation('Applying reviewed updates', 'Starting with ' + targets.length + ' host(s)…', targets.length);
-  try {
-    for (let index = 0; index < targets.length; index++) {
-      if (cancelled) break;
-      const host = targets[index];
-      const preview = previews.get(host.id);
-      if (!preview) {
-        setStatus(host, 'skipped', 'review', 'no preview available');
-        skipped++;
-        continue;
-      }
-      setStatus(host, 'running', 'unknown', 're-checking preview…');
-      summary.textContent = 'Applying ' + (index + 1) + ' of ' + targets.length + '…';
-      updateOperation('Applying ' + host.name + ' (' + (index + 1) + ' of ' + targets.length + ')…', index, targets.length);
-      try {
-        const password = await passwordFor(host);
-        if (cancelled) break;
-        const counts = previewCounts(preview.preview);
-        const result = await requestWithSudo(
-          host,
-          '/api/v1/hosts/' + encodeURIComponent(host.id) + '/patch',
-          (sudoPassword) => ({
-            dry_run: false, confirm: 'apply', preview_hash: preview.preview_hash,
-            allow_removals: counts.remove > 0,
-            password, sudo_password: sudoPassword,
-            reboot_after_patch: rebootAfterPatch,
-          }),
-          { method: 'POST' },
-          sharedSudo,
-        );
-        if (result.no_changes) {
-          setStatus(host, 'up to date', 'reachable', 'no package changes');
-          skipped++;
-        } else if (result.ok) {
-          let detail = result.facts ? 'patched · facts refreshed' : 'patched';
-          if (result.reboot_requested) detail += ' · reboot requested';
-          if (result.reboot_required && !result.reboot_requested) detail += ' · reboot still required';
-          if (result.reboot_error) detail += ' · reboot failed: ' + result.reboot_error;
-          setStatus(host, 'patched', result.reboot_error ? 'review' : 'reachable', detail);
-          ok++;
-        } else {
-          setStatus(host, 'failed', 'unreachable', result.error || ('exit ' + Number(result.exit_code ?? 0)));
-          failed++;
-        }
-      } catch (error) {
-        if (error.message === 'cancelled') {
-          setStatus(host, 'skipped', 'review', 'credential prompt cancelled');
-          skipped++;
-          cancelled = true;
-          break;
-        }
-        if (error.status === 409 && error.data && error.data.code === 'preview_changed') {
-          setStatus(host, 'review', 'review', 'package list changed — re-run preview');
-          skipped++;
-        } else if (error.status === 400 && error.data && error.data.code === 'removals_not_confirmed') {
-          setStatus(host, 'review', 'review', 'removals were not confirmed');
-          skipped++;
-        } else if (error.status === 409 && error.data && error.data.code === 'host_busy') {
-          setStatus(host, 'failed', 'unreachable', 'another operation is running');
-          failed++;
-        } else {
-          setStatus(host, 'failed', 'unreachable', error.message);
-          failed++;
-        }
-      }
-      updateOperation('Applied ' + (index + 1) + ' of ' + targets.length + ' hosts', index + 1, targets.length);
+    let env;
+    try {
+      env = readPackageEnvRows(envList);
+    } catch (error) {
+      toast(error.message, 'error');
+      return;
     }
-  } finally {
-    fleetPatchRunning = false;
-    stop.disabled = false;
-    stop.textContent = 'Close';
-    stop.classList.remove('danger');
-    summary.textContent = (cancelled || stopping)
-      ? 'Stopped. Succeeded ' + ok + ', failed ' + failed + ', skipped ' + skipped + '.'
-      : 'Finished. Succeeded ' + ok + ', failed ' + failed + ', skipped ' + skipped + '.';
-    finishOperation('Patch run finished', 'Succeeded ' + ok + ' · failed ' + failed + ' · skipped ' + skipped, failed > 0);
-    await loadAll({ force: true });
-  }
+    deploy.disabled = true;
+    deploy.textContent = 'Uploading…';
+    try {
+      const result = await uploadPackageJob(targets, file, env);
+      close();
+      jobDockState.open = true;
+      jobDockState.expanded = true;
+      await loadJobs({ silent: true });
+      toast('Queued: ' + result.job.title, 'ok');
+    } catch (error) {
+      toast(error.message, 'error');
+      deploy.disabled = false;
+      deploy.textContent = 'Upload and install';
+    }
+  });
 }
 
 function showFleetRebootModal(hosts) {
   const requested = hosts.slice();
   if (!requested.length) {
     toast('Select at least one host', 'error');
-    return;
-  }
-  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning || fleetCleanupRunning) {
-    toast('Another fleet operation is already running', 'error');
     return;
   }
   const excluded = requested.filter((host) => isControllerHost(host));
@@ -3232,7 +3327,7 @@ function showFleetRebootModal(hosts) {
     return;
   }
   const body = el('div', 'modal-body');
-  body.append(el('p', 'muted', 'This is a destructive action. The selected hosts will reboot immediately and their SSH connections may drop. Reboots run sequentially, one host at a time. Keep this tab open.'));
+  body.append(el('p', 'muted', 'This is a destructive action. The selected hosts will reboot immediately and their SSH connections may drop. This creates a durable job; reboots run sequentially, one host at a time, and you can continue using other views while it runs.'));
   if (excluded.length) {
     body.append(el('p', 'field-note', 'The controller is excluded from this bulk reboot: ' + excluded.map((host) => host.name).join(', ') + '. Use the per-host Reboot button only if you deliberately want to reboot the controller.'));
   }
@@ -3294,144 +3389,26 @@ function showFleetRebootModal(hosts) {
       return;
     }
     close();
-    fleetRebootHosts(targets);
+    createJob('reboot', targets, { confirm: 'reboot' });
   });
   reboot.addEventListener('click', () => {
     if (!confirmed()) return;
     close();
-    fleetRebootHosts(targets);
+    createJob('reboot', targets, { confirm: 'reboot' });
   });
   confirmInput.focus();
 }
 
-async function fleetRebootHosts(hosts) {
-  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning || fleetCleanupRunning) {
-    toast('Another fleet operation is already running', 'error');
+async function rebootHost(host) {
+  if (hostCanUseJobs(host) && !isControllerHost(host)) {
+    if (!confirm('Reboot ' + host.name + ' now as a durable background job? The host will go down immediately and the SSH connection may drop.')) return;
+    await createJob('reboot', [host], { confirm: 'reboot' });
     return;
   }
-  const targets = hosts.slice();
-  if (!targets.length) return;
-
-  fleetRebootRunning = true;
-  let cancelled = false;
-  const body = el('div', 'modal-body');
-  body.append(el('p', 'muted', 'Requesting reboots sequentially. Keep this tab open. A host may disconnect before its result is displayed.'));
-  const summary = el('div', 'muted', 'Preparing…');
-  const wrap = el('div', 'fleet-update-list');
-  const table = el('table');
-  const head = el('tr');
-  for (const label of ['Host', 'Status', 'Detail']) head.append(el('th', '', label));
-  table.append(head);
-  wrap.append(table);
-  body.append(summary, wrap);
-  const actions = el('div', 'modal-actions');
-  const stop = el('button', 'btn danger', 'Stop after current host');
-  stop.type = 'button';
-  actions.append(stop);
-  body.append(actions);
-  const close = openModal('Reboot selected hosts', body, () => { cancelled = true; });
-  const rows = new Map();
-  const rowFor = (host) => {
-    let row = rows.get(host.id);
-    if (row) return row;
-    const status = el('span', 'pill unknown', 'pending');
-    const statusCell = el('td');
-    statusCell.append(status);
-    const detail = el('td', 'muted', '—');
-    row = el('tr');
-    row.append(el('td', '', host.name), statusCell, detail);
-    table.append(row);
-    row.status = status;
-    row.detail = detail;
-    rows.set(host.id, row);
-    return row;
-  };
-  const setStatus = (host, label, cls, detail) => {
-    const row = rowFor(host);
-    row.status.textContent = label;
-    row.status.className = 'pill ' + cls;
-    row.detail.textContent = detail || '—';
-  };
-  let stopping = false;
-  stop.addEventListener('click', () => {
-    if (fleetRebootRunning) {
-      stopping = true;
-      cancelled = true;
-      stop.disabled = true;
-      stop.textContent = 'Stopping…';
-      summary.textContent = 'Stopping after the current host…';
-      return;
-    }
-    close();
-  });
-
-  const sharedSudo = { value: '' };
-  let ok = 0;
-  let failed = 0;
-  let skipped = 0;
-  let unconfirmed = 0;
-  beginOperation('Rebooting selected hosts', 'Starting with ' + targets.length + ' host(s)…', targets.length);
-  try {
-    for (let index = 0; index < targets.length; index++) {
-      if (cancelled) break;
-      const host = targets[index];
-      setStatus(host, 'running', 'unknown', 'connecting…');
-      summary.textContent = 'Rebooting ' + (index + 1) + ' of ' + targets.length + '…';
-      updateOperation('Rebooting ' + host.name + ' (' + (index + 1) + ' of ' + targets.length + ')…', index, targets.length);
-      try {
-        const password = await passwordFor(host);
-        if (cancelled) break;
-        const result = await requestWithSudo(
-          host,
-          '/api/v1/hosts/' + encodeURIComponent(host.id) + '/reboot',
-          (sudoPassword) => ({ confirm: 'reboot', password, sudo_password: sudoPassword, allow_controller: false }),
-          { method: 'POST' },
-          sharedSudo,
-        );
-        if (result.ok) {
-          setStatus(host, 'reboot requested', 'review', result.output || 'host may disconnect now');
-          ok++;
-        } else {
-          const output = String(result.output || result.error || '').trim().split('\n').filter(Boolean).slice(-2).join(' / ');
-          setStatus(host, 'failed', 'unreachable', 'exit ' + Number(result.exit_code ?? 0) + (output ? ': ' + output : ''));
-          failed++;
-        }
-      } catch (error) {
-        if (error.message === 'cancelled') {
-          setStatus(host, 'skipped', 'review', 'credential prompt cancelled');
-          skipped++;
-          cancelled = true;
-          break;
-        } else if (error.status === 409 && error.data && error.data.code === 'host_busy') {
-          setStatus(host, 'failed', 'unreachable', 'another operation is running');
-          failed++;
-        } else if (error.status === 400 && error.data && error.data.code === 'controller_protected') {
-          setStatus(host, 'skipped', 'review', 'controller reboot requires the per-host button');
-          skipped++;
-        } else if (!error.status) {
-          setStatus(host, 'unconfirmed', 'review', 'connection dropped; verify the host state');
-          unconfirmed++;
-        } else {
-          setStatus(host, 'failed', 'unreachable', error.message);
-          failed++;
-        }
-      }
-    }
-  } finally {
-    fleetRebootRunning = false;
-    stop.disabled = false;
-    stop.textContent = 'Close';
-    stop.classList.remove('danger');
-    const suffix = unconfirmed ? ', unconfirmed ' + unconfirmed : '';
-    summary.textContent = (cancelled || stopping)
-      ? 'Stopped. Requested ' + ok + ', failed ' + failed + ', skipped ' + skipped + suffix + '.'
-      : 'Finished. Requested ' + ok + ', failed ' + failed + ', skipped ' + skipped + suffix + '.';
-    finishOperation('Reboot request finished', 'Requested ' + ok + ' · failed ' + failed + ' · skipped ' + skipped + suffix, failed > 0);
-    await loadAll({ force: true });
-  }
+  await rebootHostInteractive(host);
 }
 
-async function rebootHost(host) {
+async function rebootHostInteractive(host) {
   if (!confirm('Reboot ' + host.name + ' now? The host will go down immediately and the SSH connection may drop.')) return;
   toast('Rebooting ' + host.name + '…');
   beginOperation('Rebooting — ' + host.name, 'Requesting a reboot through the fixed helper…');
@@ -3455,7 +3432,16 @@ async function rebootHost(host) {
   }
 }
 
-function showCleanupModal(host) {
+async function showCleanupModal(host) {
+  if (hostCanUseJobs(host) && !isControllerHost(host)) {
+    if (!confirm('Scan ' + host.name + ' for orphaned packages as a durable background job?')) return;
+    await createJob('cleanup-preview', [host]);
+    return;
+  }
+  showCleanupModalInteractive(host);
+}
+
+function showCleanupModalInteractive(host) {
   const body = el('div', 'modal-body');
   body.append(el('p', 'muted', 'Checking for orphaned packages on ' + host.name + '…'));
   const close = openModal('Cleanup — ' + host.name, body);
@@ -3602,14 +3588,10 @@ async function applyCleanup(host) {
   }
 }
 
-function showFleetCleanupModal(hosts) {
+async function showFleetCleanupModal(hosts) {
   const requested = hosts.slice();
   if (!requested.length) {
     toast('Select at least one host', 'error');
-    return;
-  }
-  if (fleetUpdateRunning || fleetPatchRunning || fleetRebootRunning || fleetFactsRunning || fleetCleanupRunning) {
-    toast('Another fleet operation is already running', 'error');
     return;
   }
   const excluded = requested.filter((host) => isControllerHost(host));
@@ -3618,237 +3600,9 @@ function showFleetCleanupModal(hosts) {
     toast('The controller is excluded from bulk cleanup; select managed hosts only', 'error');
     return;
   }
-
-  fleetCleanupRunning = true;
-  let cancelled = false;
-  let scanned = false;
-  let applying = false;
-  const body = el('div', 'modal-body');
-  body.append(el('p', 'muted', 'First scan the selected hosts, review the package lists, then type CLEAN to remove them. Cleanup runs sequentially, one host at a time. Keep this tab open.'));
-  if (excluded.length) {
-    body.append(el('p', 'field-note', 'The controller is excluded from bulk cleanup: ' + excluded.map((host) => host.name).join(', ') + '. Use the per-host Cleanup button only if you deliberately want to clean the controller.'));
-  }
-  const summary = el('div', 'muted', 'Ready to scan.');
-  const wrap = el('div', 'fleet-update-list');
-  const table = el('table');
-  const head = el('tr');
-  for (const label of ['Host', 'Status', 'Orphaned', 'Detail']) head.append(el('th', '', label));
-  table.append(head);
-  wrap.append(table);
-  body.append(summary, wrap);
-  const actions = el('div', 'modal-actions');
-  const cancel = el('button', 'btn', 'Cancel');
-  cancel.type = 'button';
-  const scan = el('button', 'btn primary', 'Scan selected');
-  scan.type = 'button';
-  actions.append(cancel, scan);
-  body.append(actions);
-  const close = openModal('Clean up unused packages', body, () => {
-    cancelled = true;
-    fleetCleanupRunning = false;
-  });
-  let phaseRunning = false;
-  const rows = new Map();
-  const rowFor = (host) => {
-    let row = rows.get(host.id);
-    if (row) return row;
-    const status = el('span', 'pill unknown', 'pending');
-    const statusCell = el('td');
-    statusCell.append(status);
-    const count = el('td', 'muted', '—');
-    const detail = el('td', 'muted', '—');
-    row = el('tr');
-    row.append(el('td', '', host.name), statusCell, count, detail);
-    table.append(row);
-    row.status = status;
-    row.count = count;
-    row.detail = detail;
-    rows.set(host.id, row);
-    return row;
-  };
-  const setStatus = (host, label, cls, count, detail) => {
-    const row = rowFor(host);
-    row.status.textContent = label;
-    row.status.className = 'pill ' + cls;
-    row.count.textContent = count === undefined || count === null ? '—' : String(count);
-    row.detail.textContent = detail || '—';
-  };
-
-  cancel.addEventListener('click', () => {
-    if (phaseRunning) {
-      cancelled = true;
-      cancel.disabled = true;
-      cancel.textContent = 'Stopping…';
-      summary.textContent = 'Stopping after the current host…';
-      return;
-    }
-    close();
-  });
-  scan.addEventListener('click', async () => {
-    if (scanned) return;
-    scanned = true;
-    phaseRunning = true;
-    scan.disabled = true;
-    cancel.textContent = 'Stop after current host';
-    cancel.classList.add('danger');
-    summary.textContent = 'Scanning hosts for orphaned packages…';
-    const sharedSudo = { value: '' };
-    const checked = [];
-    let failed = 0;
-    let unsupported = 0;
-    try {
-      for (let index = 0; index < targets.length; index++) {
-        if (cancelled) break;
-        const host = targets[index];
-        setStatus(host, 'checking', 'unknown', '—', 'scanning…');
-        summary.textContent = 'Scanning ' + (index + 1) + ' of ' + targets.length + '…';
-        try {
-          const password = await passwordFor(host);
-          if (cancelled) break;
-          const result = await requestWithSudo(
-            host,
-            '/api/v1/hosts/' + encodeURIComponent(host.id) + '/cleanup',
-            (sudoPassword) => ({ dry_run: true, password, sudo_password: sudoPassword, allow_controller: false }),
-            { method: 'POST' },
-            sharedSudo,
-          );
-          checked.push({ host, result });
-          if (!result.supported) {
-            setStatus(host, 'unsupported', 'review', '—', result.output || 'package manager not supported');
-            unsupported++;
-          } else if (!result.ok) {
-            setStatus(host, 'failed', 'unreachable', '—', result.error || 'scan failed');
-            failed++;
-          } else if (!result.count) {
-            setStatus(host, 'no orphans', 'reachable', 0, 'nothing to remove');
-          } else {
-            setStatus(host, 'found', 'review', result.count, result.packages.join(', '));
-          }
-        } catch (error) {
-          if (error.message === 'cancelled') {
-            setStatus(host, 'skipped', 'review', '—', 'credential prompt cancelled');
-            cancelled = true;
-            break;
-          } else if (error.status === 409 && error.data && error.data.code === 'host_busy') {
-            setStatus(host, 'failed', 'unreachable', '—', 'another operation is running');
-            failed++;
-          } else {
-            setStatus(host, 'failed', 'unreachable', '—', error.message);
-            failed++;
-          }
-        }
-      }
-    } finally {
-      phaseRunning = false;
-      cancel.disabled = false;
-      if (cancelled) {
-        fleetCleanupRunning = false;
-        cancel.textContent = 'Close';
-        cancel.classList.remove('danger');
-        summary.textContent = 'Scan stopped.';
-        return;
-      }
-      const removable = checked.filter(({ result }) => result.supported && result.ok && result.count > 0);
-      const total = removable.reduce((sum, { result }) => sum + Number(result.count || 0), 0);
-      if (!removable.length) {
-        fleetCleanupRunning = false;
-        cancel.textContent = 'Close';
-        cancel.classList.remove('danger');
-        summary.textContent = 'No orphaned packages found. Failed ' + failed + ', unsupported ' + unsupported + '.';
-        return;
-      }
-      summary.textContent = 'Found ' + total + ' orphaned package(s) on ' + removable.length + ' host(s). Review the list, then confirm.';
-      cancel.textContent = 'Close';
-      cancel.classList.remove('danger');
-      const list = el('pre', 'cleanup-list');
-      list.textContent = removable.map(({ host, result }) =>
-        host.name + ':\n  ' + (result.packages || []).join('\n  ')).join('\n\n');
-      body.append(list);
-      const confirmWrap = el('label', 'field');
-      confirmWrap.append(el('span', '', 'Type CLEAN to remove these packages (case-insensitive)'));
-      const confirmInput = el('input');
-      confirmInput.type = 'text';
-      confirmInput.autocomplete = 'off';
-      confirmInput.placeholder = 'CLEAN';
-      confirmWrap.append(confirmInput);
-      body.append(confirmWrap);
-      const remove = el('button', 'btn danger', 'Remove ' + total + ' package' + (total === 1 ? '' : 's'));
-      remove.type = 'button';
-      const confirmed = () => confirmInput.value.trim().toUpperCase() === 'CLEAN';
-      remove.disabled = true;
-      actions.replaceChildren(cancel, remove);
-      confirmInput.addEventListener('input', () => {
-        remove.disabled = !confirmed();
-      });
-      confirmInput.addEventListener('keydown', (event) => {
-        if (event.key !== 'Enter' || !confirmed()) return;
-        event.preventDefault();
-        remove.click();
-      });
-      remove.addEventListener('click', async () => {
-        if (!confirmed() || applying) return;
-        applying = true;
-        phaseRunning = true;
-        remove.disabled = true;
-        confirmInput.disabled = true;
-        cancel.disabled = false;
-        cancel.textContent = 'Stop after current host';
-        cancel.classList.add('danger');
-        summary.textContent = 'Removing orphaned packages…';
-        let removed = 0;
-        let applyFailed = 0;
-        try {
-          for (let index = 0; index < removable.length; index++) {
-            if (cancelled) break;
-            const { host } = removable[index];
-            setStatus(host, 'removing', 'unknown', removable[index].result.count, 'removing…');
-            summary.textContent = 'Cleaning ' + (index + 1) + ' of ' + removable.length + '…';
-            try {
-              const password = await passwordFor(host);
-              if (cancelled) break;
-              const result = await requestWithSudo(
-                host,
-                '/api/v1/hosts/' + encodeURIComponent(host.id) + '/cleanup',
-                (sudoPassword) => ({ dry_run: false, confirm: 'cleanup', password, sudo_password: sudoPassword, allow_controller: false }),
-                { method: 'POST' },
-                sharedSudo,
-              );
-              if (result.ok) {
-                setStatus(host, 'cleaned', 'reachable', result.remaining, 'remaining ' + result.remaining);
-                removed += Number(result.count || 0);
-              } else {
-                setStatus(host, 'failed', 'unreachable', '—', result.error || 'cleanup failed');
-                applyFailed++;
-              }
-            } catch (error) {
-              if (error.message === 'cancelled') {
-                setStatus(host, 'skipped', 'review', '—', 'credential prompt cancelled');
-                cancelled = true;
-                break;
-              } else if (error.status === 409 && error.data && error.data.code === 'host_busy') {
-                setStatus(host, 'failed', 'unreachable', '—', 'another operation is running');
-                applyFailed++;
-              } else {
-                setStatus(host, 'failed', 'unreachable', '—', error.message);
-                applyFailed++;
-              }
-            }
-          }
-        } finally {
-          fleetCleanupRunning = false;
-          applying = false;
-          phaseRunning = false;
-          cancel.disabled = false;
-          cancel.textContent = 'Close';
-          cancel.classList.remove('danger');
-          summary.textContent = (cancelled ? 'Stopped. ' : 'Finished. ') +
-            'Requested removal of ' + removed + ' package(s), failed ' + applyFailed + '.';
-          await loadAll();
-        }
-      });
-      confirmInput.focus();
-    }
-  });
+  if (excluded.length) toast('The controller is excluded from bulk cleanup', 'error');
+  if (!confirm('Scan ' + targets.length + ' selected host(s) for orphaned packages as a durable background job?\\n\\nYou will review the package lists and type CLEAN before anything is removed.')) return;
+  await createJob('cleanup-preview', targets);
 }
 
 function detailCard(title, rows) {
@@ -5233,6 +4987,19 @@ function updateMFAState(data) {
 }
 
 async function showAccountSecurityModal() {
+  if (state.status.demo) {
+    const demoBody = el('div', 'modal-body');
+    demoBody.append(el('p', 'preview-warning', 'This is a shared demo account. Password, TOTP, and passkey changes are disabled so one visitor cannot lock out everyone else.'));
+    demoBody.append(el('p', 'muted', 'The demo login is guest / guest with the TOTP secret shown on the sign-in page. Passkeys are disabled in the demo.'));
+    const demoActions = el('div', 'modal-actions');
+    const demoClose = el('button', 'btn', 'Close');
+    demoClose.type = 'button';
+    demoActions.append(demoClose);
+    demoBody.append(demoActions);
+    const demoModal = openModal('Account security — demo', demoBody);
+    demoClose.addEventListener('click', demoModal);
+    return;
+  }
   const body = el('div', 'modal-body');
   body.append(el('p', 'muted', 'HIBP requires at least one second factor. Removing the last configured factor is blocked so the account cannot be locked out of MFA.'));
   const summary = el('div', 'detail-card');
@@ -5399,6 +5166,7 @@ async function showAccountSecurityModal() {
 function showBackupModal() {
   const body = el('div', 'modal-body');
   body.append(el('p', 'muted', 'Creates a consistent encrypted copy plus the .meta sidecar. Leave the field blank to use the configured backup directory (Settings), which defaults to the database directory. Enter an existing directory for a timestamped hibp-YYYY-MM-DD-HHMMSS.bac file, or enter a new absolute file path.'));
+  if (state.status.demo) body.append(el('p', 'preview-warning', 'Demo mode: backup is simulated. No file is written.'));
   const path = inputField(body, 'Backup directory or file path', 'path', 'Configured directory (blank) or /var/lib/hibp');
   body.append(el('p', 'field-note', 'The configured retention count is applied to timestamped HIBP backups in the destination directory. The .meta sidecar is required to open the backup. A backup in the same directory is not protection against disk loss; copy it off-host according to your policy.'));
   const actions = el('div', 'modal-actions');
@@ -5425,6 +5193,7 @@ function showBackupModal() {
 function showRestoreModal() {
   const body = el('div', 'modal-body');
   body.append(el('p', 'muted', 'Copies a backup pair to a new database path and verifies it. Restart the server with --db pointing at the restored file to use it.'));
+  if (state.status.demo) body.append(el('p', 'preview-warning', 'Demo mode: restore is simulated. No file is written.'));
   const backupPath = inputField(body, 'Backup path', 'backup_path', '/var/lib/hibp/hibp-2026-11-10-030000.bac');
   const destPath = inputField(body, 'New database path', 'dest_path', '/var/lib/hibp/restored.hibp');
   const actions = el('div', 'modal-actions');
@@ -5547,6 +5316,7 @@ function bind() {
 
   $('passkey-register').addEventListener('click', registerPasskey);
   $('passkey-login').addEventListener('click', loginWithPasskey);
+  $('demo-fill').addEventListener('click', fillDemoCredentials);
   $('mfa-back').addEventListener('click', async () => {
     await api('/api/v1/auth/logout', { method: 'POST', body: '{}' }).catch(() => {});
     state.totpSetup = null;
@@ -5562,6 +5332,21 @@ function bind() {
   }
   $('top-refresh').addEventListener('click', () => loadAll({ force: true }));
   $('refresh-button').addEventListener('click', () => loadAll({ force: true }));
+  $('activity-toggle').addEventListener('click', () => {
+    if (!jobDockState.open && !(state.jobs || []).length) {
+      toast('No operations yet');
+      return;
+    }
+    jobDockState.open = !jobDockState.open;
+    if (jobDockState.open) jobDockState.expanded = true;
+    renderJobs();
+  });
+  $('job-dock-minimize').addEventListener('click', () => {
+    jobDockState.expanded = !jobDockState.expanded;
+    renderJobs();
+  });
+  $('deploy-package').addEventListener('click', openDeployPackageFlow);
+  $('fleet-deploy-package').addEventListener('click', openDeployPackageFlow);
   $('auto-refresh-toggle').checked = autoRefreshState.enabled;
   $('auto-refresh-toggle').addEventListener('change', (event) => setAutoRefresh(event.target.checked));
   window.setInterval(renderOperationBar, 1000);

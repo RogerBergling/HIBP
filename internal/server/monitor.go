@@ -203,10 +203,22 @@ func (s *Server) evaluateMonitor(ctx context.Context, monitor store.Monitor, hos
 	case "service.systemd":
 		return s.evaluateService(monitor, host)
 	case "http":
+		if s.demo != nil {
+			status, message := s.demo.EvaluateNetworkMonitor(ctx, monitor)
+			return monitorResult{status: status, message: message}
+		}
 		return evaluateHTTP(ctx, monitor)
 	case "tcp":
+		if s.demo != nil {
+			status, message := s.demo.EvaluateNetworkMonitor(ctx, monitor)
+			return monitorResult{status: status, message: message}
+		}
 		return evaluateTCP(monitor)
 	case "ssl":
+		if s.demo != nil {
+			status, message := s.demo.EvaluateNetworkMonitor(ctx, monitor)
+			return monitorResult{status: status, message: message}
+		}
 		return evaluateSSL(monitor)
 	default:
 		return monitorResult{status: "unknown", message: "unsupported monitor type"}

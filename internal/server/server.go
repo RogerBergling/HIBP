@@ -38,42 +38,47 @@ type Config struct {
 	// allowed Host header and the WebAuthn relying-party origin. Empty keeps
 	// the server loopback-only.
 	PublicURL string
+	// Demo enables the public demo behavior. Only the demo binary sets this.
+	Demo bool
+	// TrustProxy trusts X-Forwarded-Proto for Origin and cookie decisions. It
+	// is intended only for the demo behind a TLS-terminating proxy.
+	TrustProxy bool
 }
 
 // Server is the HIBP HTTP server.
 type Server struct {
-	store              *store.Store
-	build              buildinfo.Info
-	keyDirs            []string
-	sshConfigPath      string
-	dummyPasswordHash  string
-	loginIPLimiter     *attemptLimiter
-	loginUserLimiter   *attemptLimiter
-	mfaLimiter         *attemptLimiter
-	ceremonies         *ceremonyStore
-	setupMu            sync.Mutex
-	collectorMu        sync.Mutex
-	collectorState     map[string]*collectorHostState
-	mailMu             sync.Mutex
-	monitorMu          sync.Mutex
-	monitorRunning     bool
-	monitorWake        chan struct{}
-	integrationMu      sync.Mutex
-	integrationRunning bool
-	integrationWake    chan struct{}
-	integrationRuntime map[string]integrationRuntime
-	schedulerMu        sync.Mutex
-	schedulerScanning  bool
-	schedulerRunning   map[string]bool
-	schedulerCtx       context.Context
-	schedulerWake      chan struct{}
-	schedulerSlots     chan struct{}
-	hostLocksMu        sync.Mutex
-	hostLocks          map[string]bool
-	allowedHosts       map[string]bool
-	webAuthnRPID       string
-	webAuthnOrigin     string
-	mux                *http.ServeMux
+	store             *store.Store
+	build             buildinfo.Info
+	keyDirs           []string
+	sshConfigPath     string
+	dummyPasswordHash string
+	loginIPLimiter    *attemptLimiter
+	loginUserLimiter  *attemptLimiter
+	mfaLimiter        *attemptLimiter
+	ceremonies        *ceremonyStore
+	setupMu           sync.Mutex
+	collectorMu       sync.Mutex
+	collectorState    map[string]*collectorHostState
+	mailMu            sync.Mutex
+	monitorMu         sync.Mutex
+	monitorRunning    bool
+	monitorWake       chan struct{}
+	jobWake           chan struct{}
+	schedulerMu       sync.Mutex
+	schedulerScanning bool
+	schedulerRunning  map[string]bool
+	schedulerCtx      context.Context
+	schedulerWake     chan struct{}
+	schedulerSlots    chan struct{}
+	hostLocksMu       sync.Mutex
+	hostLocks         map[string]bool
+	allowedHosts      map[string]bool
+	webAuthnRPID      string
+	webAuthnOrigin    string
+	publicHTTPS       bool
+	trustProxy        bool
+	demo              demoHooks
+	mux               *http.ServeMux
 }
 
 // New creates a server.
@@ -135,27 +140,31 @@ func New(cfg Config) (*Server, error) {
 		}
 	}
 	s := &Server{
-		store:              cfg.Store,
-		build:              build,
-		keyDirs:            keyDirs,
-		sshConfigPath:      sshConfigPath,
-		dummyPasswordHash:  dummyPasswordHash,
-		loginIPLimiter:     newAttemptLimiter(10, 15*time.Minute),
-		loginUserLimiter:   newAttemptLimiter(5, 15*time.Minute),
-		mfaLimiter:         newAttemptLimiter(10, 15*time.Minute),
-		ceremonies:         newCeremonyStore(),
-		collectorState:     make(map[string]*collectorHostState),
-		monitorWake:        make(chan struct{}, 1),
-		integrationWake:    make(chan struct{}, 1),
-		integrationRuntime: make(map[string]integrationRuntime),
-		schedulerRunning:   make(map[string]bool),
-		schedulerWake:      make(chan struct{}, 1),
-		schedulerSlots:     make(chan struct{}, 20),
-		hostLocks:          make(map[string]bool),
-		allowedHosts:       allowedHosts,
-		webAuthnRPID:       webAuthnRPID,
-		webAuthnOrigin:     webAuthnOrigin,
-		mux:                http.NewServeMux(),
+		store:             cfg.Store,
+		build:             build,
+		keyDirs:           keyDirs,
+		sshConfigPath:     sshConfigPath,
+		dummyPasswordHash: dummyPasswordHash,
+		loginIPLimiter:    newAttemptLimiter(10, 15*time.Minute),
+		loginUserLimiter:  newAttemptLimiter(5, 15*time.Minute),
+		mfaLimiter:        newAttemptLimiter(10, 15*time.Minute),
+		ceremonies:        newCeremonyStore(),
+		collectorState:    make(map[string]*collectorHostState),
+		monitorWake:       make(chan struct{}, 1),
+		jobWake:           make(chan struct{}, 1),
+		schedulerRunning:  make(map[string]bool),
+		schedulerWake:     make(chan struct{}, 1),
+		schedulerSlots:    make(chan struct{}, 20),
+		hostLocks:         make(map[string]bool),
+		allowedHosts:      allowedHosts,
+		webAuthnRPID:      webAuthnRPID,
+		webAuthnOrigin:    webAuthnOrigin,
+		publicHTTPS:       publicURL != nil && strings.EqualFold(publicURL.Scheme, "https"),
+		trustProxy:        cfg.TrustProxy && cfg.Demo,
+		mux:               http.NewServeMux(),
+	}
+	if cfg.Demo {
+		s.demo = newDemoHooks(cfg.Store)
 	}
 	s.routes()
 	return s, nil
@@ -166,6 +175,12 @@ func (s *Server) routes() {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("ok\n"))
 	})
+	if s.demo != nil {
+		s.mux.HandleFunc("GET /robots.txt", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = w.Write([]byte("User-agent: *\nDisallow: /\n"))
+		})
+	}
 	s.mux.HandleFunc("GET /", s.handleIndex)
 	s.mux.HandleFunc("GET /app.js", s.handleAsset("app.js", "application/javascript; charset=utf-8"))
 	s.mux.HandleFunc("GET /style.css", s.handleAsset("style.css", "text/css; charset=utf-8"))
@@ -220,11 +235,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/v1/monitors/{id}", s.auth(s.handleDeleteMonitor))
 	s.mux.HandleFunc("POST /api/v1/monitors/{id}/check", s.auth(s.handleCheckMonitor))
 	s.mux.HandleFunc("GET /api/v1/alerts", s.auth(s.handleAlerts))
-	s.mux.HandleFunc("GET /api/v1/integrations", s.auth(s.handleListIntegrations))
-	s.mux.HandleFunc("GET /api/v1/integrations/{source}", s.auth(s.handleGetIntegration))
-	s.mux.HandleFunc("PUT /api/v1/integrations/{source}", s.auth(s.handlePutIntegration))
-	s.mux.HandleFunc("POST /api/v1/integrations/{source}/test", s.auth(s.handleTestIntegration))
-	s.mux.HandleFunc("POST /api/v1/integrations/{source}/check", s.auth(s.handleCheckIntegration))
+	s.mux.HandleFunc("GET /api/v1/jobs", s.auth(s.handleListJobs))
+	s.mux.HandleFunc("POST /api/v1/jobs", s.auth(s.handleCreateJob))
+	s.mux.HandleFunc("POST /api/v1/jobs/package", s.auth(s.handlePackageInstallJob))
+	s.mux.HandleFunc("GET /api/v1/jobs/{id}", s.auth(s.handleGetJob))
+	s.mux.HandleFunc("POST /api/v1/jobs/{id}/cancel", s.auth(s.handleCancelJob))
+	s.mux.HandleFunc("POST /api/v1/jobs/{id}/retry", s.auth(s.handleRetryJob))
+	s.mux.HandleFunc("DELETE /api/v1/jobs/{id}", s.auth(s.handleDeleteJob))
 	s.mux.HandleFunc("GET /api/v1/schedules", s.auth(s.handleListSchedules))
 	s.mux.HandleFunc("POST /api/v1/schedules", s.auth(s.handleCreateSchedule))
 	s.mux.HandleFunc("PUT /api/v1/schedules/{id}", s.auth(s.handleUpdateSchedule))
@@ -255,6 +272,9 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Security-Policy",
 			"default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+		if s.demo != nil {
+			w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -268,7 +288,7 @@ func (s *Server) hostCheck(next http.Handler) http.Handler {
 		}
 		if origin := r.Header.Get("Origin"); origin != "" {
 			parsed, err := url.Parse(origin)
-			if err != nil || !strings.EqualFold(parsed.Host, r.Host) || !strings.EqualFold(parsed.Scheme, requestScheme(r)) {
+			if err != nil || !strings.EqualFold(parsed.Host, r.Host) || !strings.EqualFold(parsed.Scheme, s.requestScheme(r)) {
 				writeError(w, http.StatusForbidden, "unexpected Origin header")
 				return
 			}
@@ -282,6 +302,16 @@ func (s *Server) hostAllowed(hostname string) bool {
 		return true
 	}
 	return s.allowedHosts[hostname]
+}
+
+func (s *Server) requestScheme(r *http.Request) string {
+	if s.trustProxy {
+		switch strings.ToLower(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))) {
+		case "http", "https":
+			return strings.ToLower(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")))
+		}
+	}
+	return requestScheme(r)
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {

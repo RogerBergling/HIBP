@@ -39,8 +39,8 @@ In scope:
 - sudo helper argument validation and privilege boundaries
 - audit-chain integrity and log redaction
 - import/export parsing, CSV injection, path traversal
-- monitoring probes, SMTP delivery, vCenter/HAProxy/OPNsense integrations, and
-  cron patch scheduling
+- monitoring probes, SMTP delivery, durable manual jobs, package deployment,
+  and cron patch scheduling
 - CMDB file import and host merge/overwrite behavior
 - release packaging, dependency selection, and build supply chain
 - privilege escalation from the controller or a managed target
@@ -58,14 +58,16 @@ Out of scope:
 - The **development** build uses `mutecomm/go-sqlcipher` v4.4.2. Do not deploy
   it. Production artifacts must be built with `make production`, which uses
   current SQLCipher 4.20 and the patched `third_party/go-sqlite3` driver.
-- Password SSH and sudo password fallbacks are manual-run only and never
-  stored. The first accepted sudo password is reused in browser memory for
-  interactive actions and selected-host facts, patch, cleanup, reboot, and helper-update
-  batches on hosts with the same SSH username; it is never persisted and is
-  discarded after a wrong password, sign-out, or tab close. `ssh-agent`, hardware-backed keys,
-  SSH certificates, and passphrase-protected key files are not implemented.
-  Host create, update, CSV import, and CMDB import reject `agent` and
-  `certificate`; scheduled collection only processes `auth_type=key`.
+- Password SSH and sudo password fallbacks are interactive per-host actions and
+  are never stored. The first accepted sudo password may be reused in browser
+  memory for other interactive hosts with the same SSH username; it is never
+  persisted and is discarded after a wrong password, sign-out, or tab close.
+  Selected-host and fleet jobs require key authentication and non-interactive
+  sudo; they never receive a prompted password. `ssh-agent`, hardware-backed
+  keys, SSH certificates, and passphrase-protected key files are not
+  implemented. Host create, update, CSV import, and CMDB import reject `agent`
+  and `certificate`; scheduled collection and background jobs only process
+  `auth_type=key` hosts.
 - `ProxyJump` is single-hop only. Multi-hop chains, interactive bastion
   authentication, SSH agent forwarding, and a jump host behind another jump are
   not supported.
@@ -104,18 +106,18 @@ Out of scope:
 - The packaged systemd unit needs path and unlock customization:
   `ProtectHome=true` blocks `~/.ssh`, a passphrase file is required for a
   headless start, and backups outside `ReadWritePaths` are denied.
-- No RBAC, durable job queue, package diff, approval workflow, approved
-  playbooks, or host disabled/maintenance state. The cron scheduler is
-  single-process, has bounded per-host retries but no resume/security-only
-  filter, and runs only while the controller is unlocked and running.
+- No RBAC, approval workflow, approved playbooks, or host
+  disabled/maintenance state. Manual operations use a durable job queue, but
+  the cron scheduler remains a separate single-process engine with bounded
+  per-host retries and no security-only filter. Both run only while the
+  controller is unlocked and running.
 - Patch schedules accept only key-auth hosts with a trusted host key and the
   restricted `NOPASSWD` helper. Non-eligible hosts are skipped. A schedule can
   opt in to a reboot after a successful apply when the fixed `reboot-check`
   reports it is required; the default is no reboot. HIBP does not wait for or
   verify the rebooted host. Per-host output in run history is capped at 16 KiB.
 - Fleet monitors can emit one email per host; there is no aggregation or global
-  rate limit. Audit, alert, and integration-event retention is not implemented.
-  Integration poll failures are visible on the source card but not emailed.
+  rate limit. Audit, alert, and job retention is not implemented.
 - The UI has built-in TLS for the optional LAN HTTPS mode, but no supported
   reverse-proxy mode. The default remains loopback-only. LAN mode requires a
   non-loopback bind, `--tls-cert`, `--tls-key`, and an explicit `--public-url`;
@@ -134,10 +136,10 @@ Out of scope:
 - Real target, cross-distro, helper-rollout, reboot, and package-update testing
   is still required on disposable VMs before broad production use.
 
-## Docker, monitoring, email, integration, and scheduling controls
+## Docker, monitoring, email, jobs, and scheduling controls
 
 Read-only observability, project-level Docker check/apply, monitoring rules,
-SMTP email alerting, vCenter/HAProxy/OPNsense integrations, CMDB import, and
+SMTP email alerting, durable manual jobs, package deployment, CMDB import, and
 cron-based patch schedules are implemented.
 
 - Docker socket access is root-equivalent. The controller does not connect to
@@ -218,32 +220,58 @@ cron-based patch schedules are implemented.
 - SMTP is also used for schedule summaries. A local Postfix relay with no
   authentication is supported over a reachable TCP socket, but must be
   restricted to trusted sources; plain SMTP has no transport encryption.
-- External integrations are read-only:
-  - vCenter uses a dedicated read-only account over HTTPS, retrieves active
-    triggered alarms for all managed entities, and never syncs inventory or
-    acknowledges, clears, or changes vCenter objects. TLS verification is on by
-    default; the opt-out is intentionally explicit for self-signed labs.
-  - HAProxy reads the stats HTTP CSV endpoint with optional Basic auth. It never
-    uses the admin socket and never changes runtime state.
-  - OPNsense reads the gateway status endpoint with an API key/secret for a
-    least-privilege user.
-- Integration credentials are stored only in the SQLCipher `settings` scopes and
-  are never returned by the API, logged, or written to audit details. Each
-  integration can use SMTP default recipients or its own recipient list.
-- Integration polling originates from the controller and can reach internal
-  addresses by design. Only administrators can define endpoints; deploy the
-  controller on an appropriately restricted network. The URL validators allow
-  HTTP for HAProxy/OPNsense, so use HTTPS for credentialed endpoints. The
-  runtime has no telemetry or internet requirement; installation and updates
-  are the only external transfer steps.
+- Durable manual jobs are stored in the encrypted database and execute only on
+  hosts with key authentication and a trusted host key. Most actions also
+  require the restricted NOPASSWD helper; helper-setup jobs additionally require
+  non-interactive sudo for the binary install and `visudo` steps. A job records
+  the authenticated actor, per-host state, bounded output, and audit entries.
+  Jobs are process-local to one controller and must not be shared by running
+  two controller processes against one database.
+- Package deployment is root-equivalent. The controller stages one uploaded
+  package under the database directory, transfers it over SSH, verifies the
+  SHA-256, and invokes a fixed `install-package` helper action. The helper
+  validates the package extension and header, creates a root-owned temporary
+  file, and passes fixed argv to the target package manager. Installer
+  environment names are validated and dangerous names such as `PATH`,
+  `LD_PRELOAD`, and `SUDO_*` are rejected. RPM installs use DNF local-package
+  GPG checking where available; Debian local `.deb` signature verification is
+  not provided by `dpkg`, and pacman/apk follow the target's configured trust
+  policy. HIBP does not replace the target's package signature policy; uploaded
+  packages must be obtained from a trusted source.
+- The staged package file is not encrypted at rest while the job is active.
+  Keep the database directory on encrypted local storage, restrict the service
+  account, and dismiss failed jobs when the package is no longer needed.
 - CMDB import is read-only and file-based. HIBP never opens the CMDB database and
   never writes back. Imports are bounded (10 MiB, 5,000 records), validated, and
   previewed before commit. Imported data cannot contain HIBP secrets, and host
   keys are still approved only after an independent fingerprint check.
-- SMTP credentials, vCenter credentials, and API tokens are stored only in the
-  SQLCipher database and are never returned by the API, logged, or written to
-  audit details. Use TLS for SMTP and read-only accounts for vCenter/HAProxy/
-  OPNsense.
+- SMTP credentials are stored only in the SQLCipher database and are never
+  returned by the API, logged, or written to audit details. Use TLS for SMTP.
+  Package installer environment values are also stored only in the encrypted
+  job record and are never returned by the API.
+
+## Public demo image
+
+`hibp-demo` is a separate image built with the `demo` Go build tag. It is not the
+production controller and must not be used to manage real hosts.
+
+- The demo seeds a public `guest` account and exposes the demo password and TOTP
+  secret on the sign-in page. TOTP replay protection is intentionally bypassed
+  in demo mode so multiple visitors can use the displayed code.
+- Every SSH connection, helper action, package installation, SMTP send, and
+  HTTP/TCP/TLS monitor probe is simulated. Backup and restore return simulated
+  success without writing arbitrary paths.
+- The database is ephemeral and shared by all visitors. Restart the container to
+  reset it. There is no per-visitor isolation.
+- Account security changes and passkeys are disabled. The demo does not contain
+  real credentials, SSH keys, SMTP credentials, or host keys.
+- Run the demo non-root, with resource limits, a read-only root filesystem, a
+  writable `/tmp` tmpfs, no Docker socket, no host mounts, and a TLS-terminating
+  reverse proxy. Do not expose the demo HTTP listener directly to the internet.
+- Demo responses set `X-Robots-Tag: noindex, nofollow` and `/robots.txt` denies
+  indexing.
+
+See [Public demo container](docs/demo.md) for deployment details.
 
 ## Operational guidance
 
@@ -278,6 +306,12 @@ cron-based patch schedules are implemented.
   The UI requires a typed `CLEAN` confirmation, bulk cleanup excludes the
   controller, and unsupported package managers are reported instead of guessed.
   Cleanup is not part of patching and is not scheduled automatically.
+- The `install-package` helper action is root-equivalent package installation.
+  It accepts only a JSON request on stdin with a validated package filename,
+  SHA-256, package bytes, and an installer environment allowlist, but the
+  package's maintainer scripts still execute as root. Keep the helper and
+  sudoers rule root-owned, restrict the SSH account, and deploy only packages
+  from a trusted source. Do not treat this action as a low-risk file copy.
 - The reboot action is destructive. Per-host and selected-host reboots require
   explicit confirmation in the API and UI, and selected-host reboots require
   typing `REBOOT`. The controller is detected from its hostname, short hostname,

@@ -290,7 +290,7 @@ func runServer(args []string) error {
 	defer stop()
 	go app.RunCollector(ctx)
 	go app.RunMonitor(ctx)
-	go app.RunIntegrations(ctx)
+	go app.RunJobs(ctx)
 	go app.RunScheduler(ctx)
 	errCh := make(chan error, 1)
 	if listenConfig.TLS {
