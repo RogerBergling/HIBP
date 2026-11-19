@@ -17,6 +17,9 @@ services:
     image: ghcr.io/rogerbergling/hibp-demo:${HIBP_DEMO_TAG:-edge}
     container_name: hibp-demo
     restart: unless-stopped
+    # Host port : container port. The container always listens on 8080.
+    # For host port 8011 set HIBP_DEMO_PORT=8011, then browse to
+    # http://localhost:8011/. Do not change HIBP_DEMO_LISTEN to 8011.
     ports:
       - "${HIBP_DEMO_BIND:-127.0.0.1}:${HIBP_DEMO_PORT:-8080}:8080"
     environment:

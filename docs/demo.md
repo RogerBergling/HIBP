@@ -123,6 +123,31 @@ Do not expose the container directly to the internet without TLS. The demo
 trusts `X-Forwarded-Proto` only because `HIBP_DEMO_PUBLIC_URL` is HTTPS and the
 demo binary enables trusted-proxy mode.
 
+## Port mapping
+
+The container always listens on `8080`. `HIBP_DEMO_PORT` is the published
+**host** port:
+
+```dotenv
+HIBP_DEMO_LISTEN=0.0.0.0:8080
+HIBP_DEMO_PORT=8011
+```
+
+This maps host `8011` to container `8080`; open <http://localhost:8011/>. Do not
+change `HIBP_DEMO_LISTEN` to `8011`; the container target must stay `8080`.
+
+`HIBP_DEMO_BIND=127.0.0.1` makes the host port local-only. For access from
+another machine, set `HIBP_DEMO_BIND=0.0.0.0`, allow the port in the host
+firewall, and put an HTTPS reverse proxy in front. Direct non-loopback HTTP is
+rejected by the demo's public-URL policy; use an HTTPS origin in
+`HIBP_DEMO_PUBLIC_URL`.
+
+Check the rendered mapping:
+
+```bash
+docker compose --env-file .env.demo config | sed -n '/ports:/,/restart:/p'
+```
+
 ## Environment variables
 
 | Variable | Default | Notes |
