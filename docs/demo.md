@@ -75,8 +75,22 @@ The Compose file pulls the image from GHCR, runs it read-only with a tmpfs
 
 ## Deploy behind a TLS-terminating proxy
 
-The demo listens on HTTP and expects the proxy to terminate HTTPS. The public
-URL must be the exact browser origin: scheme, hostname, and port, with no path.
+The demo listens on **plain HTTP** and expects the proxy to terminate HTTPS. On
+startup it prints both values:
+
+```text
+Listen:   0.0.0.0:8080 (plain HTTP)
+Public:   https://demo.example.com/
+```
+
+`Listen` is the actual backend listener. `Public` is only the browser origin
+configured in `HIBP_DEMO_PUBLIC_URL`. If `Public` starts with `https://`, a
+reverse proxy must terminate TLS and forward to `Listen`; opening the backend
+port directly with `https://` fails with a TLS error such as
+`wrong version number`.
+
+The public URL must be the exact browser origin: scheme, hostname, and port,
+with no path.
 
 Edit `.env.demo`:
 
@@ -243,6 +257,20 @@ make demo-image
 ```
 
 ## Troubleshooting
+
+### HTTPS connection fails with `wrong version number`
+
+The demo backend speaks plain HTTP. Opening the published demo port with
+`https://` sends a TLS handshake to an HTTP server and fails. Either browse the
+direct HTTP origin:
+
+```text
+http://host:8011/
+```
+
+or terminate TLS in a reverse proxy and use the proxy's HTTPS origin in
+`HIBP_DEMO_PUBLIC_URL`. The startup `Listen` line is the HTTP backend, not an
+HTTPS listener.
 
 ### Sign-in returns to the login page
 

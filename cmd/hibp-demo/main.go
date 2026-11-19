@@ -143,7 +143,11 @@ Host demo-db01
 	go app.RunScheduler(ctx)
 
 	fmt.Fprintf(os.Stderr, "HIBP demo %s\n", buildinfo.Current.String())
-	fmt.Fprintf(os.Stderr, "Open:     %s\n", strings.TrimSuffix(publicURL, "/")+"/")
+	fmt.Fprintf(os.Stderr, "Listen:   %s (plain HTTP)\n", listen)
+	fmt.Fprintf(os.Stderr, "Public:   %s\n", strings.TrimSuffix(publicURL, "/")+"/")
+	if strings.HasPrefix(strings.ToLower(publicURL), "https://") {
+		fmt.Fprintln(os.Stderr, "          HTTPS must be terminated by a reverse proxy; the demo itself serves HTTP")
+	}
 	fmt.Fprintf(os.Stderr, "Login:    %s / %s + TOTP shown on the sign-in page\n", "guest", "guest")
 	fmt.Fprintln(os.Stderr, "Mode:     fake data, simulated SSH/email/network/package actions")
 	fmt.Fprintln(os.Stderr, "Reset:    restart the container; the demo database is ephemeral")
