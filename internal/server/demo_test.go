@@ -6,6 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/cookiejar"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -62,6 +65,76 @@ func TestSeedDemoGuestAndData(t *testing.T) {
 	}
 	if _, ok := auth.ValidateTOTP(secret, code, time.Now()); !ok {
 		t.Fatal("demo TOTP code did not validate")
+	}
+}
+
+func TestDemoGuestCanLogInWithDisplayedTOTP(t *testing.T) {
+	db := openDemoTestStore(t)
+	app, err := New(Config{
+		Store:         db,
+		Version:       "test",
+		SSHConfigPath: filepath.Join(t.TempDir(), "missing-config"),
+		PublicURL:     "http://localhost:8080",
+		Demo:          true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(app.Handler())
+	defer ts.Close()
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Jar: jar}
+	post := func(path, body string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, ts.URL+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	resp, err := client.Get(ts.URL + "/api/v1/auth/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var status struct {
+		Demo struct {
+			TOTPCode string `json:"totp_code"`
+		} `json:"demo"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if status.Demo.TOTPCode == "" {
+		t.Fatal("demo status did not include a TOTP code")
+	}
+
+	resp = post("/api/v1/auth/login", `{"username":"guest","password":"guest"}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login: expected 200, got %d", resp.StatusCode)
+	}
+	resp = post("/api/v1/auth/totp/verify", `{"code":"`+status.Demo.TOTPCode+`"}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("TOTP verify: expected 200, got %d", resp.StatusCode)
+	}
+	resp, err = client.Get(ts.URL + "/api/v1/auth/me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("authenticated request: expected 200, got %d", resp.StatusCode)
 	}
 }
 

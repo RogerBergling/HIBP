@@ -54,6 +54,7 @@ RUN CGO_ENABLED=1 \
 
 RUN mkdir -p /out /out/var/lib/hibp /out/tmp \
     && touch /out/tmp/.keep \
+    && chmod 1777 /out/tmp \
     && CGO_ENABLED=1 \
        CGO_CFLAGS="-I/opt/sqlcipher/usr/local/include" \
        CGO_LDFLAGS="-L/opt/sqlcipher/usr/local/lib -lsqlcipher -lssl -lcrypto -lz -lzstd -lm -lpthread -ldl" \
@@ -69,8 +70,11 @@ RUN mkdir -p /out /out/var/lib/hibp /out/tmp \
 FROM scratch
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/hibp-demo /hibp-demo
-COPY --from=build /out/var /var
-COPY --from=build /out/tmp /tmp
+# COPY creates the top-level destination directories owned by root. The demo
+# runs as 65532 and must be able to create its ephemeral database in /tmp, so
+# set ownership explicitly instead of relying on the source directory owner.
+COPY --chown=65532:65532 --from=build /out/var /var
+COPY --chown=65532:65532 --from=build /out/tmp /tmp
 USER 65532:65532
 EXPOSE 8080
 ENTRYPOINT ["/hibp-demo"]

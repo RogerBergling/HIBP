@@ -38,6 +38,10 @@ Password: guest
 TOTP secret and current code: shown on the page
 ```
 
+The **Sign in with demo credentials** button completes the password and TOTP
+steps in one click using a freshly generated code. You can also enter the shown
+username, password, and current code manually.
+
 The TOTP secret is fixed for the demo. Real TOTP validation is used, but the
 replay lockout is bypassed in demo mode so multiple visitors can use the same
 displayed code. Passkeys are disabled.

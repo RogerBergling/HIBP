@@ -50,6 +50,7 @@ const jobDockState = {
 let jobPollTimer = null;
 let jobPollingStopped = false;
 let demoCodeTimer = null;
+let demoLoginBusy = false;
 
 try {
   autoRefreshState.enabled = window.localStorage.getItem('hibp-live-refresh') !== 'off';
@@ -475,10 +476,17 @@ function startDemoCodePolling() {
   if (demoCodeTimer || !state.demo) return;
   demoCodeTimer = window.setInterval(async () => {
     try {
+      const previousCode = state.demo ? state.demo.totp_code : '';
       const status = await fetchAuthStatus();
       if (status.demo) {
         state.demo = status.demo;
         updateDemoCode();
+        // Keep an untouched auto-filled code current. Do not overwrite a code
+        // the visitor typed manually.
+        const field = $('totp-code');
+        if (!$('totp-form').classList.contains('hidden') && field.value === previousCode) {
+          field.value = state.demo.totp_code || '';
+        }
       }
     } catch (error) {
       // The auth screen handles its own errors.
@@ -517,6 +525,53 @@ function fillDemoCredentials() {
   }
   if (!$('login-form').classList.contains('hidden')) {
     $('login-password').focus();
+  }
+}
+
+async function demoLogin() {
+  if (demoLoginBusy || !state.demo) return;
+  const button = $('demo-fill');
+  const label = button.textContent;
+  demoLoginBusy = true;
+  button.disabled = true;
+  button.textContent = 'Signing in…';
+  clearAuthMessage();
+  try {
+    const username = state.demo.username || 'guest';
+    const password = state.demo.password || 'guest';
+    $('login-username').value = username;
+    $('login-password').value = password;
+    await api('/api/v1/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    });
+    $('login-password').value = '';
+    let status = await fetchAuthStatus();
+    state.auth = status;
+    state.demo = status.demo || state.demo;
+    updateDemoCode();
+    if (status.mfa_required && !status.mfa_enrollment_required &&
+        status.user && status.user.totp_enabled && state.demo) {
+      // Fetching the status above gives us a fresh code even if the page has
+      // been open for a while.
+      await api('/api/v1/auth/totp/verify', {
+        method: 'POST',
+        body: JSON.stringify({ code: state.demo.totp_code || '' }),
+      });
+      status = await fetchAuthStatus();
+    }
+    await renderAuth(status);
+  } catch (error) {
+    try {
+      await showAuthScreen();
+    } catch (screenError) {
+      // Keep the current screen if the status request also fails.
+    }
+    showAuthMessage(error.message);
+  } finally {
+    demoLoginBusy = false;
+    button.disabled = false;
+    button.textContent = label;
   }
 }
 
@@ -5316,7 +5371,7 @@ function bind() {
 
   $('passkey-register').addEventListener('click', registerPasskey);
   $('passkey-login').addEventListener('click', loginWithPasskey);
-  $('demo-fill').addEventListener('click', fillDemoCredentials);
+  $('demo-fill').addEventListener('click', demoLogin);
   $('mfa-back').addEventListener('click', async () => {
     await api('/api/v1/auth/logout', { method: 'POST', body: '{}' }).catch(() => {});
     state.totpSetup = null;
