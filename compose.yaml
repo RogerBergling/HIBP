@@ -2,7 +2,7 @@
 #
 # Local:
 #   cp .env.demo.example .env.demo
-#   docker compose --env-file .env.demo -f compose.demo.yaml up -d
+#   docker compose --env-file .env.demo up -d
 #
 # Public deployment: set HIBP_DEMO_PUBLIC_URL to the exact HTTPS origin and put
 # a TLS-terminating reverse proxy in front of 127.0.0.1:8080. The proxy must

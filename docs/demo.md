@@ -48,7 +48,7 @@ With the Compose example in this repository:
 
 ```bash
 cp .env.demo.example .env.demo
-docker compose --env-file .env.demo -f compose.demo.yaml up -d
+docker compose --env-file .env.demo up -d
 ```
 
 Open <http://localhost:8080/>.
@@ -81,7 +81,7 @@ HIBP_DEMO_PORT=8080
 Then start it:
 
 ```bash
-docker compose --env-file .env.demo -f compose.demo.yaml up -d
+docker compose --env-file .env.demo up -d
 ```
 
 Or with plain Docker:
@@ -210,7 +210,7 @@ HIBP_DEMO_PUBLIC_URL=https://demo.example.com:8443
 Check what Compose actually renders:
 
 ```bash
-docker compose --env-file .env.demo -f compose.demo.yaml config | grep HIBP_DEMO_PUBLIC_URL
+docker compose --env-file .env.demo config | grep HIBP_DEMO_PUBLIC_URL
 ```
 
 A shell environment variable with the same name overrides `.env.demo`. Check:
@@ -222,7 +222,7 @@ echo "$HIBP_DEMO_PUBLIC_URL"
 Then recreate the container:
 
 ```bash
-docker compose --env-file .env.demo -f compose.demo.yaml up -d --force-recreate
+docker compose --env-file .env.demo up -d --force-recreate
 ```
 
 The reverse proxy must preserve the original `Host` header and set

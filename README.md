@@ -220,7 +220,7 @@ End users should not need Go or a compiler.
    database on a network filesystem.
 
    A production Compose example is in `compose.production.yaml` with
-   `.env.production.example`; the public demo has `compose.demo.yaml` and
+   `.env.production.example`; the public demo has `compose.yaml` and
    `.env.demo.example`.
 
 You do **not** need the prerequisites below unless you are building from source.
@@ -645,7 +645,7 @@ Compose example:
 
 ```bash
 cp .env.demo.example .env.demo
-docker compose --env-file .env.demo -f compose.demo.yaml up -d
+docker compose --env-file .env.demo up -d
 ```
 
 The Compose file pulls `ghcr.io/rogerbergling/hibp-demo`, runs read-only with a
