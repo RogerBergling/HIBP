@@ -23,8 +23,10 @@ services:
       HIBP_DEMO_LISTEN: 0.0.0.0:8080
       HIBP_DEMO_PUBLIC_URL: ${HIBP_DEMO_PUBLIC_URL:-http://localhost:8080}
     read_only: true
+    # /tmp must be writable by the image UID/GID 65532 for the ephemeral DB and
+    # demo SSH files. A plain tmpfs is root-owned and causes permission denied.
     tmpfs:
-      - /tmp:rw,noexec,nosuid,size=256m
+      - /tmp:rw,noexec,nosuid,size=256m,uid=65532,gid=65532,mode=0700
     cap_drop:
       - ALL
     security_opt:

@@ -152,12 +152,14 @@ hosts; a restart restores the seed data.
 - `X-Robots-Tag: noindex, nofollow` is set on demo responses.
 - Use container resource limits and proxy rate limiting for a public deployment.
 
-Recommended container flags:
+Recommended container flags. The demo runs as UID/GID `65532`; the `/tmp`
+tmpfs must be owned by that user or the container cannot create its ephemeral
+database and demo SSH files.
 
 ```bash
 docker run --rm \
   --read-only \
-  --tmpfs /tmp:rw,noexec,nosuid,size=256m \
+  --tmpfs /tmp:rw,noexec,nosuid,size=256m,uid=65532,gid=65532,mode=0700 \
   --cap-drop ALL \
   --security-opt no-new-privileges \
   --memory 512m \
