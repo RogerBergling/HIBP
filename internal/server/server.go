@@ -131,6 +131,9 @@ func New(cfg Config) (*Server, error) {
 	if publicURL != nil {
 		hostname := strings.ToLower(publicURL.Hostname())
 		if publicURL.Scheme == "http" && !isLoopbackHostname(hostname) {
+			if cfg.Demo {
+				return nil, errors.New("demo public URL must use https for a non-loopback host; set HIBP_DEMO_PUBLIC_URL to the external HTTPS origin, for example https://demo.example.com, not the internal http address")
+			}
 			return nil, errors.New("public URL must use https for a non-loopback host")
 		}
 		allowedHosts[hostname] = true

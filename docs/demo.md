@@ -187,6 +187,48 @@ make demo-test
 make demo-image
 ```
 
+## Troubleshooting
+
+### `demo public URL must use https for a non-loopback host`
+
+`HIBP_DEMO_PUBLIC_URL` is set to an `http://` URL for a non-loopback hostname.
+The demo is designed to sit behind a TLS-terminating proxy, so the value must be
+the exact **external HTTPS origin** the browser uses:
+
+```dotenv
+HIBP_DEMO_PUBLIC_URL=https://demo.example.com
+```
+
+Do not use the internal container URL (`http://hibp-demo:8080`), an IP address
+without TLS, or the proxy's backend URL. If the public origin has a non-default
+port, include it exactly as the browser sees it:
+
+```dotenv
+HIBP_DEMO_PUBLIC_URL=https://demo.example.com:8443
+```
+
+Check what Compose actually renders:
+
+```bash
+docker compose --env-file .env.demo -f compose.demo.yaml config | grep HIBP_DEMO_PUBLIC_URL
+```
+
+A shell environment variable with the same name overrides `.env.demo`. Check:
+
+```bash
+echo "$HIBP_DEMO_PUBLIC_URL"
+```
+
+Then recreate the container:
+
+```bash
+docker compose --env-file .env.demo -f compose.demo.yaml up -d --force-recreate
+```
+
+The reverse proxy must preserve the original `Host` header and set
+`X-Forwarded-Proto: https`. For local access without a proxy, use
+`HIBP_DEMO_PUBLIC_URL=http://localhost:8080`.
+
 ## Limitations
 
 - Shared state, not per-visitor isolation.
