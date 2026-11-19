@@ -536,6 +536,25 @@ func TestPasskeysUnavailableOnIPOrigin(t *testing.T) {
 	}
 }
 
+func TestNonDemoIgnoresDemoSessionHeader(t *testing.T) {
+	ts, _ := testServer(t)
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/hosts", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The seeded test session uses this raw token, but only the demo build may
+	// authenticate from the demo header.
+	req.Header.Set(demoSessionHeader, "test-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without the session cookie, got %d", resp.StatusCode)
+	}
+}
+
 func TestAuthRequired(t *testing.T) {
 	ts, _ := testServer(t)
 	resp := request(t, http.MethodGet, ts.URL+"/api/v1/hosts", "", "")

@@ -141,6 +141,93 @@ func TestDemoGuestCanLogInWithDisplayedTOTP(t *testing.T) {
 	}
 }
 
+func TestDemoGuestCanLogInWithoutCookies(t *testing.T) {
+	db := openDemoTestStore(t)
+	app, err := New(Config{
+		Store:         db,
+		Version:       "test",
+		SSHConfigPath: filepath.Join(t.TempDir(), "missing-config"),
+		PublicURL:     "https://demo.example:8443",
+		Demo:          true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(app.Handler())
+	defer ts.Close()
+	client := &http.Client{} // deliberately no cookie jar
+
+	do := func(method, path, body, token string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequest(method, ts.URL+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if token != "" {
+			req.Header.Set(demoSessionHeader, token)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	type authStatus struct {
+		Authenticated bool `json:"authenticated"`
+		MFARequired   bool `json:"mfa_required"`
+		Demo          struct {
+			TOTPCode string `json:"totp_code"`
+		} `json:"demo"`
+	}
+
+	resp := do(http.MethodGet, "/api/v1/auth/status", "", "")
+	var initial authStatus
+	if err := json.NewDecoder(resp.Body).Decode(&initial); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if initial.Demo.TOTPCode == "" {
+		t.Fatal("demo status did not include a TOTP code")
+	}
+
+	resp = do(http.MethodPost, "/api/v1/auth/login", `{"username":"guest","password":"guest"}`, "")
+	pendingToken := resp.Header.Get(demoSessionHeader)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || pendingToken == "" {
+		t.Fatalf("login: status=%d demo token=%q", resp.StatusCode, pendingToken)
+	}
+
+	resp = do(http.MethodGet, "/api/v1/auth/status", "", pendingToken)
+	var pending authStatus
+	if err := json.NewDecoder(resp.Body).Decode(&pending); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if !pending.MFARequired || pending.Authenticated {
+		t.Fatalf("pending status: authenticated=%v mfa_required=%v", pending.Authenticated, pending.MFARequired)
+	}
+
+	resp = do(http.MethodPost, "/api/v1/auth/totp/verify", `{"code":"`+initial.Demo.TOTPCode+`"}`, pendingToken)
+	completedToken := resp.Header.Get(demoSessionHeader)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || completedToken == "" {
+		t.Fatalf("TOTP verify: status=%d demo token=%q", resp.StatusCode, completedToken)
+	}
+
+	resp = do(http.MethodGet, "/api/v1/auth/status", "", completedToken)
+	var completed authStatus
+	if err := json.NewDecoder(resp.Body).Decode(&completed); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if !completed.Authenticated {
+		t.Fatal("expected the demo token to authenticate without cookies")
+	}
+}
+
 func TestDemoHelperContracts(t *testing.T) {
 	db := openDemoTestStore(t)
 	hooks := newDemoHooks(db)

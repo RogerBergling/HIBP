@@ -52,6 +52,35 @@ let jobPollingStopped = false;
 let demoCodeTimer = null;
 let demoLoginBusy = false;
 
+const demoSessionKey = 'hibp-demo-session';
+const demoSessionHeader = 'X-HIBP-Demo-Session';
+
+function getDemoSession() {
+  try {
+    return window.sessionStorage.getItem(demoSessionKey) || '';
+  } catch (error) {
+    return '';
+  }
+}
+
+function setDemoSession(token) {
+  try {
+    if (token) {
+      window.sessionStorage.setItem(demoSessionKey, token);
+    } else {
+      window.sessionStorage.removeItem(demoSessionKey);
+    }
+  } catch (error) {
+    // Session storage can be disabled; the cookie remains the fallback.
+  }
+}
+
+function withDemoSession(headers) {
+  const token = getDemoSession();
+  if (token) headers.set(demoSessionHeader, token);
+  return headers;
+}
+
 try {
   autoRefreshState.enabled = window.localStorage.getItem('hibp-live-refresh') !== 'off';
 } catch (error) {}
@@ -372,9 +401,11 @@ function setView(view) {
 }
 
 async function api(path, options = {}) {
-  const headers = new Headers(options.headers || {});
+  const headers = withDemoSession(new Headers(options.headers || {}));
   if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   const response = await fetch(path, { ...options, headers, cache: 'no-store', credentials: 'same-origin' });
+  const demoTicket = response.headers.get(demoSessionHeader);
+  if (demoTicket) setDemoSession(demoTicket);
   const text = await response.text();
   let data = {};
   if (text) {
@@ -384,6 +415,7 @@ async function api(path, options = {}) {
     const sessionExpired = response.status === 401 && data.code === 'login_required';
     const mfaNeeded = response.status === 403 && data.code === 'mfa_required';
     if (sessionExpired || mfaNeeded) {
+      if (sessionExpired) setDemoSession('');
       showAuthScreen();
     }
     const error = new Error(data.error || ('HTTP ' + response.status));
@@ -395,7 +427,10 @@ async function api(path, options = {}) {
 }
 
 async function fetchAuthStatus() {
-  const response = await fetch('/api/v1/auth/status', { cache: 'no-store', credentials: 'same-origin' });
+  const headers = withDemoSession(new Headers());
+  const response = await fetch('/api/v1/auth/status', { cache: 'no-store', credentials: 'same-origin', headers });
+  const demoTicket = response.headers.get(demoSessionHeader);
+  if (demoTicket) setDemoSession(demoTicket);
   const text = await response.text();
   let data = {};
   if (text) {
@@ -404,6 +439,7 @@ async function fetchAuthStatus() {
   if (!response.ok) {
     throw new Error(data.error || ('HTTP ' + response.status));
   }
+  if (!data.authenticated && !data.mfa_required) setDemoSession('');
   return data;
 }
 
@@ -725,6 +761,7 @@ async function signOut() {
   } catch (error) {
     // The cookie is cleared server-side even if the session had already expired.
   }
+  setDemoSession('');
   state.passwords.clear();
   state.sudoPasswords.clear();
   state.sharedSudoPassword = '';
@@ -3259,6 +3296,7 @@ async function uploadPackageJob(hosts, file, env) {
   const response = await fetch('/api/v1/jobs/package', {
     method: 'POST',
     body: form,
+    headers: withDemoSession(new Headers()),
     credentials: 'same-origin',
     cache: 'no-store',
   });
@@ -5333,6 +5371,9 @@ function bind() {
       });
       $('login-password').value = '';
       await showAuthScreen();
+      if (!state.auth.authenticated && !state.auth.mfa_required && !state.auth.setup_required) {
+        showAuthMessage('Login succeeded, but the browser did not keep the session cookie. Allow cookies for this site and use the same http:// or https:// address as HIBP_DEMO_PUBLIC_URL.');
+      }
     } catch (error) {
       showAuthMessage(error.message);
     }
@@ -5348,6 +5389,9 @@ function bind() {
       });
       $('totp-code').value = '';
       await showAuthScreen();
+      if (!state.auth.authenticated) {
+        showAuthMessage('The authenticator code was accepted, but the browser did not keep the session cookie. Allow cookies for this site and use the same http:// or https:// address as HIBP_DEMO_PUBLIC_URL.');
+      }
     } catch (error) {
       showAuthMessage(error.message);
     }
@@ -5381,6 +5425,7 @@ function bind() {
   $('demo-fill').addEventListener('click', demoLogin);
   $('mfa-back').addEventListener('click', async () => {
     await api('/api/v1/auth/logout', { method: 'POST', body: '{}' }).catch(() => {});
+    setDemoSession('');
     state.totpSetup = null;
     await showAuthScreen();
   });

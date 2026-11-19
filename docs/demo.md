@@ -46,6 +46,11 @@ The TOTP secret is fixed for the demo. Real TOTP validation is used, but the
 replay lockout is bypassed in demo mode so multiple visitors can use the same
 displayed code. Passkeys are disabled.
 
+The demo session normally uses the `hibp_demo_session` cookie. The demo also
+stores the token in browser `sessionStorage` and sends it as
+`X-HIBP-Demo-Session`, so sign-in still works when a browser or proxy drops the
+cookie. The production binary ignores this header.
+
 ## Run locally
 
 With the Compose example in this repository:
@@ -196,6 +201,9 @@ hosts; a restart restores the seed data.
 - `HIBP_DEMO_ALLOW_INSECURE_HTTP=true` disables the HTTPS requirement for a
   non-loopback origin. It is only for a trusted LAN; do not use it on an
   internet-facing host.
+- The demo stores its session token in `sessionStorage` and accepts
+  `X-HIBP-Demo-Session` when cookies are unavailable. This fallback is compiled
+  into and accepted only by the demo binary.
 - Use container resource limits and proxy rate limiting for a public deployment.
 
 Recommended container flags. The demo runs as UID/GID `65532`; the `/tmp`
@@ -238,12 +246,12 @@ make demo-image
 
 ### Sign-in returns to the login page
 
-The demo keeps its session in the `hibp_demo_session` cookie. The demo cookie
-name is separate from the production `hibp_session` cookie so multiple HIBP
-instances on the same hostname do not overwrite each other.
+The demo normally keeps its session in the `hibp_demo_session` cookie and falls
+back to a token in `sessionStorage` sent as `X-HIBP-Demo-Session`. The demo
+cookie name is separate from the production `hibp_session` cookie so multiple
+HIBP instances on the same hostname do not overwrite each other.
 
-If sign-in succeeds but the page returns to the login form, the browser did not
-keep the cookie. Check:
+If sign-in succeeds but the page returns to the login form, check:
 
 1. **The browser URL matches the configured origin.** Compare the address bar
    with:
@@ -255,8 +263,9 @@ keep the cookie. Check:
    `http://` and `https://` are different origins. Do not configure `https://`
    and browse over `http://`, or the reverse.
 
-2. **Cookies are allowed for this host.** Private browsing, cookie blockers, or
-   a site setting can discard the session cookie.
+2. **Browser storage is allowed for this host.** Private browsing or a site
+   setting that blocks both cookies and `sessionStorage` prevents the demo from
+   keeping a session. The demo header fallback covers cookies only.
 
 3. **You are using the expected hostname.** The Host header must match
    `HIBP_DEMO_PUBLIC_URL` or be a loopback name. A different LAN IP gets

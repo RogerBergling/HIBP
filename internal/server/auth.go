@@ -17,7 +17,12 @@ import (
 	"github.com/skip2/go-qrcode"
 )
 
-const sessionCookieName = "hibp_session"
+const (
+	sessionCookieName = "hibp_session"
+	// demoSessionHeader carries the demo session token when a browser or proxy
+	// drops the cookie. The production binary never reads this header.
+	demoSessionHeader = "X-HIBP-Demo-Session"
+)
 
 var errLoginRequired = errors.New("login required")
 
@@ -807,11 +812,31 @@ func (s *Server) withSession(next http.HandlerFunc, requireMFA bool) http.Handle
 }
 
 func (s *Server) loadSession(r *http.Request) (*store.Session, *store.User, error) {
-	cookie, err := r.Cookie(s.sessionCookie)
-	if err != nil || cookie.Value == "" {
+	tokens := make([]string, 0, 2)
+	if cookie, err := r.Cookie(s.sessionCookie); err == nil && cookie.Value != "" {
+		tokens = append(tokens, cookie.Value)
+	}
+	if s.demo != nil {
+		if token := strings.TrimSpace(r.Header.Get(demoSessionHeader)); token != "" {
+			tokens = append(tokens, token)
+		}
+	}
+	if len(tokens) == 0 {
 		return nil, nil, errLoginRequired
 	}
-	session, err := s.store.GetSessionByTokenHash(auth.HashSessionToken(cookie.Value))
+	// Prefer the cookie, but fall back to the demo header when a browser or
+	// proxy dropped or replaced the cookie.
+	for _, token := range tokens {
+		session, user, err := s.loadSessionToken(token)
+		if err == nil {
+			return session, user, nil
+		}
+	}
+	return nil, nil, errLoginRequired
+}
+
+func (s *Server) loadSessionToken(token string) (*store.Session, *store.User, error) {
+	session, err := s.store.GetSessionByTokenHash(auth.HashSessionToken(token))
 	if err != nil {
 		return nil, nil, errLoginRequired
 	}
@@ -848,6 +873,11 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request, userID st
 		return nil, err
 	}
 	s.setSessionCookie(w, r, token, ttl)
+	if s.demo != nil {
+		// Give the demo frontend a cookie-independent copy of the session so
+		// browsers that discard Set-Cookie can still complete login.
+		w.Header().Set(demoSessionHeader, token)
+	}
 	return &session, nil
 }
 
