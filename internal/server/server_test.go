@@ -127,6 +127,30 @@ func findSessionCookie(t *testing.T, resp *http.Response) *http.Cookie {
 	return nil
 }
 
+func TestThemeEndpointUsesConfiguredDefault(t *testing.T) {
+	t.Setenv("APP_THEME", "light")
+	ts, _ := testServer(t)
+	resp := request(t, http.MethodGet, ts.URL+"/theme.js", "", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.Contains(got, "javascript") {
+		t.Fatalf("unexpected Content-Type: %q", got)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if !strings.Contains(text, `var configured = "light"`) {
+		t.Fatalf("theme.js did not carry the configured default: %s", text)
+	}
+	if !strings.Contains(text, "hibp-theme") {
+		t.Fatal("theme.js does not read the saved theme")
+	}
+}
+
 func TestAuthStatusSetupRequired(t *testing.T) {
 	ts, _ := testServerNoUser(t)
 	resp := request(t, http.MethodGet, ts.URL+"/api/v1/auth/status", "", "")

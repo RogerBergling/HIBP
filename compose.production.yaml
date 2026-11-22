@@ -25,6 +25,8 @@ services:
     restart: unless-stopped
     network_mode: host
     user: "65532:65532"
+    environment:
+      - APP_THEME=${APP_THEME:-dark}
     command:
       - server
       - --db

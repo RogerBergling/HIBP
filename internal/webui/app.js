@@ -5334,7 +5334,32 @@ function toast(message, type = '') {
   toast.timer = setTimeout(() => node.classList.add('hidden'), 4500);
 }
 
+function applyTheme(theme, persist = true) {
+  const next = theme === 'light' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  document.documentElement.style.colorScheme = next;
+  const toggle = $('theme-toggle');
+  if (toggle) {
+    const label = next === 'light' ? 'Switch to dark theme' : 'Switch to light theme';
+    toggle.setAttribute('aria-label', label);
+    toggle.title = label;
+  }
+  if (persist) {
+    try { localStorage.setItem('hibp-theme', next); } catch (e) { /* storage can be unavailable */ }
+  }
+}
+
+function bindTheme() {
+  const toggle = $('theme-toggle');
+  if (!toggle) return;
+  applyTheme(document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark', false);
+  toggle.addEventListener('click', () => {
+    applyTheme(document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light');
+  });
+}
+
 function bind() {
+  bindTheme();
   $('setup-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     clearAuthMessage();

@@ -79,6 +79,7 @@ type Server struct {
 	webAuthnRPID      string
 	webAuthnOrigin    string
 	sessionCookie     string
+	appTheme          string
 	trustProxy        bool
 	demo              demoHooks
 	mux               *http.ServeMux
@@ -154,6 +155,7 @@ func New(cfg Config) (*Server, error) {
 	s := &Server{
 		store:             cfg.Store,
 		build:             build,
+		appTheme:          themeDefault(),
 		keyDirs:           keyDirs,
 		sshConfigPath:     sshConfigPath,
 		dummyPasswordHash: dummyPasswordHash,
@@ -182,6 +184,44 @@ func New(cfg Config) (*Server, error) {
 	return s, nil
 }
 
+func themeDefault() string {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("APP_THEME"))) {
+	case "light", "white":
+		return "light"
+	case "system", "auto":
+		return "system"
+	default:
+		return "dark"
+	}
+}
+
+func (s *Server) handleTheme(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	script := `(function () {
+  var root = document.documentElement;
+  var theme = null;
+  try {
+    var saved = localStorage.getItem("hibp-theme");
+    if (saved === "light" || saved === "dark") theme = saved;
+  } catch (e) { /* storage can be unavailable */ }
+  if (!theme) {
+    var configured = "` + s.appTheme + `";
+    if (configured === "light" || configured === "dark") {
+      theme = configured;
+    } else if (configured === "system") {
+      theme = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+    } else {
+      theme = "dark";
+    }
+  }
+  root.setAttribute("data-theme", theme);
+  root.style.colorScheme = theme;
+})();
+`
+	_, _ = io.WriteString(w, script)
+}
+
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -194,6 +234,7 @@ func (s *Server) routes() {
 		})
 	}
 	s.mux.HandleFunc("GET /", s.handleIndex)
+	s.mux.HandleFunc("GET /theme.js", s.handleTheme)
 	s.mux.HandleFunc("GET /app.js", s.handleAsset("app.js", "application/javascript; charset=utf-8"))
 	s.mux.HandleFunc("GET /style.css", s.handleAsset("style.css", "text/css; charset=utf-8"))
 	s.mux.HandleFunc("GET /favicon.svg", s.handleAsset("favicon.svg", "image/svg+xml"))

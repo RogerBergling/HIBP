@@ -485,3 +485,110 @@ label.field.checkbox-field input { width: auto; accent-color: #14b8a6; }
   .operation-title { white-space: normal; }
   .operation-detail { white-space: normal; }
 }
+
+/* ------------------------------------------------------------------ */
+/* Light theme                                                         */
+/* The default palette is dark. APP_THEME can make light the first-visit */
+/* default; the header toggle saves an explicit choice per browser.     */
+/* ------------------------------------------------------------------ */
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f7fc;
+  --panel: #ffffff;
+  --panel-2: #eef3fa;
+  --border: #cbd7e6;
+  --border-soft: #dde6f1;
+  --text: #172033;
+  --muted: #52627a;
+  --muted-2: #6b7b92;
+  --green: #0f9f5f;
+  --green-bg: rgba(15, 159, 95, .12);
+  --amber: #a16207;
+  --amber-bg: rgba(161, 98, 7, .12);
+  --red: #c24141;
+  --red-bg: rgba(194, 65, 65, .12);
+  --blue: #2563eb;
+  --blue-bg: rgba(37, 99, 235, .12);
+  --shadow: 0 18px 50px rgba(30, 41, 59, .12);
+}
+[data-theme="light"] body {
+  background:
+    radial-gradient(900px 500px at 78% -10%, rgba(37, 99, 235, .08), transparent 65%),
+    radial-gradient(700px 400px at 20% 110%, rgba(15, 159, 95, .06), transparent 70%),
+    var(--bg);
+  color: var(--text);
+}
+[data-theme="light"] .sidebar { background: rgba(238, 243, 250, .96); border-right-color: var(--border-soft); }
+[data-theme="light"] .auth-card,
+[data-theme="light"] .server-card,
+[data-theme="light"] .operation-bar,
+[data-theme="light"] .toast { background: #fff; }
+[data-theme="light"] .auth-card input,
+[data-theme="light"] label.field input,
+[data-theme="light"] label.field textarea,
+[data-theme="light"] label.field select,
+[data-theme="light"] .password-field,
+[data-theme="light"] .env-row input,
+[data-theme="light"] .metric-range {
+  background: #fff;
+  color: var(--text);
+  border-color: var(--border);
+}
+[data-theme="light"] .auth-secret,
+[data-theme="light"] .key-box,
+[data-theme="light"] .cleanup-list,
+[data-theme="light"] .mono,
+[data-theme="light"] .demo-credential-row code,
+[data-theme="light"] .demo-totp-row code { color: #0f5f8a; }
+[data-theme="light"] .btn { background: #fff; color: var(--text); border-color: var(--border); }
+[data-theme="light"] .btn:hover { background: #f1f5fb; border-color: #9fb3cc; }
+[data-theme="light"] .btn.primary { background: linear-gradient(180deg, #2dd4bf, #14b8a6); color: #06201d; }
+[data-theme="light"] .btn.primary:hover { background: linear-gradient(180deg, #5eead4, #2dd4bf); }
+[data-theme="light"] .btn.danger { background: rgba(194, 65, 65, .07); color: var(--red); }
+[data-theme="light"] .nav-item { color: #52627a; }
+[data-theme="light"] .nav-item:hover { background: rgba(37, 99, 235, .06); color: #172033; }
+[data-theme="light"] .nav-item.active { background: linear-gradient(90deg, rgba(20, 184, 166, .12), rgba(20, 184, 166, .03)); color: #0f766e; }
+[data-theme="light"] .nav-item .ico { color: #6b7b92; }
+[data-theme="light"] .nav-item.active .ico { color: #0f766e; }
+[data-theme="light"] .server-meta b,
+[data-theme="light"] .crumb b,
+[data-theme="light"] .file-name,
+[data-theme="light"] .assignment-chip { color: #172033; }
+[data-theme="light"] .file-list,
+[data-theme="light"] .fleet-update-list,
+[data-theme="light"] .preview-group,
+[data-theme="light"] .preview-raw,
+[data-theme="light"] .preview-count,
+[data-theme="light"] .detail-card,
+[data-theme="light"] .metric-card,
+[data-theme="light"] .package-drop,
+[data-theme="light"] .field-static,
+[data-theme="light"] .job-dock-list,
+[data-theme="light"] .job-dock-icon-btn,
+[data-theme="light"] .mfa-factor,
+[data-theme="light"] .scroll-list,
+[data-theme="light"] .tab { background: #f8fafc; color: var(--text); }
+[data-theme="light"] .preview-group-head { background: rgba(37, 99, 235, .05); color: var(--text); }
+[data-theme="light"] .preview-table td { border-bottom-color: var(--border-soft); color: var(--text); }
+[data-theme="light"] .preview-raw pre { color: #0f5f8a; }
+[data-theme="light"] .auth-qr { background: #fff; }
+[data-theme="light"] .status-dot,
+[data-theme="light"] .last-check .dot { box-shadow: none; }
+[data-theme="light"] .theme-toggle .icon-sun { display: block; }
+[data-theme="light"] .theme-toggle .icon-moon { display: none; }
+[data-theme="dark"] .theme-toggle .icon-sun { display: none; }
+[data-theme="dark"] .theme-toggle .icon-moon { display: block; }
+
+.theme-toggle { display: inline-flex; align-items: center; gap: 6px; }
+.theme-toggle svg { width: 15px; height: 15px; }
+.theme-toggle .icon-sun,
+.theme-toggle .icon-moon { display: none; }
+[data-theme="dark"] .theme-toggle .icon-moon { display: block; }
+[data-theme="light"] .theme-toggle .icon-sun { display: block; }
+@media (max-width: 720px) {
+  .theme-toggle .theme-label { display: none; }
+}
+[data-theme="light"] .demo-login { background: linear-gradient(160deg, rgba(161, 98, 7, .08), #fff); }
+[data-theme="light"] .demo-login-head { color: #92400e; }
+[data-theme="light"] .demo-credential-row code,
+[data-theme="light"] .demo-totp-row code { background: #f1f5fb; }

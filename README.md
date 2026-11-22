@@ -57,6 +57,27 @@ persisted server-side and appear in a non-blocking activity dock. HIBP records
 audit events and per-host run history. Approval workflows and per-run resulting
 package diffs are not implemented.
 
+## Theme modes
+
+`APP_THEME` sets the first-visit theme. The header theme toggle saves the
+visitor's explicit choice, which overrides this default.
+
+| Value | Behavior |
+|---|---|
+| `dark` | Dark theme (default) |
+| `light` | Light/white theme |
+| `system` | Follow the browser/OS `prefers-color-scheme` |
+
+Set it in `.env`, `.env.demo`, `.env.production`, or the Compose environment:
+
+```yaml
+environment:
+  - APP_THEME=${APP_THEME:-dark}
+```
+
+Invalid values fall back to `dark`. The server serves the pre-paint resolver at
+`/theme.js`, so there is no theme flash and no rebuild is needed.
+
 ## Screenshots
 
 > Screenshots of the current build running with demo data. The browser UI,
@@ -64,7 +85,9 @@ package diffs are not implemented.
 > real. Real patch execution requires the root-owned helper and SSH access to
 > targets.
 
-![HIBP fleet overview](docs/screenshots/dashboard.png)
+| Dark theme dashboard | Light theme sign-in |
+|---|---|
+| ![HIBP fleet overview in dark theme](docs/screenshots/dashboard.png) | ![HIBP sign-in in light theme](docs/screenshots/login-light.png) |
 
 ![HIBP monitoring with standalone web-service probes](docs/screenshots/monitoring.png)
 
