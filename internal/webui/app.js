@@ -1091,6 +1091,24 @@ async function showJobOutputModal(job, target) {
   body.append(actions);
   const close = openModal('Operation output — ' + target.host_name, body, null, 'wide');
   closeButton.addEventListener('click', close);
+
+  if (job.kind === 'patch-preview') {
+    const previews = (detail.targets || []).filter((entry) => {
+      const preview = targetPreview(entry);
+      return preview && previewTotal(preview.preview) > 0;
+    });
+    if (previews.length > 1) {
+      actions.prepend(dockButton('Review & apply all hosts', async () => {
+        close();
+        await reviewPatchJob(job);
+      }, 'primary'));
+    } else if (targetPreview(fullTarget) && previewTotal(targetPreview(fullTarget).preview) > 0) {
+      actions.prepend(dockButton('Review & apply', async () => {
+        close();
+        await reviewPatchTarget(job, fullTarget);
+      }, 'primary'));
+    }
+  }
 }
 
 async function createJob(kind, hosts, options = {}) {
