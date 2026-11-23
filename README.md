@@ -3532,7 +3532,7 @@ not accept passwords, private keys, or scripts.
 
 ### Schema migrations
 
-- Current schema version: **10** (`010_proxy_jump.sql`). The `v0.6.9`
+- Current schema version: **14** (`014_drop_integrations.sql`). The `v0.6.9`
   release used schema 9; `v0.6.6` used schema 8; `v0.6.2` used schema 7;
   `v0.5.1` used schema 6; `v0.5.0` and earlier used their respective earlier
   migrations.
