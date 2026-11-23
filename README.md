@@ -129,6 +129,7 @@ per-host fallbacks.
 - [Install prerequisites](#install-prerequisites)
 - [Quick start (source build)](#quick-start-source-build)
 - [Server deployment and local migration](docs/server-deployment.md)
+- [Docker deployment and local migration](#docker-deployment-and-local-migration)
 - [Command-line reference](#command-line-reference)
 - [Windows client](#windows-client)
 - [Public demo container](#public-demo-container)
@@ -231,25 +232,207 @@ End users should not need Go or a compiler.
 
    ```bash
    docker pull ghcr.io/rogerbergling/hibp:latest
-   mkdir -p /var/lib/hibp
-   chown 65532:65532 /var/lib/hibp
-   docker run --rm -it --network host \
-     -v /var/lib/hibp:/var/lib/hibp \
-     ghcr.io/rogerbergling/hibp:latest \
-     server --db /var/lib/hibp/hibp.db --create --listen 127.0.0.1:8443
    ```
 
-   The container runs as UID/GID `65532`. If you need SSH keys, mount a
-   controller-owned key directory read-only and pass `--key-dir` and
-   `--ssh-config`; the scratch image has no home-directory key defaults. Mounted
-   key and passphrase files must be readable by UID 65532. Do not place the
-   database on a network filesystem.
+   The container runs as UID/GID `65532`. Use `compose.production.yaml` with
+   `.env.production.example` and keep `data/` and `secrets/` next to them; the
+   full layout and local migration procedure are in
+   [Docker deployment and local migration](#docker-deployment-and-local-migration).
+   The public demo has `compose.yaml` and `.env.demo.example`.
 
-   A production Compose example is in `compose.production.yaml` with
-   `.env.production.example`; the public demo has `compose.yaml` and
-   `.env.demo.example`.
+   Mounted key and passphrase files must be readable by UID 65532. Do not place
+   the database on a network filesystem.
 
 You do **not** need the prerequisites below unless you are building from source.
+
+## Docker deployment and local migration
+
+Keep the controller database, backups, passphrase, and SSH material in one
+directory next to the Compose file and environment file:
+
+```text
+HIBP/
+├── compose.production.yaml
+├── .env.production
+├── data/
+│   ├── hibp.db
+│   ├── hibp.db.meta
+│   ├── hibp-jobs/
+│   └── backups/
+└── secrets/
+    ├── db.passphrase
+    └── ssh/
+        ├── config
+        └── id_ed25519
+```
+
+`data/` and `secrets/` are ignored by Git. They are bind-mounted into
+`/var/lib/hibp` and `/etc/hibp` in the controller container. Relative paths in
+`.env.production` are resolved from the directory containing
+`compose.production.yaml`.
+
+### 1. Prepare the directories
+
+```bash
+cd HIBP
+sudo install -d -o 65532 -g 65532 -m 0700 data data/backups
+sudo install -d -o 65532 -g 65532 -m 0700 secrets secrets/ssh
+```
+
+The container runs as UID/GID `65532`. Do not `chown` the repository itself.
+
+### 2. Stop the local server and record its version
+
+```bash
+~/.local/bin/hibp version
+```
+
+Stop the local process with `Ctrl+C`. Do not run the local process and the
+container against the same database.
+
+### 3. Move the database pair
+
+Preferred: use **Backup database** in the local UI. It creates:
+
+```text
+hibp-YYYY-MM-DD-HHMMSS.bac
+hibp-YYYY-MM-DD-HHMMSS.bac.meta
+```
+
+Copy both files into `data/`, renaming the database to `hibp.db`:
+
+```bash
+sudo install -o 65532 -g 65532 -m 0600 \
+  /path/to/hibp-YYYY-MM-DD-HHMMSS.bac data/hibp.db
+sudo install -o 65532 -g 65532 -m 0600 \
+  /path/to/hibp-YYYY-MM-DD-HHMMSS.bac.meta data/hibp.db.meta
+```
+
+The `.meta` sidecar is mandatory. Without it the database cannot be opened.
+
+If you copy the stopped local database instead, copy both
+`~/.local/share/hibp/hibp.db` and `~/.local/share/hibp/hibp.db.meta`. Do not
+copy a live database or only one of the WAL/SHM files. When in doubt, use the
+UI backup.
+
+### 4. Install the same database passphrase
+
+The local command prompted for the passphrase and did not read it from a file.
+Create `secrets/db.passphrase` with that same value:
+
+```bash
+umask 077
+read -rsp 'Database passphrase: ' HIBP_PASS
+printf '%s\n' "$HIBP_PASS" | sudo tee secrets/db.passphrase >/dev/null
+unset HIBP_PASS
+sudo chown 65532:65532 secrets/db.passphrase
+sudo chmod 0400 secrets/db.passphrase
+```
+
+There is no passphrase recovery. Never put this value in `.env.production`,
+Compose environment variables, shell history, or Git.
+
+### 5. Install the SSH keys and config
+
+HIBP stores an absolute `key_path` per host. Copy the keys referenced by your
+host records into `secrets/ssh`, then update each host's `key_path` in the UI to
+the container path, for example:
+
+```text
+/etc/hibp/ssh/id_ed25519
+```
+
+```bash
+sudo install -o 65532 -g 65532 -m 0600 \
+  ~/.ssh/id_ed25519 secrets/ssh/id_ed25519
+sudo install -o 65532 -g 65532 -m 0600 \
+  ~/.ssh/config secrets/ssh/config
+sudo chown 65532:65532 secrets/ssh
+sudo chmod 0700 secrets/ssh
+```
+
+If you do not have an SSH config, create an empty one so the read-only mount is
+a file rather than a Docker-created directory:
+
+```bash
+sudo install -o 65532 -g 65532 -m 0600 /dev/null secrets/ssh/config
+```
+
+Edit `secrets/ssh/config` so every `IdentityFile` points to the container path
+(`/etc/hibp/ssh/...`), not the old desktop path. The SSH config reader is only
+used to prefill host forms; existing host records use their stored `key_path`.
+HIBP requires unencrypted key files at mode `0600`; passphrase-protected keys
+are not supported.
+
+If you have many hosts, update `key_path` through the host UI. A regular CSV
+import with `duplicate_policy=update` can also update `key_path` for hosts
+matched by address and port.
+
+### 6. Configure Compose
+
+```bash
+cp .env.production.example .env.production
+```
+
+For a migration from this repository's current local build, use:
+
+```dotenv
+APP_THEME=dark
+HIBP_TAG=edge
+HIBP_LISTEN=127.0.0.1:8443
+HIBP_DATA_DIR=./data
+HIBP_SSH_DIR=./secrets/ssh
+HIBP_PASSPHRASE_FILE=./secrets/db.passphrase
+```
+
+`:edge` contains schema 14 and can migrate older local databases forward. It is
+an unreleased build; after validating the migration, switch to a pinned release
+or image digest.
+
+Start the controller **without** `--create`:
+
+```bash
+docker compose --env-file .env.production -f compose.production.yaml pull
+docker compose --env-file .env.production -f compose.production.yaml up -d
+docker compose --env-file .env.production -f compose.production.yaml logs -f hibp
+```
+
+`--create` is only for a new, empty database. It refuses an existing database.
+The Compose command intentionally omits it.
+
+### 7. Verify the migration
+
+On the Docker host, open <http://localhost:8443/>. From another machine, use an
+SSH tunnel:
+
+```bash
+ssh -N -o ExitOnForwardFailure=yes \
+  -L 8443:127.0.0.1:8443 user@docker-host
+```
+
+Then open <http://localhost:8443/>. Use `localhost`, not `127.0.0.1`, for
+passkeys. TOTP works with either name.
+
+Check:
+
+- the existing administrator login and MFA;
+- host count, audit chain, schedules, monitors, and jobs;
+- one host connection and a read-only facts collection;
+- every migrated host's `key_path`;
+- backup creation into `/var/lib/hibp/backups`.
+
+Set **Settings → Backup directory** to `/var/lib/hibp/backups`; that is
+`data/backups` on the Docker host. Keep database and `.meta` backups together.
+
+### 8. Keep the deployment contained
+
+- `data/` holds the encrypted database, job staging, and backups.
+- `secrets/` holds the passphrase and SSH keys.
+- `.env.production` holds only paths and non-secret settings.
+- Do not place `data/` on NFS/SMB.
+- Do not expose `127.0.0.1:8443` directly to the internet; use an SSH tunnel or
+  VPN. Production HIBP does not support reverse-proxy mode.
+- Keep the local database and backup until the container has been verified.
 
 ## Install prerequisites
 

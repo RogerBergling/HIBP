@@ -23,79 +23,89 @@ The Dockerfile:
   immediately after `sqlite3_open_v2`
 - builds with `sqlcipher_mattn libsqlcipher netgo osusergo`
 - verifies that the resulting ELF has no dynamic dependencies
+- includes `/tmp` and a writable `/var/lib/hibp` so plain `docker run` supports
+  package uploads and first-run database creation
 
-## Compose example
+## Self-contained deployment
 
-The repository includes `compose.production.yaml` and
-`.env.production.example` for a GHCR-based controller:
+Keep runtime data and secrets next to the Compose and environment files:
+
+```text
+HIBP/
+├── compose.production.yaml
+├── .env.production
+├── data/
+│   ├── hibp.db
+│   ├── hibp.db.meta
+│   ├── hibp-jobs/
+│   └── backups/
+└── secrets/
+    ├── db.passphrase
+    └── ssh/
+        ├── config
+        └── id_ed25519
+```
+
+`data/` and `secrets/` are ignored by Git and bind-mounted into the container.
+Relative paths in `.env.production` are resolved from the Compose file directory.
 
 ```bash
+sudo install -d -o 65532 -g 65532 -m 0700 data data/backups
+sudo install -d -o 65532 -g 65532 -m 0700 secrets secrets/ssh
+sudo install -o 65532 -g 65532 -m 0600 /dev/null secrets/ssh/config
 cp .env.production.example .env.production
-# Prepare /var/lib/hibp, /etc/hibp/ssh, and /etc/hibp/db.passphrase first.
-# First run only: add --create to the command, complete setup, then restart.
 docker compose --env-file .env.production -f compose.production.yaml up -d
 ```
 
 The example uses host networking so the controller listens on the Docker host's
-loopback. It is a starting point; review the volumes, resource limits, and
-systemd/SSH-tunnel policy before production use.
+loopback. First run with a new database only: add `--create` to the command,
+complete admin/MFA setup, then remove `--create` and restart. Do not use
+`--create` when migrating an existing database.
 
-The image contains `/tmp` and an empty `/var/lib/hibp`, so plain `docker run`
-works for package uploads and first-run database creation. Persist
-`/var/lib/hibp` with a local volume for real use. The container runs as UID/GID
-`65532`.
+## Migrating a local database
 
-## Migrating a local/desktop HIBP database
+The complete local-to-container procedure is in
+[README.md: Docker deployment and local migration](../README.md#docker-deployment-and-local-migration).
+The short version:
 
-There is no desktop client and no direct "import a desktop database" button.
-Migration means moving the encrypted database pair into the container:
-
-1. Stop the local HIBP process.
-2. Use the local UI **Backup database** action, or copy the stopped `hibp.db`
-   and `hibp.db.meta` pair.
-3. Put the pair at the mounted database path, for example
-   `/var/lib/hibp/hibp.db` and `/var/lib/hibp/hibp.db.meta`.
-4. Mount the passphrase file and the controller SSH keys.
-5. Start without `--create`; `--create` would refuse the existing database.
-6. Update each host's `key_path` if the container path differs from the old
-   desktop path.
-7. Keep the matching or newer HIBP binary and keep a verified backup.
+1. Stop the local HIBP process and record `hibp version`.
+2. Create a UI backup, or copy the stopped `hibp.db` and `hibp.db.meta` pair.
+3. Put the pair in `data/hibp.db` and `data/hibp.db.meta`.
+4. Put the same passphrase in `secrets/db.passphrase`.
+5. Copy the required keys to `secrets/ssh` and update each host's `key_path` to
+   `/etc/hibp/ssh/...`.
+6. Start with `HIBP_TAG=edge` (schema 14) and **without** `--create`.
+7. Verify login, audit, schedules, and one host connection before removing the
+   local copy.
 
 Do not open a live database with two HIBP processes, do not copy a live WAL by
 hand, and do not import a `cmdb-lite` database directly. Export cmdb-lite or
 other inventory data as CSV/JSON and use **Hosts → CMDB import** or
 **Hosts → Import CSV** in the browser.
 
-The production image runs as UID/GID `65532`. Mount the database directory with
-permissions for that user, for example:
+## Plain docker run
+
+The image contains `/tmp` and an empty `/var/lib/hibp`, but persist runtime data
+with a bind mount. The container runs as UID/GID `65532`:
 
 ```bash
-mkdir -p /var/lib/hibp
-chown 65532:65532 /var/lib/hibp
+sudo install -d -o 65532 -g 65532 -m 0700 data secrets secrets/ssh
+
 docker run --rm -it \
   --network host \
-  -v /var/lib/hibp:/var/lib/hibp \
-  hibp-production server \
-  --db /var/lib/hibp/hibp.db --create --listen 127.0.0.1:8443
+  -v "$PWD/data:/var/lib/hibp" \
+  -v "$PWD/secrets/db.passphrase:/etc/hibp/db.passphrase:ro" \
+  -v "$PWD/secrets/ssh:/etc/hibp/ssh:ro" \
+  ghcr.io/rogerbergling/hibp:latest \
+  server --db /var/lib/hibp/hibp.db --create \
+    --listen 127.0.0.1:8443 \
+    --key-dir /etc/hibp/ssh \
+    --ssh-config /etc/hibp/ssh/config \
+    --passphrase-file /etc/hibp/db.passphrase
 ```
 
-The scratch image has no home-directory key defaults. To use SSH keys or a
-passphrase file, mount them and pass explicit flags:
-
-```bash
-docker run --rm -it \
-  --network host \
-  -v /var/lib/hibp:/var/lib/hibp \
-  -v /etc/hibp/ssh:/etc/hibp/ssh:ro \
-  -v /etc/hibp/db.passphrase:/etc/hibp/db.passphrase:ro \
-  hibp-production server \
-  --db /var/lib/hibp/hibp.db --create --listen 127.0.0.1:8443 \
-  --key-dir /etc/hibp/ssh --ssh-config /etc/hibp/ssh/config \
-  --passphrase-file /etc/hibp/db.passphrase
-```
-
-The server intentionally refuses to bind a non-loopback address. Host networking
-is used for the container so `127.0.0.1` remains the only listening address.
-For laptop access, use an SSH tunnel to the Docker host or run the binary
-directly on the host with the systemd unit. Do not place the database on a
-network filesystem.
+Omit `--create` when opening an existing database. The server intentionally
+refuses to bind a non-loopback address without TLS. Host networking is used so
+`127.0.0.1` remains the only listening address. For laptop access, use an SSH
+tunnel to the Docker host or run the binary directly on the host with the
+systemd unit. Do not place the database on a network filesystem.
