@@ -10,9 +10,13 @@
 # Replace "hibp" with the account used by the controller for SSH access.
 
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper facts
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper facts-full
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper preview
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper preview-full
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper check
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper check-full
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper apply
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper apply-full
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper cleanup-check
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper cleanup-apply
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper reboot

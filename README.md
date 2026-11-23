@@ -385,7 +385,7 @@ HIBP_SSH_DIR=./secrets/ssh
 HIBP_PASSPHRASE_FILE=./secrets/db.passphrase
 ```
 
-`:edge` contains schema 14 and can migrate older local databases forward. It is
+`:edge` contains schema 15 and can migrate older local databases forward. It is
 an unreleased build; after validating the migration, switch to a pinned release
 or image digest.
 
@@ -750,10 +750,12 @@ Server flags:
 | `-demo` | off | Seeds sample hosts when empty. Use only for screenshots or demos. |
 | `-version` | off | Prints the version, build number, commit, build date, target, build type, and SQLCipher driver, then exits. |
 
-Helper actions are intentionally fixed: `facts`, `preview`, `check`, `apply`,
+Helper actions are intentionally fixed: `facts`, `facts-full`, `preview`,
+`preview-full`, `check`, `check-full`, `apply`, `apply-full`,
 `cleanup-check`, `cleanup-apply`, `reboot`, `reboot-check`, `system-info`,
 `metrics`, `docker-list`, `docker-check <project>`, `docker-apply <project>`,
-`docker-update-all`, and `install-package`. `install-package` reads one
+`docker-update-all`, and `install-package`. The `*-full` actions are the
+explicit APT `full-upgrade` policy variants. `install-package` reads one
 validated JSON request (package bytes, SHA-256, and installer environment) from
 stdin and never accepts package names or shell fragments as command-line
 arguments. The other actions do not accept package names, host names, or shell
@@ -2111,9 +2113,13 @@ uses to log in:
 sudo tee /etc/sudoers.d/hibp-helper >/dev/null <<'EOF'
 # Replace "hibp" with the SSH account used by the controller.
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper facts
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper facts-full
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper preview
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper preview-full
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper check
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper check-full
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper apply
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper apply-full
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper cleanup-check
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper cleanup-apply
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper reboot
@@ -2579,11 +2585,14 @@ not as a documented controller baseline.
 
 The table below describes the current helper behavior, not a future profile
 design. Exact package-manager flags may need review for your distribution
-release.
+release. APT hosts have a per-host **APT upgrade mode** (`safe` or `full`).
+`full` is an explicit opt-in: it uses `apt-get full-upgrade`, can install or
+remove packages, and requires a current helper plus the new `*-full` sudoers
+actions. Run **Setup / Update helpers** on the host after changing this mode.
 
 | Family | Examples | Check for updates | Apply updates | Reboot indicator | Current caveats |
 |---|---|---|---|---|---|
-| Debian | Debian, Ubuntu, Linux Mint | `apt-get update`, then `apt-get -s upgrade` | `apt-get update`, then `apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade` | `/var/run/reboot-required` | Held-back packages, new dependencies, removals, and distribution upgrades are not handled. Check refreshes the apt lists first. |
+| Debian | Debian, Ubuntu, Linux Mint | `apt-get update`, then `apt-get -s upgrade` | `apt-get update`, then `apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade` | `/var/run/reboot-required` | Safe mode holds back packages that need new dependencies or removals. Set the host's **APT upgrade mode** to `full` to use `full-upgrade`; review removals first. Check refreshes the apt lists first. |
 | Kali | Kali Linux | `apt-get update`, then `apt-get -s full-upgrade` | `apt-get update`, then `apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold full-upgrade` | `/var/run/reboot-required` | Rolling release. `full-upgrade` can install/remove packages or cross a release change. Canary-test and review the output. |
 | Fedora / RHEL | Fedora, RHEL, AlmaLinux, Rocky Linux, CentOS Stream | `dnf -q check-update` (exit 100 means updates) | `dnf -y --refresh upgrade` | `needs-restarting -r` (exit 1 means reboot) | `needs-restarting` may be absent (`dnf-plugins-core`/`dnf-utils`). Subscription/repo state is not checked. |
 | SUSE | openSUSE Leap, Tumbleweed, SLES | `zypper -q list-updates` | `zypper --non-interactive update` | `zypper needs-reboot` | No distribution upgrade (`dup`); SLES registration/modules are not checked. |
@@ -2953,7 +2962,8 @@ That authority must be narrow and auditable.
 - Use a dedicated account for HIBP where possible, not a personal admin account.
 - Prefer a root-owned helper installed on the target, invoked through a
   restricted sudoers rule. The helper accepts a small allowlist of actions
-  (`facts`, `preview`, `check`, `apply`, `cleanup-check`, `cleanup-apply`, `reboot`,
+  (`facts`, `facts-full`, `preview`, `preview-full`, `check`, `check-full`,
+  `apply`, `apply-full`, `cleanup-check`, `cleanup-apply`, `reboot`,
   `reboot-check`, `system-info`, `metrics`, `docker-list`,
   `docker-check <project>`, `docker-apply <project>`, `docker-update-all`,
   `install-package`) and validates its arguments.
@@ -2961,8 +2971,13 @@ That authority must be narrow and auditable.
 
   ```sudoers
   hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper facts
+  hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper facts-full
+  hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper preview
+  hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper preview-full
   hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper check
+  hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper check-full
   hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper apply
+  hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper apply-full
   hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper cleanup-check
   hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper cleanup-apply
   hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper reboot
@@ -3110,6 +3125,10 @@ Current status:
   `--trusted-proxy-cidrs` restricted to the proxy source. The backend listener
   remains plain HTTP and must be firewalled to the proxy. This does not
   implicitly trust arbitrary forwarded headers.
+- Per-host APT upgrade mode: `safe` (default) or `full`. Full mode uses
+  `apt-get full-upgrade` for facts, preview, check, and apply; it can install or
+  remove packages and requires the new `facts-full`/`preview-full`/`check-full`/
+  `apply-full` helper actions and sudoers entries.
 
 ### Implemented in v0.12.0
 
@@ -3215,7 +3234,8 @@ Current status:
   per target, has its own trusted host key, and is imported from concrete SSH
   config aliases or direct `[user@]host[:port]` specifications. Multi-hop jump
   chains are shown as unsupported rather than silently flattened.
-- Fixed helper actions (`facts`, `preview`, `check`, `apply`, `cleanup-check`,
+- Fixed helper actions (`facts`, `facts-full`, `preview`, `preview-full`,
+  `check`, `check-full`, `apply`, `apply-full`, `cleanup-check`,
   `cleanup-apply`, `reboot`, `reboot-check`, `system-info`, `metrics`,
   `docker-list`, `docker-check`, `docker-apply`, `docker-update-all`) with
   absolute binary paths, a sanitized environment, no shell, and output limits.
@@ -3458,7 +3478,7 @@ Current status:
 ## Data model
 
 The current schema is implemented in `internal/store/migrations/001_init.sql`
-through `014_drop_integrations.sql`. Domain objects use UUIDs, timestamps are
+through `015_apt_upgrade_mode.sql`. Domain objects use UUIDs, timestamps are
 UTC ISO 8601, and durations are stored in seconds.
 
 > **Implemented:** `schema_migrations`, `app_meta`, `hosts`, `host_facts`,
@@ -3480,7 +3500,7 @@ UTC ISO 8601, and durations are stored in seconds.
 | `users` | Local administrator account and MFA state. | `id`, `username`, `password_hash`, `totp_secret`, `totp_pending_secret`, `totp_enabled`, `totp_last_step`, `created_at`, `updated_at` |
 | `user_passkeys` | WebAuthn credential records. | `id`, `user_id`, `credential_id`, `credential_json`, `sign_count`, `name`, `created_at`, `last_used_at` |
 | `sessions` | Hashed browser sessions. | `id`, `user_id`, `token_hash`, `created_at`, `expires_at`, `last_seen_at`, `mfa_verified` |
-| `hosts` | Managed hosts and optional single-hop jump host. | `id`, `name`, `address`, `port`, `username`, `auth_type`, `key_path`, `proxy_jump_address`, `proxy_jump_port`, `proxy_jump_username`, `proxy_jump_key_path`, `proxy_jump_key_type`, `proxy_jump_key_fingerprint`, `os_family`, `os_version`, `status`, `tags`, `group_name`, `cmdb_ci_id`, `created_at`, `updated_at` |
+| `hosts` | Managed hosts and optional single-hop jump host. | `id`, `name`, `address`, `port`, `username`, `auth_type`, `key_path`, `proxy_jump_address`, `proxy_jump_port`, `proxy_jump_username`, `proxy_jump_key_path`, `proxy_jump_key_type`, `proxy_jump_key_fingerprint`, `os_family`, `os_version`, `status`, `tags`, `group_name`, `cmdb_ci_id`, `apt_upgrade_mode`, `created_at`, `updated_at` |
 | `host_facts` | Latest collected facts, orphan count, and installed helper build. | `host_id`, `collected_at`, `uptime_seconds`, `boot_time`, `kernel`, `os_pretty_name`, `package_manager`, `reboot_required`, `disk_free_bytes`, `time_sync_ok`, `pending_updates`, `orphaned_packages`, `cleanup_supported`, `agent_version`, `agent_build_number`, `agent_build_commit`, `agent_build_date`, `agent_build_target`, `agent_build_type` |
 | `host_system_info` | Latest read-only system snapshot. | `host_id`, `collected_at`, `payload_json` |
 | `host_metrics` | Metric history. | `host_id`, `collected_at`, `cpu_percent`, `memory_percent`, `swap_percent`, `disk_percent`, `load1`, `load5`, `load15`, `uptime_seconds` |
@@ -3743,7 +3763,7 @@ not accept passwords, private keys, or scripts.
 
 ### Schema migrations
 
-- Current schema version: **14** (`014_drop_integrations.sql`). The `v0.6.9`
+- Current schema version: **15** (`015_apt_upgrade_mode.sql`). The `v0.6.9`
   release used schema 9; `v0.6.6` used schema 8; `v0.6.2` used schema 7;
   `v0.5.1` used schema 6; `v0.5.0` and earlier used their respective earlier
   migrations.

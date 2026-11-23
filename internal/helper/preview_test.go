@@ -3,6 +3,7 @@ package helper
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -170,6 +171,66 @@ func TestPreviewUpdatesWiresAPTAction(t *testing.T) {
 	}
 	if result.Counts["upgrade"] != 1 || result.Counts["remove"] != 1 {
 		t.Fatalf("unexpected counts: %+v", result.Counts)
+	}
+}
+
+func TestPreviewUpdatesFullUsesFullUpgrade(t *testing.T) {
+	oldLook := SetLookPathForTest(func(name string) (string, error) {
+		if name == "apt-get" {
+			return "/usr/bin/apt-get", nil
+		}
+		return "", ErrNotFoundForTest
+	})
+	defer oldLook()
+	oldRunner := SetRunnerForTest(func(_ context.Context, name string, args ...string) ([]byte, int, error) {
+		if name != "/usr/bin/apt-get" {
+			t.Fatalf("unexpected command: %s", name)
+		}
+		if len(args) > 0 && args[0] == "update" {
+			return []byte("Reading package lists...\n"), 0, nil
+		}
+		if len(args) != 2 || args[0] != "-s" || args[1] != "full-upgrade" {
+			t.Fatalf("expected apt-get -s full-upgrade, got %v", args)
+		}
+		return []byte("Inst libc6 [2.35-0ubuntu3.8] (2.35-0ubuntu3.9 Ubuntu:24.04/noble [amd64])\nRemv oldpkg [0.9-1]\n"), 0, nil
+	})
+	defer oldRunner()
+	result := previewUpdatesWithMode(context.Background(), true)
+	if !result.OK || result.Action != "preview-full" || result.PackageManager != "apt" || len(result.Packages) != 2 {
+		t.Fatalf("unexpected full preview: %+v", result)
+	}
+	if aptUpgradeActionForMode(true) != "full-upgrade" {
+		t.Fatal("full mode did not select apt-get full-upgrade")
+	}
+}
+
+func TestFullUpgradeWiringForCheckAndApply(t *testing.T) {
+	oldLook := SetLookPathForTest(func(name string) (string, error) {
+		if name == "apt-get" {
+			return "/usr/bin/apt-get", nil
+		}
+		return "", ErrNotFoundForTest
+	})
+	defer oldLook()
+	var calls [][]string
+	oldRunner := SetRunnerForTest(func(_ context.Context, _ string, args ...string) ([]byte, int, error) {
+		calls = append(calls, append([]string(nil), args...))
+		return []byte("Inst curl [1.0] (1.1)\n"), 0, nil
+	})
+	defer oldRunner()
+
+	if _, _, err := checkUpdatesWithMode(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 || strings.Join(calls[1], " ") != "-s full-upgrade" {
+		t.Fatalf("unexpected check calls: %v", calls)
+	}
+	calls = nil
+	if _, _, err := applyUpdatesWithMode(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 || calls[1][0] != "-y" || calls[1][len(calls[1])-1] != "full-upgrade" {
+		t.Fatalf("unexpected apply calls: %v", calls)
 	}
 }
 

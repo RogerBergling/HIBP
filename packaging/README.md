@@ -195,9 +195,13 @@ The controller invokes only:
 
 ```text
 sudo -n /usr/local/libexec/hibp/hibp-helper facts
+sudo -n /usr/local/libexec/hibp/hibp-helper facts-full
 sudo -n /usr/local/libexec/hibp/hibp-helper preview
+sudo -n /usr/local/libexec/hibp/hibp-helper preview-full
 sudo -n /usr/local/libexec/hibp/hibp-helper check
+sudo -n /usr/local/libexec/hibp/hibp-helper check-full
 sudo -n /usr/local/libexec/hibp/hibp-helper apply
+sudo -n /usr/local/libexec/hibp/hibp-helper apply-full
 sudo -n /usr/local/libexec/hibp/hibp-helper cleanup-check
 sudo -n /usr/local/libexec/hibp/hibp-helper cleanup-apply
 sudo -n /usr/local/libexec/hibp/hibp-helper reboot

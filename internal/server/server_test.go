@@ -728,6 +728,46 @@ func TestUpdateHost(t *testing.T) {
 	}
 }
 
+func TestHostAPTUpgradeMode(t *testing.T) {
+	ts, _ := testServer(t)
+	body := `{"name":"apt01","address":"10.0.0.30","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519","apt_upgrade_mode":"full"}`
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/hosts", "test-token", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create failed: %d %s", resp.StatusCode, data)
+	}
+	var host store.Host
+	if err := json.NewDecoder(resp.Body).Decode(&host); err != nil {
+		t.Fatal(err)
+	}
+	if host.APTUpgradeMode != "full" {
+		t.Fatalf("expected full mode, got %q", host.APTUpgradeMode)
+	}
+
+	// A partial update that omits the mode must preserve it.
+	update := `{"name":"apt01","address":"10.0.0.30","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519"}`
+	resp = request(t, http.MethodPut, ts.URL+"/api/v1/hosts/"+host.ID, "test-token", update)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("update failed: %d", resp.StatusCode)
+	}
+	var updated store.Host
+	if err := json.NewDecoder(resp.Body).Decode(&updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.APTUpgradeMode != "full" {
+		t.Fatalf("expected full mode preserved, got %q", updated.APTUpgradeMode)
+	}
+
+	invalid := `{"name":"apt01","address":"10.0.0.30","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519","apt_upgrade_mode":"dangerous"}`
+	resp = request(t, http.MethodPut, ts.URL+"/api/v1/hosts/"+host.ID, "test-token", invalid)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected invalid mode to be rejected, got %d", resp.StatusCode)
+	}
+}
+
 func TestDeleteHostEndpoint(t *testing.T) {
 	ts, db := testServer(t)
 	body := `{"name":"web01","address":"10.0.0.10","port":22,"username":"ubuntu","auth_type":"key","key_path":"/home/ops/.ssh/id_ed25519"}`

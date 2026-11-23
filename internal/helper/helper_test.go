@@ -93,7 +93,7 @@ func TestAptCheckRefreshesListsBeforeSimulation(t *testing.T) {
 	})
 	defer restoreRun()
 
-	if _, _, err := checkCommand(context.Background(), "apt"); err != nil {
+	if _, _, err := checkCommand(context.Background(), "apt", false); err != nil {
 		t.Fatal(err)
 	}
 	if len(calls) != 2 {

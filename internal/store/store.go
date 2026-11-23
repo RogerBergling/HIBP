@@ -73,6 +73,7 @@ type Host struct {
 	Tags                 string     `json:"tags"`
 	GroupName            string     `json:"group_name"`
 	CMDBCIID             string     `json:"cmdb_ci_id"`
+	APTUpgradeMode       string     `json:"apt_upgrade_mode"`
 	CreatedAt            string     `json:"created_at"`
 	UpdatedAt            string     `json:"updated_at"`
 	DockerProjectCount   int        `json:"docker_project_count"`
@@ -601,6 +602,17 @@ func normalizeProxyJump(host *Host) {
 	}
 }
 
+func normalizeAPTUpgradeMode(mode string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "safe":
+		return "safe", nil
+	case "full":
+		return "full", nil
+	default:
+		return "", errors.New("apt_upgrade_mode must be safe or full")
+	}
+}
+
 func validateHost(host Host) error {
 	if strings.TrimSpace(host.Name) == "" {
 		return errors.New("host name is required")
@@ -668,6 +680,11 @@ func (s *Store) CreateHostAs(actor string, host Host) (Host, error) {
 	if host.Status == "" {
 		host.Status = "unknown"
 	}
+	mode, err := normalizeAPTUpgradeMode(host.APTUpgradeMode)
+	if err != nil {
+		return Host{}, err
+	}
+	host.APTUpgradeMode = mode
 	now := crypto.Now()
 	host.ID = uuid.NewString()
 	host.CreatedAt = now
@@ -680,11 +697,11 @@ func (s *Store) CreateHostAs(actor string, host Host) (Host, error) {
 	_, err = tx.Exec(`INSERT INTO hosts
 		(id,name,address,port,username,auth_type,key_path,
 		proxy_jump_address,proxy_jump_port,proxy_jump_username,proxy_jump_key_path,proxy_jump_key_type,proxy_jump_key_fingerprint,
-		os_family,os_version,status,tags,group_name,cmdb_ci_id,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		os_family,os_version,status,tags,group_name,cmdb_ci_id,apt_upgrade_mode,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		host.ID, host.Name, host.Address, host.Port, host.Username, host.AuthType, host.KeyPath,
 		proxyJumpAddress(host), proxyJumpPort(host), proxyJumpUsername(host), proxyJumpKeyPath(host), proxyJumpKeyType(host), proxyJumpFingerprint(host),
-		host.OSFamily, host.OSVersion, host.Status, host.Tags, host.GroupName, host.CMDBCIID,
+		host.OSFamily, host.OSVersion, host.Status, host.Tags, host.GroupName, host.CMDBCIID, host.APTUpgradeMode,
 		host.CreatedAt, host.UpdatedAt)
 	if err != nil {
 		_ = tx.Rollback()
@@ -721,6 +738,11 @@ func (s *Store) UpdateHostAs(actor string, host Host) (Host, error) {
 	if host.AuthType == "" {
 		host.AuthType = "key"
 	}
+	mode, err := normalizeAPTUpgradeMode(host.APTUpgradeMode)
+	if err != nil {
+		return Host{}, err
+	}
+	host.APTUpgradeMode = mode
 	host.UpdatedAt = crypto.Now()
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -728,10 +750,10 @@ func (s *Store) UpdateHostAs(actor string, host Host) (Host, error) {
 	}
 	result, err := tx.Exec(`UPDATE hosts SET name=?,address=?,port=?,username=?,auth_type=?,key_path=?,
 		proxy_jump_address=?,proxy_jump_port=?,proxy_jump_username=?,proxy_jump_key_path=?,proxy_jump_key_type=?,proxy_jump_key_fingerprint=?,
-		os_family=?,os_version=?,status=?,tags=?,group_name=?,cmdb_ci_id=?,updated_at=? WHERE id=?`,
+		os_family=?,os_version=?,status=?,tags=?,group_name=?,cmdb_ci_id=?,apt_upgrade_mode=?,updated_at=? WHERE id=?`,
 		host.Name, host.Address, host.Port, host.Username, host.AuthType, host.KeyPath,
 		proxyJumpAddress(host), proxyJumpPort(host), proxyJumpUsername(host), proxyJumpKeyPath(host), proxyJumpKeyType(host), proxyJumpFingerprint(host),
-		host.OSFamily, host.OSVersion, host.Status, host.Tags, host.GroupName, host.CMDBCIID,
+		host.OSFamily, host.OSVersion, host.Status, host.Tags, host.GroupName, host.CMDBCIID, host.APTUpgradeMode,
 		host.UpdatedAt, host.ID)
 	if err != nil {
 		_ = tx.Rollback()
@@ -825,7 +847,7 @@ func (s *Store) DeleteHostAs(actor, id string) error {
 func (s *Store) ListHosts() ([]Host, error) {
 	rows, err := s.db.Query(`SELECT h.id,h.name,h.address,h.port,h.username,h.auth_type,h.key_path,
 		h.proxy_jump_address,h.proxy_jump_port,h.proxy_jump_username,h.proxy_jump_key_path,h.proxy_jump_key_type,h.proxy_jump_key_fingerprint,
-		h.os_family,h.os_version,h.status,h.tags,h.group_name,h.cmdb_ci_id,h.created_at,h.updated_at,
+		h.os_family,h.os_version,h.status,h.tags,h.group_name,h.cmdb_ci_id,h.apt_upgrade_mode,h.created_at,h.updated_at,
 		f.collected_at,f.uptime_seconds,f.boot_time,f.kernel,f.os_pretty_name,f.package_manager,
 		f.reboot_required,f.disk_free_bytes,f.time_sync_ok,f.pending_updates,
 		f.orphaned_packages,f.cleanup_supported,
@@ -853,7 +875,7 @@ func (s *Store) ListHosts() ([]Host, error) {
 func (s *Store) FindHostByAddress(address string, port int) (Host, error) {
 	row := s.db.QueryRow(`SELECT h.id,h.name,h.address,h.port,h.username,h.auth_type,h.key_path,
 		h.proxy_jump_address,h.proxy_jump_port,h.proxy_jump_username,h.proxy_jump_key_path,h.proxy_jump_key_type,h.proxy_jump_key_fingerprint,
-		h.os_family,h.os_version,h.status,h.tags,h.group_name,h.cmdb_ci_id,h.created_at,h.updated_at,
+		h.os_family,h.os_version,h.status,h.tags,h.group_name,h.cmdb_ci_id,h.apt_upgrade_mode,h.created_at,h.updated_at,
 		f.collected_at,f.uptime_seconds,f.boot_time,f.kernel,f.os_pretty_name,f.package_manager,
 		f.reboot_required,f.disk_free_bytes,f.time_sync_ok,f.pending_updates,
 		f.orphaned_packages,f.cleanup_supported,
@@ -869,7 +891,7 @@ func (s *Store) FindHostByAddress(address string, port int) (Host, error) {
 func (s *Store) GetHost(id string) (Host, error) {
 	row := s.db.QueryRow(`SELECT h.id,h.name,h.address,h.port,h.username,h.auth_type,h.key_path,
 		h.proxy_jump_address,h.proxy_jump_port,h.proxy_jump_username,h.proxy_jump_key_path,h.proxy_jump_key_type,h.proxy_jump_key_fingerprint,
-		h.os_family,h.os_version,h.status,h.tags,h.group_name,h.cmdb_ci_id,h.created_at,h.updated_at,
+		h.os_family,h.os_version,h.status,h.tags,h.group_name,h.cmdb_ci_id,h.apt_upgrade_mode,h.created_at,h.updated_at,
 		f.collected_at,f.uptime_seconds,f.boot_time,f.kernel,f.os_pretty_name,f.package_manager,
 		f.reboot_required,f.disk_free_bytes,f.time_sync_ok,f.pending_updates,
 		f.orphaned_packages,f.cleanup_supported,
@@ -896,7 +918,7 @@ func scanHost(row scanner) (Host, error) {
 	var jumpPort int
 	err := row.Scan(&host.ID, &host.Name, &host.Address, &host.Port, &host.Username, &host.AuthType, &host.KeyPath,
 		&jumpAddress, &jumpPort, &jumpUsername, &jumpKeyPath, &jumpKeyType, &jumpFingerprint,
-		&host.OSFamily, &host.OSVersion, &host.Status, &host.Tags, &host.GroupName, &host.CMDBCIID, &host.CreatedAt, &host.UpdatedAt,
+		&host.OSFamily, &host.OSVersion, &host.Status, &host.Tags, &host.GroupName, &host.CMDBCIID, &host.APTUpgradeMode, &host.CreatedAt, &host.UpdatedAt,
 		&collectedAt, &uptime, &bootTime, &kernel, &pretty, &pkg, &reboot, &disk, &timeSync, &pending,
 		&orphaned, &cleanupSupported,
 		&agentVersion, &agentBuildNumber, &agentBuildCommit, &agentBuildDate, &agentBuildTarget, &agentBuildType,

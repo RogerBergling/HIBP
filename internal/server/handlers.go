@@ -43,13 +43,14 @@ type hostRequest struct {
 	Tags              string `json:"tags"`
 	GroupName         string `json:"group_name"`
 	CMDBCIID          string `json:"cmdb_ci_id"`
+	APTUpgradeMode    string `json:"apt_upgrade_mode"`
 }
 
 func (h hostRequest) host() store.Host {
 	host := store.Host{
 		Name: h.Name, Address: h.Address, Port: h.Port, Username: h.Username,
 		AuthType: h.AuthType, KeyPath: h.KeyPath, Tags: h.Tags,
-		GroupName: h.GroupName, CMDBCIID: h.CMDBCIID,
+		GroupName: h.GroupName, CMDBCIID: h.CMDBCIID, APTUpgradeMode: h.APTUpgradeMode,
 	}
 	if strings.TrimSpace(h.ProxyJumpAddress) != "" {
 		host.ProxyJump = &store.ProxyJump{
@@ -194,6 +195,9 @@ func (s *Server) handleUpdateHost(w http.ResponseWriter, r *http.Request) {
 	host.ID = existing.ID
 	host.CreatedAt = existing.CreatedAt
 	host.Status = existing.Status
+	if strings.TrimSpace(host.APTUpgradeMode) == "" {
+		host.APTUpgradeMode = existing.APTUpgradeMode
+	}
 	if host.OSFamily == "" {
 		host.OSFamily = existing.OSFamily
 	}
@@ -501,11 +505,20 @@ func (s *Server) runHelper(ctx context.Context, host store.Host, action, sshPass
 		return "", 0, errHostKeyUntrusted
 	}
 	helperAction := action
+	if host.APTUpgradeMode == "full" {
+		switch action {
+		case "facts", "preview", "check", "apply":
+			helperAction = action + "-full"
+		}
+	}
 	if len(args) == 1 {
 		helperAction += " " + args[0]
 	}
 	if s.demo != nil {
-		return s.demo.RunHelper(ctx, host, helperAction, "", timeout)
+		// Demo hosts use safe-upgrade simulation; the demo fixture does not
+		// install a real helper or depend on the new sudoers actions.
+		demoAction := strings.TrimSuffix(helperAction, "-full")
+		return s.demo.RunHelper(ctx, host, demoAction, "", timeout)
 	}
 	command := "sudo -n /usr/local/libexec/hibp/hibp-helper " + helperAction
 	input := ""

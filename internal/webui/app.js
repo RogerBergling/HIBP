@@ -2939,10 +2939,14 @@ function showPatchModalInteractive(host) {
   summary.append(
     row('Host', host.name),
     row('Package manager', facts.package_manager || 'unknown'),
+    row('APT upgrade mode', host.apt_upgrade_mode === 'full' ? 'full' : 'safe'),
     row('Pending updates', String(facts.pending_updates || 0)),
     row('Reboot required', facts.reboot_required ? 'yes' : 'no'),
   );
   body.append(summary);
+  if (host.apt_upgrade_mode === 'full') {
+    body.append(el('p', 'preview-warning', 'Full-upgrade mode can install new dependencies and remove packages. Review every removal before applying.'));
+  }
   const previewBox = el('div');
   previewBox.append(el('div', 'muted', 'Resolving package changes…'));
   body.append(previewBox);
@@ -3775,6 +3779,7 @@ function renderOverviewPanel(panel, data, host) {
       ['OS', facts.os_pretty_name],
       ['Kernel', facts.kernel],
       ['Package manager', facts.package_manager],
+      ['APT upgrade mode', host.apt_upgrade_mode || 'safe'],
       ['Helper build', buildCompact(facts.agent) || 'not reported'],
       ['Uptime', formatUptime(facts.uptime_seconds)],
     ]),
@@ -4621,6 +4626,13 @@ function showAddHostModal(host = null, prefill = null) {
   const authType = selectField(authRow, 'Auth type', 'auth_type', [['key', 'SSH key file'], ['password', 'Password (manual fallback)']]);
   const keyPath = keyPathField(authRow, source.key_path || '', source.identity_files || []);
   form.append(authRow);
+  const aptRow = el('div', 'form-row');
+  const aptMode = selectField(aptRow, 'APT upgrade mode', 'apt_upgrade_mode', [
+    ['safe', 'Safe upgrade — keeps held-back packages'],
+    ['full', 'Full upgrade — may install/remove dependencies'],
+  ]);
+  form.append(aptRow);
+  form.append(el('p', 'field-note', 'APT hosts only. Full upgrade uses apt-get full-upgrade and can install or remove packages. Review the patch preview before applying. Full mode requires an updated helper and sudoers rule on the target.'));
   const jump = source.proxy_jump || {};
   const jumpRow = el('div', 'form-row');
   const jumpAddress = inputField(jumpRow, 'Proxy jump host (optional)', 'proxy_jump_address', 'jump.example.com');
@@ -4646,6 +4658,7 @@ function showAddHostModal(host = null, prefill = null) {
   port.value = String(source.port || 22);
   username.value = source.username || source.user || '';
   authType.value = source.auth_type || 'key';
+  aptMode.value = source.apt_upgrade_mode || 'safe';
   jumpAddress.value = jump.address || '';
   jumpPort.value = String(jump.port || 22);
   jumpUsername.value = jump.username || jump.user || '';
@@ -4668,6 +4681,7 @@ function showAddHostModal(host = null, prefill = null) {
     const payload = {
       name: name.value.trim(), address: address.value.trim(), port: Number(port.value || 22),
       username: username.value.trim(), auth_type: authType.value, key_path: keyPath.value.trim(),
+      apt_upgrade_mode: aptMode.value,
       proxy_jump_address: jumpAddress.value.trim(), proxy_jump_port: Number(jumpPort.value || 22),
       proxy_jump_username: jumpUsername.value.trim(), proxy_jump_key_path: jumpKeyPath.value.trim(),
       group_name: group.value.trim(), tags: tags.value.trim(), cmdb_ci_id: cmdb.value.trim(),

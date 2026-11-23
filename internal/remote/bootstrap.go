@@ -205,9 +205,13 @@ func runSudo(ctx context.Context, target Target, expected *HostKey, command, sud
 func sudoersContent(username string) string {
 	return fmt.Sprintf(`# Managed by HIBP. This rule is limited to the fixed helper actions.
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper facts
+%s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper facts-full
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper preview
+%s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper preview-full
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper check
+%s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper check-full
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper apply
+%s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper apply-full
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper cleanup-check
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper cleanup-apply
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper reboot
@@ -219,7 +223,7 @@ func sudoersContent(username string) string {
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-apply *
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-update-all
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper install-package
-`, username, username, username, username, username, username, username, username, username, username, username, username, username, username, username)
+`, username, username, username, username, username, username, username, username, username, username, username, username, username, username, username, username, username, username, username)
 }
 
 func architectureMatches(uname string) bool {

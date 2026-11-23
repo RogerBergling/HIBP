@@ -33,9 +33,17 @@ type PreviewResult struct {
 }
 
 func previewUpdates(ctx context.Context) PreviewResult {
+	return previewUpdatesWithMode(ctx, false)
+}
+
+func previewUpdatesWithMode(ctx context.Context, fullUpgrade bool) PreviewResult {
 	packageManager := detectPackageManager()
+	action := "preview"
+	if fullUpgrade {
+		action = "preview-full"
+	}
 	result := PreviewResult{
-		Action:         "preview",
+		Action:         action,
 		PackageManager: packageManager,
 		Packages:       []PackageChange{},
 		Counts:         map[string]int{},
@@ -49,7 +57,7 @@ func previewUpdates(ctx context.Context) PreviewResult {
 	)
 	switch packageManager {
 	case "apt":
-		changes, output, code, warnings, err = previewApt(ctx)
+		changes, output, code, warnings, err = previewApt(ctx, fullUpgrade)
 	case "dnf":
 		changes, output, code, warnings, err = previewDNF(ctx)
 	case "zypper":
@@ -116,9 +124,9 @@ var (
 	aptRemvPattern = regexp.MustCompile(`^Remv\s+(\S+)(?:\s+\[([^\]]+)\])?`)
 )
 
-func previewApt(ctx context.Context) ([]PackageChange, string, int, []string, error) {
+func previewApt(ctx context.Context, fullUpgrade bool) ([]PackageChange, string, int, []string, error) {
 	updateOutput, _, _ := runBinary(ctx, "apt-get", "update")
-	output, code, err := runBinary(ctx, "apt-get", "-s", aptUpgradeAction())
+	output, code, err := runBinary(ctx, "apt-get", "-s", aptUpgradeActionForMode(fullUpgrade))
 	var combined strings.Builder
 	if len(updateOutput) > 0 {
 		combined.Write(updateOutput)

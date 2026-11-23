@@ -115,14 +115,28 @@ func Run(ctx context.Context, action string, out io.Writer, args ...string) erro
 			return err
 		}
 		return json.NewEncoder(out).Encode(facts)
+	case "facts-full":
+		facts, err := collectFactsWithMode(ctx, true)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(out).Encode(facts)
 	case "preview":
 		return json.NewEncoder(out).Encode(previewUpdates(ctx))
+	case "preview-full":
+		return json.NewEncoder(out).Encode(previewUpdatesWithMode(ctx, true))
 	case "check":
 		output, code, err := checkUpdates(ctx)
 		return writeResult(out, "check", output, code, err)
+	case "check-full":
+		output, code, err := checkUpdatesWithMode(ctx, true)
+		return writeResult(out, "check-full", output, code, err)
 	case "apply":
 		output, code, err := applyUpdates(ctx)
 		return writeResult(out, "apply", output, code, err)
+	case "apply-full":
+		output, code, err := applyUpdatesWithMode(ctx, true)
+		return writeResult(out, "apply-full", output, code, err)
 	case "cleanup-check":
 		result, err := cleanupCheck(ctx)
 		return writeCleanupResult(out, result, err)
@@ -227,6 +241,10 @@ func writeCleanupResult(out io.Writer, result CleanupResult, err error) error {
 }
 
 func collectFacts(ctx context.Context) (Facts, error) {
+	return collectFactsWithMode(ctx, false)
+}
+
+func collectFactsWithMode(ctx context.Context, fullUpgrade bool) (Facts, error) {
 	osInfo, err := readOSRelease("/etc/os-release")
 	if err != nil {
 		return Facts{}, err
@@ -247,7 +265,7 @@ func collectFacts(ctx context.Context) (Facts, error) {
 		TimeSyncOK:     timeSyncOK(ctx),
 		Agent:          buildinfo.Current,
 	}
-	facts.PendingUpdates = countPending(ctx, facts.PackageManager)
+	facts.PendingUpdates = countPending(ctx, facts.PackageManager, fullUpgrade)
 	facts.CleanupSupported = cleanupSupported(facts.PackageManager)
 	if facts.CleanupSupported {
 		facts.OrphanedPackages, _ = countOrphaned(ctx, facts.PackageManager)
@@ -331,8 +349,8 @@ func timeSyncOK(ctx context.Context) bool {
 	return strings.TrimSpace(string(output)) == "yes"
 }
 
-func countPending(ctx context.Context, packageManager string) int {
-	output, code, err := checkCommand(ctx, packageManager)
+func countPending(ctx context.Context, packageManager string, fullUpgrade bool) int {
+	output, code, err := checkCommand(ctx, packageManager, fullUpgrade)
 	if err != nil && code != 100 {
 		return 0
 	}
@@ -373,19 +391,23 @@ func countPackages(packageManager, output string) int {
 }
 
 func checkUpdates(ctx context.Context) (string, int, error) {
+	return checkUpdatesWithMode(ctx, false)
+}
+
+func checkUpdatesWithMode(ctx context.Context, fullUpgrade bool) (string, int, error) {
 	packageManager := detectPackageManager()
-	output, code, err := checkCommand(ctx, packageManager)
+	output, code, err := checkCommand(ctx, packageManager, fullUpgrade)
 	return string(output), code, err
 }
 
-func checkCommand(ctx context.Context, packageManager string) ([]byte, int, error) {
+func checkCommand(ctx context.Context, packageManager string, fullUpgrade bool) ([]byte, int, error) {
 	switch packageManager {
 	case "apt":
 		// Refresh package metadata before simulating. Kali and other rolling
 		// targets can have stale lists, which previously made a host with many
 		// available updates report zero.
 		updateOutput, _, _ := runBinary(ctx, "apt-get", "update")
-		output, code, err := runBinary(ctx, "apt-get", "-s", aptUpgradeAction())
+		output, code, err := runBinary(ctx, "apt-get", "-s", aptUpgradeActionForMode(fullUpgrade))
 		if len(updateOutput) > 0 {
 			if updateOutput[len(updateOutput)-1] != '\n' {
 				updateOutput = append(updateOutput, '\n')
@@ -411,6 +433,13 @@ func checkCommand(ctx context.Context, packageManager string) ([]byte, int, erro
 // commonly holds back packages that need dependency changes, which made the
 // pending count look like zero even when many updates were available.
 func aptUpgradeAction() string {
+	return aptUpgradeActionForMode(false)
+}
+
+func aptUpgradeActionForMode(fullUpgrade bool) string {
+	if fullUpgrade {
+		return "full-upgrade"
+	}
 	info, err := readOSRelease("/etc/os-release")
 	if err != nil {
 		return "upgrade"
@@ -428,6 +457,10 @@ func aptUpgradeActionFor(id, like string) string {
 }
 
 func applyUpdates(ctx context.Context) (string, int, error) {
+	return applyUpdatesWithMode(ctx, false)
+}
+
+func applyUpdatesWithMode(ctx context.Context, fullUpgrade bool) (string, int, error) {
 	packageManager := detectPackageManager()
 	var all bytes.Buffer
 	switch packageManager {
@@ -440,7 +473,7 @@ func applyUpdates(ctx context.Context) (string, int, error) {
 		output, code, err = runBinary(ctx, "apt-get", "-y",
 			"-o", "Dpkg::Options::=--force-confdef",
 			"-o", "Dpkg::Options::=--force-confold",
-			aptUpgradeAction())
+			aptUpgradeActionForMode(fullUpgrade))
 		all.Write(output)
 		return all.String(), code, err
 	case "dnf":
