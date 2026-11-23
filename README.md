@@ -226,6 +226,9 @@ End users should not need Go or a compiler.
 
 3. Docker option (the image is published as `ghcr.io/rogerbergling/hibp`):
 
+   `:latest` and release tags come from release tags; `:edge` is the current
+   `main` build and is not a production pin.
+
    ```bash
    docker pull ghcr.io/rogerbergling/hibp:latest
    mkdir -p /var/lib/hibp

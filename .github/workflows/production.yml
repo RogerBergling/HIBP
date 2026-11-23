@@ -1,0 +1,107 @@
+name: Production image
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare image metadata
+        id: meta
+        shell: bash
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/hibp"
+          version="$(git describe --tags --always | sed 's/^v//')"
+          if [[ "${GITHUB_REF}" == refs/heads/main ]]; then
+            tags="${image}:edge"
+            tags="${tags}"$'\n'"${image}:sha-${GITHUB_SHA::12}"
+            push=true
+            build_type=edge
+          else
+            tags="${image}:pr-${GITHUB_SHA::12}"
+            push=false
+            build_type=ci
+          fi
+          {
+            echo "version=${version}"
+            echo "push=${push}"
+            echo "build_type=${build_type}"
+            echo "tags<<EOF"
+            echo "${tags}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        if: steps.meta.outputs.push == 'true'
+        run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build production image
+        shell: bash
+        run: |
+          args=()
+          while IFS= read -r tag; do
+            [[ -z "${tag}" ]] && continue
+            args+=("-t" "${tag}")
+          done <<< "${{ steps.meta.outputs.tags }}"
+          docker build \
+            --build-arg VERSION="${{ steps.meta.outputs.version }}" \
+            --build-arg BUILD_NUMBER="${GITHUB_RUN_NUMBER}" \
+            --build-arg BUILD_COMMIT="${GITHUB_SHA:0:12}" \
+            --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --build-arg BUILD_TARGET="linux/amd64" \
+            --build-arg BUILD_TYPE="${{ steps.meta.outputs.build_type }}" \
+            "${args[@]}" \
+            -f packaging/Dockerfile .
+
+      - name: Smoke test production image
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          trap 'docker logs hibp-ci 2>&1 || true; docker rm -f hibp-ci >/dev/null 2>&1 || true; sudo rm -rf "${work}"' EXIT
+          printf 'production-smoke-passphrase\n' | sudo tee "${work}/passphrase" >/dev/null
+          sudo chown 65532:65532 "${work}/passphrase"
+          sudo chmod 0400 "${work}/passphrase"
+          sudo mkdir -p "${work}/data"
+          sudo chown 65532:65532 "${work}/data"
+          docker run --rm -d --name hibp-ci --network host \
+            -v "${work}/data:/var/lib/hibp" \
+            -v "${work}/passphrase:/etc/hibp/db.passphrase:ro" \
+            "$(head -n1 <<< "${{ steps.meta.outputs.tags }}")" \
+            server --db /var/lib/hibp/hibp.db --create \
+              --listen 127.0.0.1:18443 \
+              --passphrase-file /etc/hibp/db.passphrase
+          ready=false
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:18443/healthz >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [[ "${ready}" != true ]]; then
+            echo "production container did not become healthy" >&2
+            docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}}' hibp-ci >&2 || true
+            exit 1
+          fi
+          curl -fsS http://127.0.0.1:18443/healthz
+          curl -fsS http://127.0.0.1:18443/api/v1/auth/status | grep -q '"setup_required":true'
+          docker stop hibp-ci
+
+      - name: Push production image
+        if: steps.meta.outputs.push == 'true'
+        shell: bash
+        run: |
+          while IFS= read -r tag; do
+            [[ -z "${tag}" ]] && continue
+            docker push "${tag}"
+          done <<< "${{ steps.meta.outputs.tags }}"

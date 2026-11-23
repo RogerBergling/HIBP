@@ -53,7 +53,10 @@ RUN CGO_ENABLED=1 \
        CGO_LDFLAGS="-L/opt/sqlcipher/usr/local/lib -lsqlcipher -lssl -lcrypto -lz -lzstd -lm -lpthread -ldl" \
        go test -tags "sqlcipher_mattn libsqlcipher netgo osusergo sqlite_omit_load_extension" ./...
 
-RUN mkdir -p /out \
+RUN mkdir -p /out /out/var/lib/hibp /out/tmp \
+    && touch /out/tmp/.keep \
+    && chmod 1777 /out/tmp \
+    && chown -R 65532:65532 /out/var/lib/hibp /out/tmp \
     && CGO_ENABLED=1 \
        CGO_CFLAGS="-I/opt/sqlcipher/usr/local/include" \
        CGO_LDFLAGS="-L/opt/sqlcipher/usr/local/lib -lsqlcipher -lssl -lcrypto -lz -lzstd -lm -lpthread -ldl" \
@@ -68,6 +71,12 @@ RUN mkdir -p /out \
 FROM scratch
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/hibp /hibp
+# The image must be usable with plain `docker run`, not only under Compose.
+# /tmp is required when multipart package uploads exceed the in-memory limit;
+# /var/lib/hibp gives the default CMD a writable database directory.
+COPY --chown=65532:65532 --from=build /out/var /var
+COPY --chown=65532:65532 --from=build /out/tmp /tmp
 USER 65532:65532
+EXPOSE 8443
 ENTRYPOINT ["/hibp"]
 CMD ["server", "--db", "/var/lib/hibp/hibp.db", "--listen", "127.0.0.1:8443"]
