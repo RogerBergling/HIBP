@@ -192,7 +192,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid username or password")
 		return
 	}
-	ipKey := "ip:" + clientIP(r)
+	ipKey := "ip:" + s.clientIP(r)
 	userKey := "user:" + strings.ToLower(username)
 	if s.demo == nil && (!s.loginIPLimiter.allow(ipKey) || !s.loginUserLimiter.allow(userKey)) {
 		w.Header().Set("Retry-After", "900")

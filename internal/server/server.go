@@ -44,8 +44,12 @@ type Config struct {
 	// It is intended for a demo on a trusted LAN, never for the internet.
 	AllowInsecureHTTP bool
 	// TrustProxy trusts X-Forwarded-Proto for Origin and cookie decisions. It
-	// is intended only for the demo behind a TLS-terminating proxy.
+	// must be paired with a public HTTPS URL and trusted proxy CIDRs.
 	TrustProxy bool
+	// TrustedProxyCIDRs are the source ranges allowed to set forwarded headers.
+	// Empty means loopback-only for production; the demo keeps its permissive
+	// behavior when empty.
+	TrustedProxyCIDRs []string
 }
 
 // Server is the HIBP HTTP server.
@@ -81,6 +85,7 @@ type Server struct {
 	sessionCookie     string
 	appTheme          string
 	trustProxy        bool
+	trustedProxyNets  []*net.IPNet
 	demo              demoHooks
 	mux               *http.ServeMux
 }
@@ -146,6 +151,13 @@ func New(cfg Config) (*Server, error) {
 			webAuthnOrigin = publicOrigin(publicURL)
 		}
 	}
+	trustedProxyNets, err := parseTrustedProxyCIDRs(cfg.TrustedProxyCIDRs)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.TrustProxy && len(trustedProxyNets) == 0 && !cfg.Demo {
+		trustedProxyNets = loopbackProxyCIDRs()
+	}
 	sessionCookie := sessionCookieName
 	if cfg.Demo {
 		// Keep the demo session separate from a production controller or another
@@ -174,7 +186,8 @@ func New(cfg Config) (*Server, error) {
 		webAuthnRPID:      webAuthnRPID,
 		webAuthnOrigin:    webAuthnOrigin,
 		sessionCookie:     sessionCookie,
-		trustProxy:        cfg.TrustProxy && cfg.Demo,
+		trustProxy:        cfg.TrustProxy,
+		trustedProxyNets:  trustedProxyNets,
 		mux:               http.NewServeMux(),
 	}
 	if cfg.Demo {
@@ -358,7 +371,7 @@ func (s *Server) hostAllowed(hostname string) bool {
 }
 
 func (s *Server) requestScheme(r *http.Request) string {
-	if s.trustProxy {
+	if s.proxyAllowed(r.RemoteAddr) {
 		switch strings.ToLower(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))) {
 		case "http", "https":
 			return strings.ToLower(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")))

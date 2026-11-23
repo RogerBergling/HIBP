@@ -389,6 +389,19 @@ HIBP_PASSPHRASE_FILE=./secrets/db.passphrase
 an unreleased build; after validating the migration, switch to a pinned release
 or image digest.
 
+If HAProxy or another TLS terminator is in front, add the explicit proxy
+settings instead of built-in TLS:
+
+```dotenv
+HIBP_PUBLIC_URL=https://hibp.example.com
+HIBP_LISTEN=0.0.0.0:8017
+HIBP_TRUST_PROXY=true
+HIBP_TRUSTED_PROXY_CIDRS=10.20.0.10/32
+```
+
+The proxy must preserve `Host` and set `X-Forwarded-Proto: https`. Use the
+proxy's exact source address or private subnet; never use `0.0.0.0/0`.
+
 Start the controller **without** `--create`:
 
 ```bash
@@ -431,7 +444,9 @@ Set **Settings → Backup directory** to `/var/lib/hibp/backups`; that is
 - `.env.production` holds only paths and non-secret settings.
 - Do not place `data/` on NFS/SMB.
 - Do not expose `127.0.0.1:8443` directly to the internet; use an SSH tunnel or
-  VPN. Production HIBP does not support reverse-proxy mode.
+  VPN. If a TLS-terminating proxy is required, use explicit
+  `--trust-proxy`/`HIBP_TRUST_PROXY` with a `--trusted-proxy-cidrs` allowlist and
+  a firewall that permits only the proxy.
 - Keep the local database and backup until the container has been verified.
 
 ## Install prerequisites
@@ -722,10 +737,12 @@ Server flags:
 | Flag | Default | Notes |
 | --- | --- | --- |
 | `-db` | `$XDG_DATA_HOME/hibp/hibp.db` or `~/.local/share/hibp/hibp.db` | Database file. The `.meta` sidecar is created next to it. |
-| `-listen` | `127.0.0.1:8443` | Loopback by default. A non-loopback address is refused unless `-tls-cert`, `-tls-key`, and `-public-url` are set. |
+| `-listen` | `127.0.0.1:8443` | Loopback by default. A non-loopback address is refused unless built-in TLS is configured or `-trust-proxy` is explicitly enabled with a proxy CIDR allowlist. |
 | `-tls-cert` | none | PEM certificate for LAN HTTPS mode. The certificate SAN must match the `-public-url` hostname. |
 | `-tls-key` | none | PEM private key for LAN HTTPS mode. Must be readable by the service account and not group/world-readable. |
 | `-public-url` | none | Public HTTPS URL for LAN mode, for example `https://hibp.lan:8443`. Defines the allowed Host header and the WebAuthn origin. Required for a non-loopback listener. |
+| `-trust-proxy` | off | Trust `X-Forwarded-Proto` from a TLS-terminating proxy. Requires `-public-url` and a non-empty proxy CIDR list for a non-loopback listener. |
+| `-trusted-proxy-cidrs` | loopback for `-trust-proxy` | Comma-separated CIDRs allowed to set forwarded headers. Never use `0.0.0.0/0` on an exposed listener. |
 | `-create` | off | One-time database creation. Fails if the database or sidecar already exists. |
 | `-passphrase-file` | prompt | Must be group/world-inaccessible. Omit it to prompt on the terminal. |
 | `-key-dir` | `~/.ssh` | Comma-separated SSH key browser roots. The API can still reference any absolute path the service account can read. |
@@ -1077,8 +1094,9 @@ gate, not as a suggestion.
   controller OS you deploy.
 - Keep the browser UI on loopback and reach it through an SSH tunnel by default.
   The optional LAN HTTPS mode binds to a private address and requires TLS plus an
-  explicit public URL. There is no supported reverse-proxy mode. Do not publish
-  HIBP to the internet or port-forward it on your router. See
+  explicit public URL. A TLS-terminating proxy is supported only with explicit
+  `--trust-proxy`, a public HTTPS URL, and a trusted proxy CIDR allowlist. Do not
+  publish HIBP to the internet or port-forward it on your router. See
   [Server deployment and local migration](docs/server-deployment.md) for the
   full migration, systemd, reboot, and LAN certificate steps.
 - HIBP is single-operator in this release. There is no RBAC, approval workflow,
@@ -1377,8 +1395,9 @@ after creating the database; do not leave a fresh database running unattended.
 - The UI binds to loopback by default and accepts loopback Host headers.
   LAN HTTPS mode requires `--listen`, `--public-url`, `--tls-cert`, and
   `--tls-key`; it accepts only the configured public hostname plus loopback and
-  uses TLS. A reverse proxy is still not supported and would also need Host and
-  WebAuthn-origin changes.
+  uses TLS. The explicit `--trust-proxy` mode is the only supported reverse-proxy
+  path; it requires a public HTTPS URL and source CIDRs for the proxy, and it
+  uses `X-Forwarded-Proto` for the Origin, cookie, and WebAuthn decisions.
 
 ### TOTP
 
@@ -2593,9 +2612,9 @@ Additional distribution rules:
 ## Recommended architecture
 
 > The current release is a loopback-first server with optional LAN HTTPS,
-> helper actions, a durable manual-job queue, and a single-process cron
-> scheduler. Client mode, a Unix-socket listener, and reverse-proxy support are
-> design targets, not implemented features.
+> explicit trusted-proxy support, helper actions, a durable manual-job queue,
+> and a single-process cron scheduler. Client mode and a Unix-socket listener
+> are design targets, not implemented features.
 
 ### Deployment model
 
@@ -3084,6 +3103,14 @@ Current status:
   remote-code-execution feature.
 - Consider reproducible builds for the server and agent binaries.
 
+### Implemented in current main
+
+- Explicit trusted-proxy mode for an existing TLS terminator:
+  `--trust-proxy`, a public HTTPS `--public-url`, and
+  `--trusted-proxy-cidrs` restricted to the proxy source. The backend listener
+  remains plain HTTP and must be firewalled to the proxy. This does not
+  implicitly trust arbitrary forwarded headers.
+
 ### Implemented in v0.12.0
 
 - Optional LAN HTTPS mode. A non-loopback listener requires `--tls-cert`,
@@ -3347,10 +3374,11 @@ Current status:
 - The host CSV export endpoint is authenticated but is not exposed in the UI
   and does not write an audit entry. If you use it for evidence handling, add an
   external audit step.
-- The UI has built-in TLS for LAN mode but no supported reverse-proxy mode.
-  Keep it on loopback by default; use LAN HTTPS only on a trusted private network.
-  There is no Unix-socket listener, request access log, Prometheus endpoint, or
-  built-in controller self-monitoring.
+- The UI has built-in TLS for LAN mode and explicit trusted-proxy support for a
+  TLS-terminating proxy. Keep it on loopback by default; use LAN HTTPS or a
+  proxy only on a trusted private network with a source CIDR allowlist. There is
+  no Unix-socket listener, request access log, Prometheus endpoint, or built-in
+  controller self-monitoring.
 - Release archives are checksummed but not signed. The installer obtains
   `SHA256SUMS` from the same GitHub release, so it provides integrity checking
   but not independent publisher authentication. The Docker build uses a mutable
@@ -4118,9 +4146,9 @@ These are settled unless you explicitly change them:
   exact controller OS you deploy.
 - **UI:** browser-based. The server embeds the HTML/CSS/JS and serves it on
   loopback (`127.0.0.1`/`localhost`) by default, with optional built-in TLS on a
-  private LAN address. The laptop uses a browser through an SSH tunnel or LAN
-  HTTPS. There is no Unix-socket listener or supported reverse-proxy mode in
-  this release. No GTK/WebKit dependency.
+  private LAN address or an explicit trusted TLS proxy. The laptop uses a
+  browser through an SSH tunnel, LAN HTTPS, or the proxy. There is no
+  Unix-socket listener. No GTK/WebKit dependency.
 - **Stack:** Go. The development build uses the 2020 `mutecomm/go-sqlcipher`
   driver and prints a warning. The production SQLCipher driver is a locally
   patched, maintained `mattn/go-sqlite3` linked against current SQLCipher built

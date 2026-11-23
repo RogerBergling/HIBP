@@ -139,10 +139,11 @@ It adds:
 --tls-key /etc/hibp/tls.key
 ```
 
-A non-loopback listener is refused unless TLS and a public URL are configured.
-The public URL must use the exact scheme, host, and port that users open. It
-defines the Host-header allowlist and the WebAuthn origin. The certificate SAN
-must match the hostname.
+A non-loopback listener is refused unless TLS and a public URL are configured,
+or explicit trusted-proxy mode is enabled with a proxy CIDR allowlist. The
+public URL must use the exact scheme, host, and port that users open. It defines
+the Host-header allowlist and the WebAuthn origin. The certificate SAN must
+match the hostname.
 
 Create the certificate with an internal CA, `mkcert`, or OpenSSL. For example:
 

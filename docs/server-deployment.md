@@ -28,15 +28,17 @@ It applies to HIBP v0.11.0 and later.
 
 ## Choose an access model
 
-HIBP supports two access models:
+HIBP supports three access models:
 
 | Model | Use when | Requirements |
 | --- | --- | --- |
 | Loopback + SSH tunnel | Default. The server is remote, internet-facing, or you do not want a LAN listener. | SSH access to the server. Nothing else is exposed. |
 | LAN HTTPS | The server is on a trusted private network and operators need browser access without an SSH tunnel. | A DNS name, a TLS certificate trusted by the clients, a firewall rule limited to the LAN, and `--listen`, `--public-url`, `--tls-cert`, and `--tls-key`. |
+| Trusted TLS proxy | An existing HAProxy/Nginx already terminates TLS and cannot be moved. | An explicit `--trust-proxy`, `--public-url https://...`, a proxy source CIDR allowlist, and a firewall rule that only the proxy can reach the backend listener. |
 
-Both models keep the same application behavior. HIBP is still a single-operator
-controller. There is no RBAC, WAF, or supported reverse-proxy mode.
+All models keep the same application behavior. HIBP is still a single-operator
+controller. There is no RBAC or WAF. A reverse proxy is supported only through
+the explicit trusted-proxy mode below; it is never enabled implicitly.
 
 LAN HTTPS mode binds one listener and replaces the default loopback listener.
 If you need local-only access as well, open the LAN URL from the server or keep
@@ -381,12 +383,14 @@ internet or port-forward it on your router.
 - A firewall rule that allows TCP `8443` only from the LAN subnet.
 
 The `--public-url` value must use the exact scheme, host, and port that users
-will open. It must not contain a path, query, fragment, or credentials. The
-port must match `--listen`.
+will open. It must not contain a path, query, fragment, or credentials. In
+built-in TLS mode the public port must match `--listen`; in trusted-proxy mode
+the external port may differ from the backend listener.
 
 ### How LAN mode is protected
 
-- A non-loopback listener is refused unless TLS is configured.
+- A non-loopback listener is refused unless TLS is configured or the listener
+  is explicitly placed behind a trusted proxy.
 - TLS 1.2 is the minimum.
 - The Host header allowlist contains the `--public-url` hostname plus
   `localhost`, `127.0.0.1`, and `::1`.
@@ -395,9 +399,72 @@ port must match `--listen`.
 - `--public-url` also defines the WebAuthn relying-party ID and origin.
 - An IP-address public URL disables passkeys; use TOTP or a DNS name.
 
-Reverse-proxy mode is still not supported. If you already have a reverse proxy,
-keep HIBP on loopback and use an SSH tunnel or VPN instead of putting the proxy
-in front of HIBP.
+### Trusted TLS proxy
+
+Use this only when a TLS-terminating proxy is already in front of HIBP and the
+proxy cannot be replaced by HIBP's built-in TLS listener.
+
+The controller accepts a plaintext backend listener only when all of these are
+true:
+
+- `--trust-proxy` is set explicitly;
+- `--public-url` is the exact external `https://` origin;
+- `--trusted-proxy-cidrs` lists the proxy source address or private subnet;
+- the backend port is reachable only from the proxy, enforced by a firewall or
+  container network policy.
+
+Example when HAProxy runs on the same host:
+
+```bash
+hibp server \
+  --db /var/lib/hibp/hibp.db \
+  --listen 127.0.0.1:8017 \
+  --public-url https://hibp.example.com \
+  --trust-proxy \
+  --trusted-proxy-cidrs 127.0.0.1/32 \
+  --passphrase-file /etc/hibp/db.passphrase
+```
+
+Example when HAProxy is on another host or container network:
+
+```bash
+hibp server \
+  --db /var/lib/hibp/hibp.db \
+  --listen 0.0.0.0:8017 \
+  --public-url https://hibp.example.com \
+  --trust-proxy \
+  --trusted-proxy-cidrs 10.20.0.10/32 \
+  --passphrase-file /etc/hibp/db.passphrase
+```
+
+The proxy must:
+
+- terminate TLS with a certificate matching `--public-url`;
+- preserve the original `Host` header;
+- set `X-Forwarded-Proto: https`;
+- be the only source allowed to reach the backend listener.
+
+HAProxy example:
+
+```haproxy
+backend hibp
+    mode http
+    server hibp 127.0.0.1:8017 check
+
+frontend hibp_https
+    bind *:443 ssl crt /etc/haproxy/certs/hibp.example.com.pem
+    http-request set-header X-Forwarded-Proto https
+    default_backend hibp
+```
+
+Do not use `0.0.0.0/0` as the trusted proxy CIDR. Do not point the proxy at the
+controller if the controller port is reachable by arbitrary clients; forwarded
+headers can otherwise be spoofed. Use the proxy's exact address or a dedicated
+private subnet.
+
+The controller uses `X-Forwarded-Proto` for the Origin check, Secure cookie
+decision, and WebAuthn origin. Passkeys work through the proxy only when the
+proxy passes the external HTTPS scheme correctly.
 
 ### Create a certificate with mkcert
 
@@ -688,7 +755,9 @@ processes against the same database.
   unencrypted backup.
 - Run as the unprivileged `hibp` user.
 - Keep SSH keys at `0600`, outside `/home` when using the packaged unit.
-- Use TLS for LAN mode; never bind a non-loopback address over plain HTTP.
+- Use TLS for LAN mode. A plain-HTTP backend is allowed only with explicit
+  `--trust-proxy` and a proxy source CIDR allowlist, with the backend port
+  firewalled to the proxy.
 - Restrict the LAN port to the LAN subnet with a firewall.
 - Do not port-forward HIBP or expose it to the internet.
 - Use NTP on the controller and targets.

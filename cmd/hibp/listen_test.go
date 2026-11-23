@@ -17,14 +17,16 @@ import (
 func TestValidateServerListen(t *testing.T) {
 	cert, key := testTLSKeyPair(t)
 	tests := []struct {
-		name      string
-		listen    string
-		cert      string
-		key       string
-		publicURL string
-		wantTLS   bool
-		wantURL   string
-		wantErr   bool
+		name         string
+		listen       string
+		cert         string
+		key          string
+		publicURL    string
+		trustProxy   bool
+		trustedCIDRs string
+		wantTLS      bool
+		wantURL      string
+		wantErr      bool
 	}{
 		{name: "default loopback", listen: "127.0.0.1:8443"},
 		{name: "localhost loopback", listen: "localhost:8443"},
@@ -45,10 +47,18 @@ func TestValidateServerListen(t *testing.T) {
 		{name: "credentials in public URL", listen: "192.168.1.10:8443", cert: cert, key: key, publicURL: "https://user@hibp.lan:8443", wantErr: true},
 		{name: "default HTTPS port", listen: "192.168.1.10:443", cert: cert, key: key, publicURL: "https://hibp.lan", wantTLS: true, wantURL: "https://hibp.lan"},
 		{name: "explicit default HTTPS port", listen: "192.168.1.10:443", cert: cert, key: key, publicURL: "https://hibp.lan:443", wantTLS: true, wantURL: "https://hibp.lan"},
+
+		{name: "proxy loopback listener", listen: "127.0.0.1:8443", publicURL: "https://hibp.lan", trustProxy: true, wantURL: "https://hibp.lan"},
+		{name: "proxy non-loopback without CIDRs", listen: "0.0.0.0:8017", publicURL: "https://hibp.lan", trustProxy: true, wantErr: true},
+		{name: "proxy non-loopback with CIDR", listen: "0.0.0.0:8017", publicURL: "https://hibp.lan", trustProxy: true, trustedCIDRs: "127.0.0.1/32", wantURL: "https://hibp.lan"},
+		{name: "proxy public port differs", listen: "0.0.0.0:8017", publicURL: "https://hibp.lan:8443", trustProxy: true, trustedCIDRs: "10.0.0.0/8", wantURL: "https://hibp.lan:8443"},
+		{name: "proxy with TLS", listen: "192.168.1.10:8443", cert: cert, key: key, publicURL: "https://hibp.lan", trustProxy: true, wantErr: true},
+		{name: "proxy needs https public URL", listen: "127.0.0.1:8443", publicURL: "http://hibp.lan", trustProxy: true, wantErr: true},
+		{name: "proxy invalid CIDR", listen: "0.0.0.0:8017", publicURL: "https://hibp.lan", trustProxy: true, trustedCIDRs: "not-a-cidr", wantErr: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := validateServerListen(test.listen, test.cert, test.key, test.publicURL)
+			got, err := validateServerListen(test.listen, test.cert, test.key, test.publicURL, test.trustProxy, test.trustedCIDRs)
 			if test.wantErr {
 				if err == nil {
 					t.Fatalf("expected an error, got %+v", got)
@@ -58,8 +68,8 @@ func TestValidateServerListen(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.TLS != test.wantTLS || got.PublicURL != test.wantURL {
-				t.Fatalf("got %+v, want TLS=%v URL=%q", got, test.wantTLS, test.wantURL)
+			if got.TLS != test.wantTLS || got.PublicURL != test.wantURL || got.TrustProxy != test.trustProxy {
+				t.Fatalf("got %+v, want TLS=%v proxy=%v URL=%q", got, test.wantTLS, test.trustProxy, test.wantURL)
 			}
 		})
 	}

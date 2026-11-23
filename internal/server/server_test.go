@@ -460,10 +460,35 @@ func TestSessionCookieSecureFollowsRequestScheme(t *testing.T) {
 	httpsReq := httptest.NewRequest(http.MethodPost, "https://demo.lan:8011/api/v1/auth/login", nil)
 	httpsReq.TLS = &tls.ConnectionState{}
 	check("direct HTTPS", httpsReq, true)
+	proxyNets, err := parseTrustedProxyCIDRs([]string{"192.0.2.0/24"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	app.trustProxy = true
+	app.trustedProxyNets = proxyNets
 	proxyReq := httptest.NewRequest(http.MethodPost, "http://demo.lan:8011/api/v1/auth/login", nil)
 	proxyReq.Header.Set("X-Forwarded-Proto", "https")
 	check("HTTPS proxy", proxyReq, true)
+}
+
+func TestTrustedProxyOnlyFromCIDR(t *testing.T) {
+	nets, err := parseTrustedProxyCIDRs([]string{"127.0.0.1/32"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &Server{trustProxy: true, trustedProxyNets: nets}
+	trusted := httptest.NewRequest(http.MethodGet, "http://hibp.example/api/v1/status", nil)
+	trusted.RemoteAddr = "127.0.0.1:43210"
+	trusted.Header.Set("X-Forwarded-Proto", "https")
+	if got := app.requestScheme(trusted); got != "https" {
+		t.Fatalf("trusted proxy scheme: got %q", got)
+	}
+	untrusted := httptest.NewRequest(http.MethodGet, "http://hibp.example/api/v1/status", nil)
+	untrusted.RemoteAddr = "192.0.2.25:43210"
+	untrusted.Header.Set("X-Forwarded-Proto", "https")
+	if got := app.requestScheme(untrusted); got != "http" {
+		t.Fatalf("untrusted proxy scheme: got %q", got)
+	}
 }
 
 func TestWebAuthnConfigForPublicHost(t *testing.T) {
@@ -486,6 +511,21 @@ func TestWebAuthnConfigForPublicHost(t *testing.T) {
 	rpID, origin, err = app.webAuthnConfig(request)
 	if err != nil || rpID != "localhost" || origin != "https://localhost:8443" {
 		t.Fatalf("unexpected localhost WebAuthn config: rpID=%q origin=%q err=%v", rpID, origin, err)
+	}
+
+	nets, err := parseTrustedProxyCIDRs([]string{"127.0.0.1/32"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.trustProxy = true
+	app.trustedProxyNets = nets
+	proxyRequest := httptest.NewRequest(http.MethodPost, "http://hibp.lan:8443/api/v1/auth/passkey/register/begin", nil)
+	proxyRequest.Host = "hibp.lan:8443"
+	proxyRequest.RemoteAddr = "127.0.0.1:43210"
+	proxyRequest.Header.Set("X-Forwarded-Proto", "https")
+	rpID, origin, err = app.webAuthnConfig(proxyRequest)
+	if err != nil || rpID != "hibp.lan" || origin != "https://hibp.lan:8443" {
+		t.Fatalf("unexpected proxied WebAuthn config: rpID=%q origin=%q err=%v", rpID, origin, err)
 	}
 }
 

@@ -118,11 +118,13 @@ Out of scope:
   verify the rebooted host. Per-host output in run history is capped at 16 KiB.
 - Fleet monitors can emit one email per host; there is no aggregation or global
   rate limit. Audit, alert, and job retention is not implemented.
-- The UI has built-in TLS for the optional LAN HTTPS mode, but no supported
-  reverse-proxy mode. The default remains loopback-only. LAN mode requires a
-  non-loopback bind, `--tls-cert`, `--tls-key`, and an explicit `--public-url`;
-  it accepts only the configured hostname plus loopback Host headers. There is
-  no Unix-socket listener, request access log, Prometheus endpoint, or built-in
+- The UI has built-in TLS for the optional LAN HTTPS mode and an explicit
+  trusted-proxy mode for an existing TLS terminator. The default remains
+  loopback-only. Built-in LAN mode requires `--tls-cert`, `--tls-key`, and
+  `--public-url`; trusted-proxy mode requires `--trust-proxy`, a public HTTPS
+  URL, and `--trusted-proxy-cidrs` restricted to the proxy source. The listener
+  accepts only the configured hostname plus loopback Host headers. There is no
+  Unix-socket listener, request access log, Prometheus endpoint, or built-in
   controller self-monitoring.
 - Release archives are checksummed but not signed. There is no SBOM or
   provenance attestation. The installer reads `SHA256SUMS` from the same GitHub

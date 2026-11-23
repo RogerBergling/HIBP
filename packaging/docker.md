@@ -62,6 +62,24 @@ loopback. First run with a new database only: add `--create` to the command,
 complete admin/MFA setup, then remove `--create` and restart. Do not use
 `--create` when migrating an existing database.
 
+### Trusted TLS proxy
+
+If HAProxy/Nginx terminates TLS, keep the backend listener plain HTTP but make
+the trust explicit:
+
+```dotenv
+HIBP_PUBLIC_URL=https://hibp.example.com
+HIBP_LISTEN=0.0.0.0:8017
+HIBP_TRUST_PROXY=true
+HIBP_TRUSTED_PROXY_CIDRS=10.20.0.10/32
+```
+
+The proxy must preserve `Host` and set `X-Forwarded-Proto: https`. The source
+CIDR allowlist is mandatory for a non-loopback listener. Do not use
+`0.0.0.0/0` or expose the backend port to arbitrary clients. When the proxy is
+on the same Docker host, `HIBP_LISTEN=127.0.0.1:8017` and
+`HIBP_TRUSTED_PROXY_CIDRS=127.0.0.1/32` is the least-privilege setup.
+
 ## Migrating a local database
 
 The complete local-to-container procedure is in
@@ -104,8 +122,9 @@ docker run --rm -it \
     --passphrase-file /etc/hibp/db.passphrase
 ```
 
-Omit `--create` when opening an existing database. The server intentionally
-refuses to bind a non-loopback address without TLS. Host networking is used so
-`127.0.0.1` remains the only listening address. For laptop access, use an SSH
-tunnel to the Docker host or run the binary directly on the host with the
-systemd unit. Do not place the database on a network filesystem.
+Omit `--create` when opening an existing database. The server refuses a
+non-loopback plaintext listener unless explicit trusted-proxy mode is enabled
+with a proxy CIDR allowlist. Host networking is used so `127.0.0.1` remains the
+only listening address by default. For laptop access, use an SSH tunnel to the
+Docker host or run the binary directly on the host with the systemd unit. Do not
+place the database on a network filesystem.

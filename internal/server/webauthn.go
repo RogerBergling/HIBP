@@ -61,7 +61,7 @@ func (s *Server) webAuthnConfig(r *http.Request) (string, string, error) {
 	host := r.Host
 	hostname := requestHostname(host)
 	if s.webAuthnRPID != "" && strings.EqualFold(hostname, s.webAuthnRPID) {
-		if r.TLS == nil {
+		if s.requestScheme(r) != "https" {
 			return "", "", fmt.Errorf("passkeys require %s", s.webAuthnOrigin)
 		}
 		return s.webAuthnRPID, s.webAuthnOrigin, nil
@@ -73,7 +73,7 @@ func (s *Server) webAuthnConfig(r *http.Request) (string, string, error) {
 	default:
 		return "", "", errors.New("passkeys are only enabled for localhost or the configured HTTPS public URL")
 	}
-	return hostname, requestScheme(r) + "://" + host, nil
+	return hostname, s.requestScheme(r) + "://" + host, nil
 }
 
 func (s *Server) webAuthnForRequest(r *http.Request) (*webauthn.WebAuthn, error) {

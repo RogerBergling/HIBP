@@ -128,6 +128,8 @@ Server flags:
   -tls-cert string        PEM certificate for LAN HTTPS mode
   -tls-key string         PEM private key for LAN HTTPS mode
   -public-url string      Public HTTPS URL for LAN mode, e.g. https://hibp.lan:8443
+  -trust-proxy            Trust X-Forwarded-Proto from a TLS-terminating proxy
+  -trusted-proxy-cidrs    Comma-separated proxy source CIDRs; required for a non-loopback listener
   -create                 Create the database if it does not exist
   -passphrase-file string Read the database passphrase from a 0600 file
   -key-dir string         SSH key directory, comma-separated (default: ~/.ssh)
@@ -197,6 +199,8 @@ func runServer(args []string) error {
 	tlsCert := flags.String("tls-cert", "", "PEM certificate for LAN HTTPS mode")
 	tlsKey := flags.String("tls-key", "", "PEM private key for LAN HTTPS mode")
 	publicURL := flags.String("public-url", "", "public HTTPS URL for LAN mode, for example https://hibp.lan:8443")
+	trustProxy := flags.Bool("trust-proxy", false, "trust X-Forwarded-Proto from a TLS-terminating proxy")
+	trustedProxyCIDRs := flags.String("trusted-proxy-cidrs", "", "comma-separated proxy source CIDRs")
 	create := flags.Bool("create", false, "create the database if it does not exist")
 	passphraseFile := flags.String("passphrase-file", "", "read passphrase from a 0600 file")
 	keyDir := flags.String("key-dir", defaultKeyDir(), "SSH key directory, comma-separated for multiple")
@@ -210,7 +214,7 @@ func runServer(args []string) error {
 		printVersion()
 		return nil
 	}
-	listenConfig, err := validateServerListen(*listen, *tlsCert, *tlsKey, *publicURL)
+	listenConfig, err := validateServerListen(*listen, *tlsCert, *tlsKey, *publicURL, *trustProxy, *trustedProxyCIDRs)
 	if err != nil {
 		return err
 	}
@@ -239,12 +243,14 @@ func runServer(args []string) error {
 	}
 
 	app, err := server.New(server.Config{
-		Store:         db,
-		Version:       version,
-		Build:         buildinfo.Current,
-		KeyDirs:       splitList(*keyDir),
-		SSHConfigPath: *sshConfig,
-		PublicURL:     listenConfig.PublicURL,
+		Store:             db,
+		Version:           version,
+		Build:             buildinfo.Current,
+		KeyDirs:           splitList(*keyDir),
+		SSHConfigPath:     *sshConfig,
+		PublicURL:         listenConfig.PublicURL,
+		TrustProxy:        listenConfig.TrustProxy,
+		TrustedProxyCIDRs: listenConfig.TrustedProxyCIDRs,
 	})
 	if err != nil {
 		return err
@@ -271,11 +277,20 @@ func runServer(args []string) error {
 	fmt.Fprintf(os.Stderr, "Open:     %s\n", openURL)
 	if listenConfig.TLS {
 		fmt.Fprintln(os.Stderr, "TLS:      enabled (TLS 1.2 minimum)")
+	} else if listenConfig.TrustProxy {
+		fmt.Fprintln(os.Stderr, "TLS:      terminated by a trusted proxy; backend listener is plain HTTP")
 	} else {
 		fmt.Fprintln(os.Stderr, "TLS:      disabled (loopback only)")
 	}
+	if listenConfig.TrustProxy {
+		cidrs := listenConfig.TrustedProxyCIDRs
+		if len(cidrs) == 0 {
+			cidrs = []string{"loopback only"}
+		}
+		fmt.Fprintf(os.Stderr, "Proxy:    trusting X-Forwarded-Proto from %s\n", strings.Join(cidrs, ", "))
+	}
 	if host, _, _ := net.SplitHostPort(*listen); host == "0.0.0.0" || host == "::" {
-		fmt.Fprintf(os.Stderr, "WARNING: listening on all interfaces; restrict TCP %s to your LAN with a firewall.\n", port)
+		fmt.Fprintf(os.Stderr, "WARNING: listening on all interfaces; restrict TCP %s to your LAN/proxy with a firewall.\n", port)
 	}
 	fmt.Fprintln(os.Stderr, "Auth:     password + TOTP/passkey (create the account on first visit)")
 	fmt.Fprintln(os.Stderr, "Press Ctrl+C to stop.")
