@@ -1,5 +1,7 @@
 # HIBP - Have I Been Patched
 
+**Project facts (2026-11-25):** version **0.12.0** · Go 1.27.4 with CGO/SQLCipher + browser UI · `go test`, `go test -race`, `go vet` · MIT licensed.
+
 > **Status: the current tree adds a durable server-side operation queue, a
 > non-blocking activity dock, and file-based package deployment to one or many
 > selected hosts. Helper setup, patch preview/apply, facts collection, cleanup,
@@ -37,6 +39,10 @@
 >
 > **Name:** HIBP stands for **Have I Been Patched**. It is not affiliated with
 > Have I Been Pwned (haveibeenpwned.com).
+>
+> **Version note:** the working tree is ahead of the published `v0.12.0` tag.
+> Features described as current may be unreleased. Use a tagged release build
+> when you need the exact v0.12.0 behaviour.
 
 HIBP is a Linux-first patch management controller. The intended deployment is an
 always-on server that owns the encrypted database and performs collection,
@@ -80,10 +86,11 @@ Invalid values fall back to `dark`. The server serves the pre-paint resolver at
 
 ## Screenshots
 
-> Screenshots of the current build running with demo data. The browser UI,
-> encrypted database, host list, facts, monitoring state, and audit chain are
-> real. Real patch execution requires the root-owned helper and SSH access to
-> targets.
+> Screenshots of the running app with demo data. The browser UI, encrypted
+> database, host list, facts, monitoring state, and audit chain are real. Some
+> captures pre-date v0.12.0: the dashboard shows an older build badge and the
+> patch preview still shows the removed **Integrations** entry. Regenerate them
+> when a browser is available.
 
 | Dark theme dashboard | Light theme sign-in |
 |---|---|
@@ -2773,6 +2780,12 @@ HIBP is a privileged remote administration tool. See [`SECURITY.md`](SECURITY.md
 for vulnerability reporting and scope. The security model below is the design
 baseline; the current implementation status is called out explicitly.
 
+**Operational constraint:** the backup and restore API accepts absolute paths
+as the service account. Treat both as privileged file-read/write operations,
+not as a sandbox. Restrict the service account, choose reviewed backup
+directories, and do not expose the API to users who should not control those
+paths.
+
 ### Assets
 
 - SSH private keys, key passphrases, SSH certificates, and sudo passwords.
@@ -4397,6 +4410,14 @@ Current validation status:
 - A release still needs the cross-distro matrix, real target/helper tests,
   backup-restore drills, and a review of the deployment-specific systemd paths
   before broad production use.
+
+
+## AI assistance
+
+Developed with AI assistance and human review. The maintainer defines the
+requirements, threat model and acceptance criteria; AI helps write and refactor
+code; the maintainer runs, tests and verifies the result. The software is
+provided as-is, without warranty.
 
 ## License
 
