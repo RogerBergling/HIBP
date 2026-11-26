@@ -366,23 +366,52 @@
             <button class="btn primary" id="monitor-add" type="button">Add monitor</button>
           </div>
         </div>
+        <section class="card monitor-map-card">
+          <div class="card-head">
+            <div class="card-title">Monitor map</div>
+            <div class="card-actions">
+              <div class="monitor-map-legend" aria-label="Status legend">
+                <span><i class="map-dot ok"></i>OK</span>
+                <span><i class="map-dot warning"></i>Warning</span>
+                <span><i class="map-dot critical"></i>Critical</span>
+                <span><i class="map-dot unknown"></i>Unknown</span>
+              </div>
+              <label class="monitor-map-group-control" for="monitor-map-group">Group by
+                <select id="monitor-map-group">
+                  <option value="status">Status</option>
+                  <option value="type">Type</option>
+                  <option value="scope">Scope</option>
+                  <option value="enabled">Enabled</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <div class="monitor-map" id="monitor-map"></div>
+        </section>
         <section class="card table-card">
           <div class="card-head">
             <div class="card-title">Monitors</div>
-            <div class="card-actions" id="monitor-summary"></div>
+            <div class="card-actions">
+              <button class="link-button" id="monitor-bulk-edit" type="button" disabled>Update selected</button>
+              <button class="link-button" id="monitor-check-selected" type="button" disabled>Check selected</button>
+              <button class="link-button" id="monitor-enable-selected" type="button" disabled>Enable selected</button>
+              <button class="link-button" id="monitor-disable-selected" type="button" disabled>Disable selected</button>
+              <span id="monitor-summary"></span>
+            </div>
           </div>
           <div class="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th style="width:18%">Monitor</th>
-                  <th style="width:12%">Type</th>
-                  <th style="width:15%">Target</th>
-                  <th style="width:12%">Scope</th>
-                  <th style="width:8%">Interval</th>
-                  <th style="width:12%">Last status</th>
-                  <th style="width:9%">Checked</th>
-                  <th style="width:14%">Actions</th>
+                  <th style="width:3%"><input type="checkbox" class="row-select" id="monitors-select-all" aria-label="Select all monitors" title="Select all monitors"></th>
+                  <th class="sortable" data-sort="name" aria-sort="none" style="width:17%">Monitor<span class="sort-indicator" aria-hidden="true"></span></th>
+                  <th class="sortable" data-sort="type" aria-sort="none" style="width:11%">Type<span class="sort-indicator" aria-hidden="true"></span></th>
+                  <th class="sortable" data-sort="target" aria-sort="none" style="width:14%">Target<span class="sort-indicator" aria-hidden="true"></span></th>
+                  <th class="sortable" data-sort="scope" aria-sort="none" style="width:11%">Scope<span class="sort-indicator" aria-hidden="true"></span></th>
+                  <th class="sortable" data-sort="interval" aria-sort="none" style="width:8%">Interval<span class="sort-indicator" aria-hidden="true"></span></th>
+                  <th class="sortable" data-sort="status" aria-sort="none" style="width:12%">Last status<span class="sort-indicator" aria-hidden="true"></span></th>
+                  <th class="sortable" data-sort="checked" aria-sort="none" style="width:8%">Checked<span class="sort-indicator" aria-hidden="true"></span></th>
+                  <th style="width:16%">Actions</th>
                 </tr>
               </thead>
               <tbody id="monitor-body"></tbody>

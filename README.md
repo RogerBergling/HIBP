@@ -1795,6 +1795,18 @@ for hosts that do not have a capability. Every notification attempt is written
 to **Alert events** whether SMTP is disabled, delivery fails, or the message is
 sent. No check starts, stops, restarts, or updates the monitored service.
 
+The monitor table sorts by the Monitor, Type, Target, Scope, Interval, Last
+status, and Checked columns and supports row selection. Use the header checkbox
+to select all monitors, then update the selected monitors' enabled state,
+interval, repeat, cooldown, or recipients, or queue immediate checks for all
+selected enabled monitors. Bulk update changes only the fields you explicitly
+enable; names, targets, thresholds, and assignments are left unchanged.
+
+A **Monitor map** above the table groups monitors by status, type, scope, or
+enabled state. Each node shows the monitor name, current worst status, type,
+target or scope, and last check; click a node to edit that monitor. Use the
+**Group by** selector to change the map layout.
+
 Email settings are global; each monitor may override recipients. STARTTLS and
 implicit TLS are supported, and SMTP authentication is only allowed over TLS.
 Plain SMTP is available for local relays without authentication. The password

@@ -3,6 +3,9 @@
 const state = {
   hosts: [],
   selectedHosts: new Set(),
+  selectedMonitors: new Set(),
+  monitorSort: { key: 'name', dir: 'asc' },
+  monitorMapGroup: 'status',
   audit: [],
   monitors: [],
   alerts: [],
@@ -319,6 +322,125 @@ function setAllHostSelection(checked) {
     for (const host of state.hosts) state.selectedHosts.add(host.id);
   }
   syncHostSelection();
+}
+
+function selectedMonitors() {
+  return state.monitors.filter((monitor) => state.selectedMonitors.has(monitor.id));
+}
+
+function monitorScopeText(monitor) {
+  const assignments = monitor.assignments || [];
+  if (isNetworkMonitorType(monitor.type) || !assignments.length) return 'Standalone';
+  return assignments.map((assignment) => monitorAssignmentLabel(assignment)).join(', ');
+}
+
+function monitorSortValue(monitor, key, aggregate) {
+  switch (key) {
+    case 'name': return String(monitor.name || '').toLowerCase() || null;
+    case 'type': return monitorTypeLabel(monitor.type).toLowerCase() || null;
+    case 'target': return String(monitor.target || '').toLowerCase() || null;
+    case 'scope': return monitorScopeText(monitor).toLowerCase() || null;
+    case 'interval': return Number(monitor.interval_seconds) || 0;
+    case 'status': return MONITOR_STATUS_RANK[(aggregate || {}).status] ?? 0;
+    case 'checked': {
+      if (!monitor.last_checked_at) return null;
+      const value = Date.parse(monitor.last_checked_at);
+      return Number.isFinite(value) ? value : null;
+    }
+    default: return null;
+  }
+}
+
+function sortedMonitors(monitors, aggregates) {
+  const direction = state.monitorSort.dir === 'asc' ? 1 : -1;
+  return monitors.slice().sort((left, right) => {
+    const leftValue = monitorSortValue(left, state.monitorSort.key, aggregates.get(left.id));
+    const rightValue = monitorSortValue(right, state.monitorSort.key, aggregates.get(right.id));
+    if (leftValue === null && rightValue === null) return 0;
+    if (leftValue === null) return 1;
+    if (rightValue === null) return -1;
+    let result;
+    if (typeof leftValue === 'number' && typeof rightValue === 'number') {
+      result = leftValue - rightValue;
+    } else {
+      result = String(leftValue).localeCompare(String(rightValue), undefined, { numeric: true, sensitivity: 'base' });
+    }
+    if (result === 0) {
+      return String(left.name || '').localeCompare(String(right.name || ''), undefined, { numeric: true, sensitivity: 'base' });
+    }
+    return result * direction;
+  });
+}
+
+function syncMonitorSortHeaders() {
+  const labels = {
+    name: 'monitor name',
+    type: 'type',
+    target: 'target',
+    scope: 'scope',
+    interval: 'interval',
+    status: 'last status',
+    checked: 'last checked',
+  };
+  for (const header of document.querySelectorAll('#view-monitoring th[data-sort]')) {
+    const key = header.dataset.sort;
+    const active = key === state.monitorSort.key;
+    header.setAttribute('aria-sort', active ? (state.monitorSort.dir === 'asc' ? 'ascending' : 'descending') : 'none');
+    header.title = 'Sort by ' + (labels[key] || key);
+  }
+}
+
+function setMonitorSort(key) {
+  if (!key) return;
+  if (state.monitorSort.key === key) {
+    state.monitorSort.dir = state.monitorSort.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    state.monitorSort.key = key;
+    state.monitorSort.dir = ['status', 'checked', 'interval'].includes(key) ? 'desc' : 'asc';
+  }
+  renderMonitoring();
+}
+
+function syncMonitorSelection() {
+  const monitorIDs = new Set(state.monitors.map((monitor) => monitor.id));
+  for (const id of Array.from(state.selectedMonitors)) {
+    if (!monitorIDs.has(id)) state.selectedMonitors.delete(id);
+  }
+  for (const checkbox of document.querySelectorAll('.monitor-select')) {
+    checkbox.checked = state.selectedMonitors.has(checkbox.dataset.monitorId);
+  }
+  const total = state.monitors.length;
+  const count = state.selectedMonitors.size;
+  const enabledCount = state.monitors.filter((monitor) => state.selectedMonitors.has(monitor.id) && monitor.enabled).length;
+  const selectAll = $('monitors-select-all');
+  if (selectAll) {
+    selectAll.checked = total > 0 && count === total;
+    selectAll.indeterminate = count > 0 && count < total;
+  }
+  for (const [id, label] of [
+    ['monitor-bulk-edit', 'Update selected'],
+    ['monitor-enable-selected', 'Enable selected'],
+    ['monitor-disable-selected', 'Disable selected'],
+  ]) {
+    const node = $(id);
+    if (!node) continue;
+    node.disabled = count === 0;
+    node.textContent = count ? label + ' (' + count + ')' : label;
+  }
+  const check = $('monitor-check-selected');
+  if (check) {
+    check.disabled = enabledCount === 0;
+    check.textContent = enabledCount ? 'Check selected (' + enabledCount + ')' : 'Check selected';
+    check.title = enabledCount ? '' : 'No enabled monitors selected';
+  }
+}
+
+function setAllMonitorSelection(checked) {
+  state.selectedMonitors.clear();
+  if (checked) {
+    for (const monitor of state.monitors) state.selectedMonitors.add(monitor.id);
+  }
+  syncMonitorSelection();
 }
 
 function el(tag, className, text) {
@@ -1588,6 +1710,120 @@ function monitorStatusPill(status, label = '') {
   return el('span', 'pill ' + cls, '● ' + (label || status));
 }
 
+function monitorMapScopeKey(monitor) {
+  if (isNetworkMonitorType(monitor.type)) return 'standalone';
+  const scopes = new Set((monitor.assignments || []).map((assignment) => assignment.scope));
+  if (!scopes.size) return 'standalone';
+  if (scopes.size > 1) return 'mixed';
+  const scope = Array.from(scopes)[0];
+  return ['fleet', 'host', 'group', 'tag'].includes(scope) ? scope : 'other';
+}
+
+function monitorMapGroups(monitors, aggregates) {
+  const byName = (left, right) => String(left.name || '').localeCompare(String(right.name || ''), undefined, { numeric: true, sensitivity: 'base' });
+  let groups;
+  if (state.monitorMapGroup === 'type') {
+    const known = new Set(Object.keys(MONITOR_TYPES));
+    groups = Object.keys(MONITOR_TYPES).map((type) => ({
+      key: type,
+      label: monitorTypeLabel(type),
+      monitors: monitors.filter((monitor) => monitor.type === type),
+    })).filter((group) => group.monitors.length);
+    const other = monitors.filter((monitor) => !known.has(monitor.type));
+    if (other.length) groups.push({ key: 'other', label: 'Other', monitors: other });
+  } else if (state.monitorMapGroup === 'scope') {
+    const order = [
+      ['standalone', 'Standalone'],
+      ['fleet', 'Fleet'],
+      ['host', 'Host'],
+      ['group', 'Group'],
+      ['tag', 'Tag'],
+      ['mixed', 'Mixed scopes'],
+      ['other', 'Other'],
+    ];
+    groups = order.map(([key, label]) => ({
+      key,
+      label,
+      monitors: monitors.filter((monitor) => monitorMapScopeKey(monitor) === key),
+    })).filter((group) => group.monitors.length);
+  } else if (state.monitorMapGroup === 'enabled') {
+    groups = [
+      { key: 'enabled', label: 'Enabled', monitors: monitors.filter((monitor) => monitor.enabled) },
+      { key: 'disabled', label: 'Disabled', monitors: monitors.filter((monitor) => !monitor.enabled) },
+    ].filter((group) => group.monitors.length);
+  } else {
+    groups = [
+      ['critical', 'Critical'],
+      ['warning', 'Warning'],
+      ['unknown', 'Unknown'],
+      ['ok', 'OK'],
+    ].map(([status, label]) => ({
+      key: status,
+      label,
+      status,
+      monitors: monitors.filter((monitor) => ((aggregates.get(monitor.id) || {}).status || 'unknown') === status),
+    }));
+  }
+  for (const group of groups) group.monitors.sort(byName);
+  return groups;
+}
+
+function monitorMapNode(monitor, aggregate) {
+  const status = aggregate.status || 'unknown';
+  const node = el('button', 'monitor-node status-' + status + (monitor.enabled ? '' : ' disabled'));
+  node.type = 'button';
+  node.title = monitor.name + ' · ' + monitorTypeLabel(monitor.type) +
+    (monitor.target ? ' · ' + monitor.target : '') + '\n' + (aggregate.title || aggregate.summary || status);
+  node.setAttribute('aria-label', monitor.name + ', ' + monitorTypeLabel(monitor.type) + ', ' + status + '. Open monitor.');
+
+  const top = el('div', 'monitor-node-top');
+  top.append(el('span', 'monitor-node-dot ' + status), el('span', 'monitor-node-name', monitor.name));
+  if (!monitor.enabled) top.append(el('span', 'monitor-node-off', 'off'));
+  node.append(top);
+
+  const metaParts = [monitorTypeLabel(monitor.type)];
+  if (monitor.target) metaParts.push(monitor.target);
+  const scope = monitorScopeText(monitor);
+  if (scope) metaParts.push(scope);
+  const meta = el('div', 'monitor-node-meta', metaParts.join(' · '));
+  meta.title = metaParts.join(' · ');
+  node.append(meta);
+
+  const foot = el('div', 'monitor-node-foot');
+  foot.append(el('span', 'monitor-node-status', aggregate.summary || status));
+  foot.append(el('span', 'monitor-node-checked', monitor.enabled ? relativeTime(monitor.last_checked_at) : 'disabled'));
+  node.append(foot);
+  node.addEventListener('click', () => showMonitorModal(monitor));
+  return node;
+}
+
+function renderMonitorMap(monitors, aggregates) {
+  const map = $('monitor-map');
+  if (!map) return;
+  map.replaceChildren();
+  if (!monitors.length) {
+    map.append(el('div', 'empty-state', 'No monitors configured. Add a monitor to see it on the map.'));
+    return;
+  }
+  for (const group of monitorMapGroups(monitors, aggregates)) {
+    const section = el('section', 'monitor-map-group');
+    const head = el('div', 'monitor-map-group-head');
+    if (group.status) head.append(el('span', 'map-dot ' + group.status));
+    head.append(el('span', '', group.label), el('span', 'monitor-map-group-count', String(group.monitors.length)));
+    section.append(head);
+    if (group.monitors.length) {
+      const grid = el('div', 'monitor-map-grid');
+      for (const monitor of group.monitors) {
+        grid.append(monitorMapNode(monitor, aggregates.get(monitor.id) || monitorAggregate(monitor)));
+      }
+      section.append(grid);
+    } else {
+      section.append(el('div', 'monitor-node-meta', 'No monitors'));
+    }
+    map.append(section);
+  }
+}
+
 function emptyTableRow(columns, message) {
   const row = el('tr');
   const cell = el('td', 'empty-state', message);
@@ -1601,11 +1837,13 @@ function renderMonitoring() {
   if (!body) return;
   const monitors = state.monitors || [];
   const alerts = state.alerts || [];
+  const aggregates = new Map(monitors.map((monitor) => [monitor.id, monitorAggregate(monitor)]));
+  const sorted = sortedMonitors(monitors, aggregates);
   const enabled = monitors.filter((monitor) => monitor.enabled).length;
   let critical = 0;
   let warning = 0;
   for (const monitor of monitors) {
-    const status = monitorAggregate(monitor).status;
+    const status = (aggregates.get(monitor.id) || {}).status;
     if (status === 'critical') critical++;
     else if (status === 'warning') warning++;
   }
@@ -1615,15 +1853,31 @@ function renderMonitoring() {
   if (critical) summary.push(critical + ' critical');
   if (warning) summary.push(warning + ' warning');
   $('monitor-summary').textContent = summary.join(' · ');
+  syncMonitorSortHeaders();
+  renderMonitorMap(monitors, aggregates);
 
   body.replaceChildren();
   if (!monitors.length) {
-    body.append(emptyTableRow(8, 'No monitors configured. Add a monitor to watch host metrics, Docker, services, or network endpoints.'));
+    body.append(emptyTableRow(9, 'No monitors configured. Add a monitor to watch host metrics, Docker, services, or network endpoints.'));
   }
   const monitorNames = new Map(monitors.map((monitor) => [monitor.id, monitor.name]));
-  for (const monitor of monitors) {
-    const aggregate = monitorAggregate(monitor);
+  for (const monitor of sorted) {
+    const aggregate = aggregates.get(monitor.id) || monitorAggregate(monitor);
     const row = el('tr');
+
+    const selectTd = el('td');
+    const select = el('input', 'row-select monitor-select');
+    select.type = 'checkbox';
+    select.dataset.monitorId = monitor.id;
+    select.checked = state.selectedMonitors.has(monitor.id);
+    select.title = 'Select ' + monitor.name;
+    select.setAttribute('aria-label', select.title);
+    select.addEventListener('change', () => {
+      if (select.checked) state.selectedMonitors.add(monitor.id);
+      else state.selectedMonitors.delete(monitor.id);
+      syncMonitorSelection();
+    });
+    selectTd.append(select);
 
     const nameTd = el('td');
     nameTd.append(el('div', 'host-name', monitor.name));
@@ -1678,7 +1932,7 @@ function renderMonitoring() {
     actions.append(actionButton('Delete', () => deleteMonitor(monitor), 'danger'));
     actionsTd.append(actions);
 
-    row.append(nameTd, typeTd, targetTd, assignmentTd, intervalTd, statusTd, checkedTd, actionsTd);
+    row.append(selectTd, nameTd, typeTd, targetTd, assignmentTd, intervalTd, statusTd, checkedTd, actionsTd);
     body.append(row);
   }
 
@@ -1712,6 +1966,7 @@ function renderMonitoring() {
     row.append(timeTd, monitorTd, hostTd, statusTd, detailTd, emailTd);
     alertBody.append(row);
   }
+  syncMonitorSelection();
 }
 
 async function deleteMonitor(monitor) {
@@ -1742,6 +1997,190 @@ async function checkMonitorNow(monitor) {
   } catch (error) {
     toast(error.message, 'error');
   }
+}
+
+function monitorPayload(monitor, overrides = {}) {
+  return {
+    name: monitor.name,
+    type: monitor.type,
+    target: monitor.target || '',
+    warning: Number(monitor.warning) || 0,
+    critical: Number(monitor.critical) || 0,
+    interval_seconds: Number(monitor.interval_seconds) || 300,
+    repeat_minutes: Number(monitor.repeat_minutes) || 0,
+    cooldown_minutes: Number(monitor.cooldown_minutes) || 0,
+    recipients: monitor.recipients || '',
+    enabled: Boolean(monitor.enabled),
+    assignments: (monitor.assignments || []).map((assignment) => ({
+      scope: assignment.scope,
+      target: assignment.target || '',
+    })),
+    ...overrides,
+  };
+}
+
+async function updateMonitorsBulk(monitors, overrides, successLabel) {
+  if (!monitors.length) {
+    toast('No monitors selected', 'error');
+    return;
+  }
+  let updated = 0;
+  const failures = [];
+  for (const monitor of monitors) {
+    try {
+      await api('/api/v1/monitors/' + encodeURIComponent(monitor.id), {
+        method: 'PUT',
+        body: JSON.stringify(monitorPayload(monitor, overrides)),
+      });
+      updated++;
+    } catch (error) {
+      failures.push(monitor.name + ': ' + error.message);
+    }
+  }
+  await loadAll({ force: true });
+  if (failures.length) {
+    const detail = failures.slice(0, 3).join('; ') + (failures.length > 3 ? '; …' : '');
+    toast(updated + ' updated, ' + failures.length + ' failed — ' + detail, 'error');
+  } else {
+    toast((successLabel || 'Monitors updated') + (updated ? ' (' + updated + ')' : ''), 'ok');
+  }
+}
+
+async function setSelectedMonitorsEnabled(enabled) {
+  const monitors = selectedMonitors();
+  if (!monitors.length) {
+    toast('No monitors selected', 'error');
+    return;
+  }
+  const action = enabled ? 'Enable' : 'Disable';
+  if (!confirm(action + ' ' + monitors.length + ' selected monitor' + (monitors.length === 1 ? '' : 's') + '?')) return;
+  await updateMonitorsBulk(monitors, { enabled }, action + 'd');
+}
+
+async function checkSelectedMonitors(monitors) {
+  const enabled = monitors.filter((monitor) => monitor.enabled);
+  if (!enabled.length) {
+    toast('No enabled monitors selected', 'error');
+    return;
+  }
+  const before = new Map(enabled.map((monitor) => [monitor.id, monitor.last_checked_at || '']));
+  let requested = 0;
+  const failures = [];
+  for (const monitor of enabled) {
+    try {
+      await api('/api/v1/monitors/' + encodeURIComponent(monitor.id) + '/check', { method: 'POST', body: '{}' });
+      requested++;
+    } catch (error) {
+      failures.push(monitor.name + ': ' + error.message);
+    }
+  }
+  if (!requested) {
+    toast('Check failed — ' + failures[0], 'error');
+    return;
+  }
+  toast('Check requested for ' + requested + ' monitor' + (requested === 1 ? '' : 's'), 'ok');
+  for (let attempt = 0; attempt < 12; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await loadAll({ silent: true });
+    const pending = enabled.filter((monitor) => {
+      const current = (state.monitors || []).find((entry) => entry.id === monitor.id);
+      return current && (current.last_checked_at || '') === before.get(monitor.id);
+    });
+    if (!pending.length) break;
+  }
+  await loadAll({ force: true });
+  if (failures.length) {
+    toast(requested + ' checks queued, ' + failures.length + ' failed — ' + failures[0], 'error');
+  }
+}
+
+function optionalMonitorField(parent, labelText, placeholder, type = 'text') {
+  const wrapper = el('label', 'field', labelText);
+  const row = el('div', 'optional-input');
+  const toggle = el('input');
+  toggle.type = 'checkbox';
+  const input = el('input');
+  input.type = type;
+  input.placeholder = placeholder || '';
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  input.disabled = true;
+  input.setAttribute('aria-label', labelText);
+  toggle.addEventListener('change', () => {
+    input.disabled = !toggle.checked;
+    if (toggle.checked) input.focus();
+  });
+  row.append(toggle, input);
+  wrapper.append(row);
+  parent.append(wrapper);
+  return { toggle, input };
+}
+
+function showMonitorBulkEditModal(monitors) {
+  if (!monitors.length) {
+    toast('No monitors selected', 'error');
+    return;
+  }
+  const form = el('form', 'modal-body');
+  form.append(el('p', 'muted', 'Only the fields you enable here are changed. Names, types, targets, thresholds, and assignments keep their current values.'));
+  const enabledMode = selectField(form, 'Enabled', 'enabled_mode', [
+    ['keep', 'No change'],
+    ['enable', 'Enable'],
+    ['disable', 'Disable'],
+  ]);
+  const scheduleRow = el('div', 'form-row three');
+  const interval = optionalMonitorField(scheduleRow, 'Interval (seconds)', '300', 'number');
+  const repeat = optionalMonitorField(scheduleRow, 'Repeat (minutes)', '60', 'number');
+  const cooldown = optionalMonitorField(scheduleRow, 'Cooldown (minutes)', '15', 'number');
+  form.append(scheduleRow);
+  const recipients = optionalMonitorField(form, 'Alert recipients', 'ops@example.com, oncall@example.com');
+  form.append(el('p', 'field-note', 'Leave a field unchecked to keep its current value. Checking recipients with a blank value clears the per-monitor override.'));
+  const actions = el('div', 'modal-actions');
+  const cancel = el('button', 'btn', 'Cancel');
+  cancel.type = 'button';
+  const save = el('button', 'btn primary', 'Update ' + monitors.length + ' monitor' + (monitors.length === 1 ? '' : 's'));
+  save.type = 'submit';
+  actions.append(cancel, save);
+  form.append(actions);
+  const close = openModal('Update ' + monitors.length + ' selected monitor' + (monitors.length === 1 ? '' : 's'), form);
+  cancel.addEventListener('click', close);
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const overrides = {};
+    if (enabledMode.value === 'enable') overrides.enabled = true;
+    if (enabledMode.value === 'disable') overrides.enabled = false;
+    if (interval.toggle.checked) {
+      const value = Number(interval.input.value);
+      if (!Number.isInteger(value) || value < 30 || value > 86400) {
+        toast('Interval must be a whole number between 30 and 86400 seconds', 'error');
+        return;
+      }
+      overrides.interval_seconds = value;
+    }
+    if (repeat.toggle.checked) {
+      const value = Number(repeat.input.value);
+      if (!Number.isInteger(value) || value < 0 || value > 10080) {
+        toast('Repeat must be a whole number between 0 and 10080 minutes', 'error');
+        return;
+      }
+      overrides.repeat_minutes = value;
+    }
+    if (cooldown.toggle.checked) {
+      const value = Number(cooldown.input.value);
+      if (!Number.isInteger(value) || value < 0 || value > 1440) {
+        toast('Cooldown must be a whole number between 0 and 1440 minutes', 'error');
+        return;
+      }
+      overrides.cooldown_minutes = value;
+    }
+    if (recipients.toggle.checked) overrides.recipients = recipients.input.value.trim();
+    if (!Object.keys(overrides).length) {
+      toast('Choose at least one field to update', 'error');
+      return;
+    }
+    close();
+    await updateMonitorsBulk(monitors, overrides, 'Monitors updated');
+  });
 }
 
 function setFieldLabel(control, text) {
@@ -5550,6 +5989,25 @@ function bind() {
     assignments: [],
   }));
   $('monitor-notifications').addEventListener('click', showSMTPModal);
+  $('monitor-map-group').value = state.monitorMapGroup;
+  $('monitor-map-group').addEventListener('change', (event) => {
+    state.monitorMapGroup = event.target.value;
+    renderMonitoring();
+  });
+  $('monitors-select-all').addEventListener('change', (event) => setAllMonitorSelection(event.target.checked));
+  $('monitor-bulk-edit').addEventListener('click', () => showMonitorBulkEditModal(selectedMonitors()));
+  $('monitor-check-selected').addEventListener('click', () => checkSelectedMonitors(selectedMonitors()));
+  $('monitor-enable-selected').addEventListener('click', () => setSelectedMonitorsEnabled(true));
+  $('monitor-disable-selected').addEventListener('click', () => setSelectedMonitorsEnabled(false));
+  for (const header of document.querySelectorAll('#view-monitoring th[data-sort]')) {
+    header.tabIndex = 0;
+    header.addEventListener('click', () => setMonitorSort(header.dataset.sort));
+    header.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      setMonitorSort(header.dataset.sort);
+    });
+  }
   $('schedule-add').addEventListener('click', () => showScheduleModal());
   $('backup-button').addEventListener('click', showBackupModal);
   $('restore-button').addEventListener('click', showRestoreModal);
