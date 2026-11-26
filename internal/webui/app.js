@@ -2933,7 +2933,7 @@ function formatUptime(seconds) {
   return hours + 'h';
 }
 
-function askPassword(title, message) {
+function askPassword(title, message, options = {}) {
   return new Promise((resolve) => {
     const body = el('div', 'modal-body');
     body.append(el('p', 'muted', message));
@@ -2977,7 +2977,7 @@ function askPassword(title, message) {
     });
     const finish = () => {
       const value = input.value;
-      if (!value) {
+      if (!value && !options.allowEmpty) {
         input.focus();
         return;
       }
@@ -3191,10 +3191,21 @@ async function fleetUpdateHelpers(hosts = null) {
   const scope = hosts
     ? (targets.length === 1 ? 'the selected host' : 'the ' + targets.length + ' selected hosts')
     : ('all ' + targets.length + ' hosts');
-  if (!confirm('Set up or update the HIBP helper on ' + scope + '?\n\nThis creates a durable background job. It uploads the running controller binary and rewrites the sudoers rule. It requires key authentication and non-interactive sudo for the installation and visudo steps; the restricted helper rule alone is not enough. Hosts that need a sudo password are skipped; use the per-host Setup action for the initial bootstrap or a locked-down target.')) {
+  if (!confirm('Set up or update the HIBP helper on ' + scope + '?\n\nThis creates a durable background job. It uploads the running controller binary and rewrites the sudoers rule. You can provide one shared sudo password in the next step; leave it blank for passwordless sudo. The password is kept only in controller memory, never stored, and is lost if the controller restarts before the job finishes. Hosts that still need a password are then skipped; use the per-host Setup action in that case.')) {
     return;
   }
-  await createJob('helper-setup', targets, { confirm: 'setup' });
+  const usernames = new Set(targets.map((host) => host.username));
+  const value = await askPassword(
+    'Shared sudo password — ' + targets.length + ' host' + (targets.length === 1 ? '' : 's'),
+    'Used for every selected host in this job. It is not stored in the database. Leave blank for passwordless sudo. Characters are shown as *.',
+    { allowEmpty: true },
+  );
+  if (value === null) return;
+  if (value && usernames.size === 1) {
+    state.sharedSudoPassword = value;
+    state.sharedSudoUsername = targets[0].username;
+  }
+  await createJob('helper-setup', targets, { confirm: 'setup', sudo_password: value });
 }
 
 async function collectFacts(host) {

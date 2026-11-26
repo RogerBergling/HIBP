@@ -251,3 +251,69 @@ func TestJobAPIRebootRequiresConfirmation(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 }
+
+func TestHelperSetupJobKeepsSharedSudoPasswordOutOfStorage(t *testing.T) {
+	ts, db, app := testServerWithApp(t, true)
+	host, err := db.CreateHost(store.Host{
+		Name: "web01", Address: "10.0.0.11", Port: 22, Username: "ubuntu",
+		AuthType: "key", KeyPath: "/tmp/key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/jobs", "test-token",
+		`{"kind":"helper-setup","host_ids":["`+host.ID+`"],"confirm":"setup","sudo_password":"super-secret"}`)
+	if resp.StatusCode != http.StatusCreated {
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		t.Fatalf("expected created helper-setup job, got %d %s", resp.StatusCode, raw)
+	}
+	var created struct {
+		Job jobView `json:"job"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if got := app.jobSudoPassword(created.Job.ID); got != "super-secret" {
+		t.Fatalf("expected in-memory sudo password, got %q", got)
+	}
+	stored, err := db.GetJob(created.Job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stored.Payload, "super-secret") {
+		t.Fatalf("sudo password leaked into persisted job payload: %s", stored.Payload)
+	}
+	resp = request(t, http.MethodGet, ts.URL+"/api/v1/jobs/"+created.Job.ID, "test-token", "")
+	raw, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if strings.Contains(string(raw), "super-secret") {
+		t.Fatalf("sudo password leaked into job API response: %s", raw)
+	}
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/jobs/"+created.Job.ID+"/cancel", "test-token", `{}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected queued job cancel, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+	if got := app.jobSudoPassword(created.Job.ID); got != "" {
+		t.Fatalf("expected sudo password to be cleared after cancel, got %q", got)
+	}
+}
+
+func TestJobRejectsSudoPasswordForNonHelperSetup(t *testing.T) {
+	ts, db := testServer(t)
+	host, err := db.CreateHost(store.Host{
+		Name: "web01", Address: "10.0.0.11", Port: 22, Username: "ubuntu",
+		AuthType: "key", KeyPath: "/tmp/key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/jobs", "test-token",
+		`{"kind":"facts","host_ids":["`+host.ID+`"],"sudo_password":"super-secret"}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected sudo password rejection for facts job, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+}

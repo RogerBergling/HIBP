@@ -71,6 +71,8 @@ type Server struct {
 	monitorRunning    bool
 	monitorWake       chan struct{}
 	jobWake           chan struct{}
+	jobSudoMu         sync.Mutex
+	jobSudoPasswords  map[string]string
 	schedulerMu       sync.Mutex
 	schedulerScanning bool
 	schedulerRunning  map[string]bool
@@ -178,6 +180,7 @@ func New(cfg Config) (*Server, error) {
 		collectorState:    make(map[string]*collectorHostState),
 		monitorWake:       make(chan struct{}, 1),
 		jobWake:           make(chan struct{}, 1),
+		jobSudoPasswords:  make(map[string]string),
 		schedulerRunning:  make(map[string]bool),
 		schedulerWake:     make(chan struct{}, 1),
 		schedulerSlots:    make(chan struct{}, 20),

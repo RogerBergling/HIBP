@@ -11,6 +11,7 @@ import (
 
 	"github.com/RogerBergling/hibp/internal/helper"
 	"github.com/RogerBergling/hibp/internal/store"
+	"github.com/google/uuid"
 )
 
 const maxJobHosts = 500
@@ -57,6 +58,7 @@ type jobCreateRequest struct {
 	Confirm          string                    `json:"confirm"`
 	RebootAfterPatch bool                      `json:"reboot_after_patch"`
 	Previews         map[string]jobPreviewSpec `json:"previews"`
+	SudoPassword     string                    `json:"sudo_password"`
 }
 
 type jobPackageView struct {
@@ -194,10 +196,37 @@ func sortedKeys(values map[string]string) []string {
 	return keys
 }
 
+func (s *Server) setJobSudoPassword(jobID, password string) {
+	if jobID == "" || password == "" {
+		return
+	}
+	s.jobSudoMu.Lock()
+	if s.jobSudoPasswords == nil {
+		s.jobSudoPasswords = make(map[string]string)
+	}
+	s.jobSudoPasswords[jobID] = password
+	s.jobSudoMu.Unlock()
+}
+
+func (s *Server) jobSudoPassword(jobID string) string {
+	s.jobSudoMu.Lock()
+	defer s.jobSudoMu.Unlock()
+	return s.jobSudoPasswords[jobID]
+}
+
+func (s *Server) clearJobSudoPassword(jobID string) {
+	s.jobSudoMu.Lock()
+	delete(s.jobSudoPasswords, jobID)
+	s.jobSudoMu.Unlock()
+}
+
 func (s *Server) validateJobRequest(request jobCreateRequest) (string, []string, jobPayload, error) {
 	kind := strings.TrimSpace(request.Kind)
 	if _, ok := jobKinds[kind]; !ok {
 		return "", nil, jobPayload{}, errors.New("unknown job kind")
+	}
+	if request.SudoPassword != "" && kind != "helper-setup" {
+		return "", nil, jobPayload{}, errors.New("sudo_password is only accepted for helper setup jobs")
 	}
 	if len(request.HostIDs) == 0 {
 		return "", nil, jobPayload{}, errors.New("select at least one host")
@@ -306,11 +335,16 @@ func (s *Server) createJob(actor string, request jobCreateRequest, pkg *jobPacka
 		})
 	}
 	title := jobTitle(kind, targets, pkg)
+	jobID := uuid.NewString()
+	if kind == "helper-setup" && request.SudoPassword != "" {
+		s.setJobSudoPassword(jobID, request.SudoPassword)
+	}
 	job, err := s.store.CreateJob(store.Job{
-		Kind: kind, Status: store.JobQueued, Actor: actor, Title: title,
+		ID: jobID, Kind: kind, Status: store.JobQueued, Actor: actor, Title: title,
 		Detail: "Queued", Payload: string(rawPayload),
 	}, targets)
 	if err != nil {
+		s.clearJobSudoPassword(jobID)
 		return store.Job{}, err
 	}
 	_ = s.store.AddAudit(actor, "job-create", "job", job.ID, title)
@@ -417,6 +451,7 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_ = s.store.AddAudit(s.auditActor(r), "job-cancel", "job", job.ID, "cancelled before start")
+		s.clearJobSudoPassword(job.ID)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
@@ -466,6 +501,7 @@ func (s *Server) handleDeleteJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.store.AddAudit(s.auditActor(r), "job-delete", "job", job.ID, job.Title)
+	s.clearJobSudoPassword(job.ID)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
 }
 

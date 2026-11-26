@@ -121,6 +121,7 @@ func (s *Server) cleanupStagedPackages() {
 }
 
 func (s *Server) runJob(ctx context.Context, job store.Job) {
+	defer s.clearJobSudoPassword(job.ID)
 	payload := parseJobPayload(job.Payload)
 	targets, err := s.store.ListJobTargets(job.ID)
 	if err != nil {
@@ -310,8 +311,9 @@ func (s *Server) runHelperSetupJob(ctx context.Context, job store.Job, host stor
 	if err != nil || key == nil {
 		return jobTargetOutcome{Status: store.JobTargetFailed, Stage: "failed", Detail: "host key is not trusted", Error: "host key is not trusted"}
 	}
+	sudoPassword := s.jobSudoPassword(job.ID)
 	if s.demo != nil {
-		output, err := s.demo.InstallHelper(ctx, host, nil, "")
+		output, err := s.demo.InstallHelper(ctx, host, nil, sudoPassword)
 		if err != nil {
 			return jobTargetOutcome{Status: store.JobTargetFailed, Stage: "failed", Detail: shortRunSummary(err.Error()), Error: err.Error()}
 		}
@@ -340,23 +342,23 @@ func (s *Server) runHelperSetupJob(ctx context.Context, job store.Job, host stor
 	if err != nil {
 		return jobTargetOutcome{Status: store.JobTargetFailed, Stage: "failed", Detail: "read controller binary", Error: err.Error()}
 	}
-	output, err := remote.InstallHelper(ctx, s.hostTarget(host, ""), remoteHostKey(key), binary, "")
+	output, err := remote.InstallHelper(ctx, s.hostTarget(host, ""), remoteHostKey(key), binary, sudoPassword)
 	if errors.Is(err, remote.ErrSudoPasswordRequired) {
 		return jobTargetOutcome{
 			Status: store.JobTargetSkipped, Stage: "skipped",
-			Detail: "sudo -n is not available; use the per-host Setup action to enter a sudo password once",
+			Detail: "sudo -n is not available; create a new job with a shared sudo password or use the per-host Setup action",
 			Error:  err.Error(),
 		}
 	}
 	if errors.Is(err, remote.ErrSudoPasswordInvalid) {
-		return jobTargetOutcome{Status: store.JobTargetFailed, Stage: "failed", Detail: "sudo password rejected", Error: err.Error()}
+		return jobTargetOutcome{Status: store.JobTargetFailed, Stage: "failed", Detail: "shared sudo password rejected on this host", Error: err.Error()}
 	}
 	if err != nil {
 		lower := strings.ToLower(err.Error())
 		if strings.Contains(lower, "sudo is not available") || strings.Contains(lower, "passwordless") {
 			return jobTargetOutcome{
 				Status: store.JobTargetSkipped, Stage: "skipped",
-				Detail: "helper installation needs non-interactive sudo; use the per-host Setup action with a sudo password",
+				Detail: "helper installation needs non-interactive sudo; provide a shared sudo password or use the per-host Setup action",
 				Error:  err.Error(),
 			}
 		}

@@ -1603,9 +1603,11 @@ collection, cleanup preview/apply, reboot, and uploaded-package installation.
   **Retry** after the operator reviews the result.
 - Background jobs require key authentication and a trusted host key. Most
   actions also require the restricted `NOPASSWD` helper. Helper-setup jobs
-  additionally require non-interactive sudo for the binary install and
-  `visudo` steps; the restricted helper rule alone is not enough. Password-auth
-  and sudo-password hosts remain interactive per-host actions.
+  additionally require sudo for the binary install and `visudo` steps; they use
+  passwordless sudo when no password is supplied, or one shared sudo password
+  entered when the job is created. The password is held only in controller
+  memory and is not persisted. Password-auth hosts remain interactive per-host
+  actions.
 
 **Deploy package** accepts one `.deb`, `.rpm`, `.pkg.tar.zst`, or `.apk` file,
 one or more selected hosts, and optional installer environment variables such as
@@ -2011,8 +2013,10 @@ installing a new helper requires a manual root step.
 
 The per-host **Setup** action is interactive and can prompt for an SSH or sudo
 password. **Setup selected** and **Update helpers** create durable background
-jobs and cannot prompt; they require key authentication and non-interactive
-sudo for the install and `visudo` steps. Use the per-host action for a
+jobs and ask for one optional shared sudo password for the whole job. Leave it
+blank when every target already has passwordless sudo. The password is kept only
+in controller memory, is never written to the database, and is lost if the
+controller restarts before the job finishes. Use the per-host action for a
 locked-down target or the initial bootstrap.
 
 Security notes:
@@ -2025,7 +2029,8 @@ Security notes:
 - The sudo password is sent over SSH stdin and never stored. In the interactive
   per-host flow it can be reused from browser memory for hosts with the same SSH
   username; a wrong password is discarded and prompted again. Selected-host and
-  fleet helper updates are background jobs and cannot prompt for a password.
+  fleet helper updates accept one shared password when the job is created; the
+  controller keeps it only in memory and clears it when the job finishes.
 - The final verification always uses `sudo -n`. If the restricted rule does not
   work, Setup fails instead of reporting success.
 - The temporary sudoers file is dot-named, so sudo ignores it while `visudo`
@@ -2046,9 +2051,11 @@ cell also shows an amber `N unused` badge.
 Use the checkbox column to select one, several, or all hosts. The header
 checkbox selects the whole fleet. **Setup selected (N)** and **Update helpers**
 create durable helper-setup jobs. They run sequentially on key-auth hosts with a
-trusted key and a working restricted `NOPASSWD` helper; hosts without
-passwordless sudo are skipped with a clear result. Use the per-host **Setup**
-action for the initial interactive bootstrap.
+trusted key. The UI asks for one optional shared sudo password for the job;
+leave it blank when every target already has passwordless sudo. The password is
+kept only in controller memory and is not stored. Hosts that need a password
+when none was supplied are skipped with a clear result. Use the per-host
+**Setup** action for the initial interactive bootstrap or a locked-down target.
 
 **Collect facts (N)** creates a durable `facts` job and refreshes OS,
 pending-update, orphaned-package, reboot, and helper-build data. Password-auth
@@ -2086,10 +2093,12 @@ connection test.
   running process uploads its old binary.
 - Hosts with untrusted host keys are skipped with a clear result. Run **Test**
   and trust the key first.
-- Durable helper jobs require key authentication and non-interactive sudo for
-  the install and `visudo` steps. The restricted helper rule alone cannot
-  replace the helper binary. Password-auth and sudo-password hosts use the
-  per-host interactive **Setup** fallback.
+- Durable helper jobs require key authentication and sudo for the install and
+  `visudo` steps. They use passwordless sudo when no shared password is given,
+  or the one shared password entered when the job is created. The password is
+  held only in controller memory and is not stored. The restricted helper rule
+  alone cannot replace the helper binary. Password-auth hosts use the per-host
+  interactive **Setup** fallback.
 - The job persists across a browser reload or closed tab. **Stop after current
   host** cancels the remaining queue; the host currently being updated finishes.
 - Each successful host is recorded as `bootstrap-helper` in the audit log.
@@ -2276,22 +2285,24 @@ the sudo password.
   restart the server to clear it.
 - A wrong password is rejected and the cached value is discarded.
 - The interactive per-host flows may reuse an accepted sudo password in browser
-  memory for hosts with the same SSH username. Background jobs never receive a
-  sudo password.
+  memory for hosts with the same SSH username. Helper-setup background jobs may
+  receive one shared sudo password when the job is created; the controller keeps
+  it only in memory and clears it when the job finishes or is cancelled.
+- Other background jobs never receive a sudo password.
 - The reuse is deliberately memory-only. It is not written to the database,
   `localStorage`, `sessionStorage`, a file, an environment variable, or a
   command line. If the password is wrong for a later host, HIBP discards the
   cached value, prompts once for that host, and retries it.
 
 The safe way to avoid sudo prompts entirely is to install the restricted
-`NOPASSWD` helper rule with the interactive **Setup** action. Selected-host and
-fleet jobs require key authentication and non-interactive sudo; they do not
-prompt. Do not store a sudo password in plaintext configuration, browser
-storage, or a shared script.
+`NOPASSWD` helper rule with the interactive **Setup** action. Selected-host
+helper jobs can accept one shared password, but it is not persisted; keep it
+available while the controller runs. Do not store a sudo password in plaintext
+configuration, browser storage, or a shared script.
 
-This fallback is for interactive use only. **Scheduled patching and durable
-background jobs require the restricted `NOPASSWD` helper or agent mode.** An
-unattended operation cannot answer a sudo prompt.
+This fallback is for interactive use only. **Scheduled patching requires the
+restricted `NOPASSWD` helper or agent mode.** An unattended scheduled operation
+cannot answer a sudo prompt.
 
 ### If you cannot change sudoers
 
@@ -3405,8 +3416,9 @@ Current status:
   and run-history retention is not implemented.
 - Durable jobs run only on key-auth hosts with a trusted host key. Most actions
   require the restricted NOPASSWD helper; helper setup additionally requires
-  non-interactive sudo for the install and `visudo` steps. Password-auth and
-  sudo-password hosts remain interactive per-host actions. A destructive job interrupted by a controller
+  sudo for the install and `visudo` steps, using passwordless sudo or one shared
+  memory-only sudo password supplied when the job is created. Password-auth
+  hosts remain interactive per-host actions. A destructive job interrupted by a controller
   restart is marked interrupted and requires an explicit retry; a
   non-destructive job resumes from the next pending host. Job and staged-package
   retention is manual: dismiss old jobs to remove their evidence and staged
