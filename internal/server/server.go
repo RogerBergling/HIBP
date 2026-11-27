@@ -78,6 +78,8 @@ type Server struct {
 	networkHostsMu      sync.Mutex
 	networkHosts        map[string]store.Host
 	networkHostsAt      time.Time
+	syslogWarnMu        sync.Mutex
+	syslogWarnAt        map[string]time.Time
 	schedulerMu         sync.Mutex
 	schedulerScanning   bool
 	schedulerRunning    map[string]bool
@@ -188,6 +190,7 @@ func New(cfg Config) (*Server, error) {
 		jobSudoPasswords:    make(map[string]string),
 		jobCheckmkPasswords: make(map[string]string),
 		networkHosts:        make(map[string]store.Host),
+		syslogWarnAt:        make(map[string]time.Time),
 		schedulerRunning:    make(map[string]bool),
 		schedulerWake:       make(chan struct{}, 1),
 		schedulerSlots:      make(chan struct{}, 20),

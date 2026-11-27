@@ -180,10 +180,12 @@ func (s *Server) handleSyslogConnection(ctx context.Context, conn net.Conn) {
 func (s *Server) handleSyslogMessage(sourceIP, line string) {
 	msg, err := parseSyslogMessage(line, time.Now())
 	if err != nil {
+		s.logSyslogDiagnostic(sourceIP, "invalid message: "+err.Error())
 		return
 	}
 	host, ok := s.networkHostForSource(sourceIP)
 	if !ok {
+		s.logSyslogDiagnostic(sourceIP, "unmapped source")
 		return
 	}
 	category, severity := syslogEventClass(msg)
@@ -205,7 +207,30 @@ func (s *Server) handleSyslogMessage(sourceIP, line string) {
 	}
 	if err := s.store.AddHostEvents(host.ID, []store.HostEvent{event}); err != nil {
 		slog.Warn("syslog: store event", "host", host.Name, "error", err)
+		return
 	}
+	slog.Debug("syslog: accepted event", "host", host.Name, "source", sourceIP, "category", category, "severity", severity)
+}
+
+// logSyslogDiagnostic reports an unmapped source or invalid message at most
+// once per minute per source and issue. This makes syslog delivery problems
+// visible without allowing a noisy or spoofed source to flood the log.
+func (s *Server) logSyslogDiagnostic(source, issue string) {
+	s.syslogWarnMu.Lock()
+	if s.syslogWarnAt == nil {
+		s.syslogWarnAt = make(map[string]time.Time)
+	}
+	key := source + "|" + issue
+	if last, ok := s.syslogWarnAt[key]; ok && time.Since(last) < time.Minute {
+		s.syslogWarnMu.Unlock()
+		return
+	}
+	if len(s.syslogWarnAt) > 1000 {
+		s.syslogWarnAt = make(map[string]time.Time)
+	}
+	s.syslogWarnAt[key] = time.Now()
+	s.syslogWarnMu.Unlock()
+	slog.Warn("syslog: "+issue, "source", source)
 }
 
 func (s *Server) networkHostForSource(sourceIP string) (store.Host, bool) {

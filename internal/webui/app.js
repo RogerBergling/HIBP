@@ -1978,6 +1978,76 @@ function emptyTableRow(columns, message) {
   return row;
 }
 
+function renderEventTable() {
+  const eventBody = $('event-body');
+  if (!eventBody) return;
+  const events = state.events || [];
+  const sourceSelect = $('event-source-filter');
+  const searchInput = $('event-search');
+  const selectedSource = sourceSelect ? sourceSelect.value : '';
+  if (sourceSelect) {
+    const sources = [...new Set(events.map((record) => record.source).filter(Boolean))].sort();
+    sourceSelect.replaceChildren();
+    const all = el('option', '', 'All sources');
+    all.value = '';
+    sourceSelect.append(all);
+    for (const source of sources) {
+      const option = el('option', '', source);
+      option.value = source;
+      sourceSelect.append(option);
+    }
+    sourceSelect.value = sources.includes(selectedSource) ? selectedSource : '';
+  }
+  const sourceFilter = sourceSelect ? sourceSelect.value : '';
+  const query = searchInput ? searchInput.value.trim().toLowerCase() : '';
+  const filtered = events.filter((record) => {
+    if (sourceFilter && record.source !== sourceFilter) return false;
+    if (!query) return true;
+    const host = (state.hosts || []).find((entry) => entry.id === record.host_id);
+    const haystack = [
+      host ? host.name : '', record.source, record.category, record.severity,
+      record.username, record.remote_ip, record.message,
+    ].filter(Boolean).join(' ').toLowerCase();
+    return haystack.includes(query);
+  });
+  eventBody.replaceChildren();
+  if (!events.length) {
+    eventBody.append(emptyTableRow(8, 'No security or service events collected yet.'));
+  } else if (!filtered.length) {
+    eventBody.append(emptyTableRow(8, 'No events match the current filter.'));
+  }
+  for (const record of filtered) {
+    const row = el('tr');
+    const timeTd = el('td');
+    const time = el('span', 'nowrap', relativeTime(record.occurred_at));
+    time.title = record.occurred_at ? new Date(record.occurred_at).toLocaleString() : '';
+    timeTd.append(time);
+    const host = (state.hosts || []).find((entry) => entry.id === record.host_id);
+    const hostTd = el('td', '', host ? host.name : (record.host_id ? record.host_id.slice(0, 8) : '—'));
+    const sourceTd = el('td', '', record.source || '—');
+    sourceTd.title = record.source || '';
+    const categoryTd = el('td', '', record.category || '—');
+    const severity = String(record.severity || 'info');
+    const severityClass = severity === 'critical' ? 'unreachable' : severity === 'warning' ? 'review' : severity === 'info' ? 'reachable' : 'unknown';
+    const severityTd = el('td');
+    severityTd.append(el('span', 'pill ' + severityClass, severity));
+    const userTd = el('td', '', record.username || '—');
+    const ipTd = el('td', '', record.remote_ip || '—');
+    const messageTd = el('td', 'alert-detail', record.message || '');
+    messageTd.title = record.message || '';
+    row.append(timeTd, hostTd, sourceTd, categoryTd, severityTd, userTd, ipTd, messageTd);
+    eventBody.append(row);
+  }
+  const count = $('nav-event-count');
+  if (count) count.textContent = String(events.length);
+  const summary = $('events-summary');
+  if (summary) {
+    summary.textContent = filtered.length === events.length
+      ? events.length + ' recent event' + (events.length === 1 ? '' : 's')
+      : filtered.length + ' of ' + events.length + ' events';
+  }
+}
+
 function renderMonitoring() {
   const body = $('monitor-body');
   if (!body) return;
@@ -2118,40 +2188,7 @@ function renderMonitoring() {
     alertBody.append(row);
   }
 
-  const eventBody = $('event-body');
-  if (eventBody) {
-    const events = state.events || [];
-    eventBody.replaceChildren();
-    if (!events.length) {
-      eventBody.append(emptyTableRow(8, 'No security or service events collected yet.'));
-    }
-    for (const record of events) {
-      const row = el('tr');
-      const timeTd = el('td');
-      const time = el('span', 'nowrap', relativeTime(record.occurred_at));
-      time.title = record.occurred_at ? new Date(record.occurred_at).toLocaleString() : '';
-      timeTd.append(time);
-      const host = (state.hosts || []).find((entry) => entry.id === record.host_id);
-      const hostTd = el('td', '', host ? host.name : record.host_id.slice(0, 8));
-      const sourceTd = el('td', '', record.source || '—');
-      sourceTd.title = record.source || '';
-      const categoryTd = el('td', '', record.category || '—');
-      const severity = String(record.severity || 'info');
-      const severityClass = severity === 'critical' ? 'unreachable' : severity === 'warning' ? 'review' : severity === 'info' ? 'reachable' : 'unknown';
-      const severityTd = el('td');
-      severityTd.append(el('span', 'pill ' + severityClass, severity));
-      const userTd = el('td', '', record.username || '—');
-      const ipTd = el('td', '', record.remote_ip || '—');
-      const messageTd = el('td', 'alert-detail', record.message || '');
-      messageTd.title = record.message || '';
-      row.append(timeTd, hostTd, sourceTd, categoryTd, severityTd, userTd, ipTd, messageTd);
-      eventBody.append(row);
-    }
-    const count = $('nav-event-count');
-    if (count) count.textContent = String(events.length);
-    const summary = $('events-summary');
-    if (summary) summary.textContent = events.length + ' recent event' + (events.length === 1 ? '' : 's');
-  }
+  renderEventTable();
   syncMonitorSelection();
 }
 
@@ -6838,6 +6875,8 @@ function bind() {
 
   $('monitor-events').addEventListener('click', () => setView('events'));
   $('events-refresh').addEventListener('click', () => loadAll({ force: true }));
+  $('event-source-filter').addEventListener('change', renderEventTable);
+  $('event-search').addEventListener('input', renderEventTable);
   for (const button of document.querySelectorAll('.nav-item[data-view]')) {
     button.addEventListener('click', () => setView(button.dataset.view));
   }
