@@ -13,7 +13,7 @@ BUILD_TARGET ?= $(shell $(GO) env GOOS 2>/dev/null || printf unknown)/$(shell $(
 BUILD_TYPE ?= development
 HIBP_LDFLAGS ?= -X main.version=$(VERSION) -X main.buildNumber=$(BUILD_NUMBER) -X main.buildCommit=$(BUILD_COMMIT) -X main.buildDate=$(BUILD_DATE) -X main.buildTarget=$(BUILD_TARGET) -X main.buildType=$(BUILD_TYPE)
 
-.PHONY: help check-go check-cc check-docker check-sqlcipher bootstrap build build-system test race vet static production static-production demo-build demo-test demo-image validate package clean
+.PHONY: help check-go check-cc check-docker check-sqlcipher bootstrap build build-system test race vet static production static-production demo-build demo-test demo-image agent-build validate package clean
 
 help:
 	@echo "HIBP build targets:"
@@ -23,6 +23,7 @@ help:
 	@echo "  make test               Go tests (development driver)"
 	@echo "  make race               race-detector tests"
 	@echo "  make static             development static ELF"
+	@echo "  make agent-build        Linux + Windows monitoring agent binaries"
 	@echo "  make production         production Docker image (requires Docker)"
 	@echo "  make demo-build         fake-data demo binary (development driver)"
 	@echo "  make demo-test          tests with the demo build tag"
@@ -94,6 +95,13 @@ static: check-go check-cc
 		-o $(BIN) ./cmd/hibp
 	@file $(BIN)
 	@ldd $(BIN) 2>&1 || true
+
+# Cross-platform monitoring agent. Pure Go, no SQLCipher/CGO.
+agent-build: check-go
+	mkdir -p dist
+	CGO_ENABLED=0 $(GO) build -trimpath -o dist/hibp-agent ./cmd/hibp-agent
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build -trimpath -o dist/hibp-agent.exe ./cmd/hibp-agent
+	@file dist/hibp-agent dist/hibp-agent.exe
 
 # Production artifact: current SQLCipher + patched mattn driver in a pinned
 # Alpine/musl build image. Requires Docker.

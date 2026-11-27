@@ -317,3 +317,49 @@ func TestJobRejectsSudoPasswordForNonHelperSetup(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 }
+
+func TestRunbookJobAcceptsTypedActionsAndSudoPassword(t *testing.T) {
+	ts, db, app := testServerWithApp(t, true)
+	host, err := db.CreateHost(store.Host{
+		Name: "web01", Address: "10.0.0.11", Port: 22, Username: "ubuntu",
+		AuthType: "key", KeyPath: "/tmp/key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/jobs", "test-token",
+		`{"kind":"runbook","host_ids":["`+host.ID+`"],"confirm":"run","sudo_password":"super-secret","runbook":{"action":"service-restart","unit":"nginx.service"}}`)
+	if resp.StatusCode != http.StatusCreated {
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		t.Fatalf("expected created runbook job, got %d %s", resp.StatusCode, raw)
+	}
+	var created struct {
+		Job jobView `json:"job"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if created.Job.Kind != "runbook" || created.Job.Status != store.JobQueued {
+		t.Fatalf("unexpected runbook job: %+v", created.Job)
+	}
+	if got := app.jobSudoPassword(created.Job.ID); got != "super-secret" {
+		t.Fatalf("expected in-memory sudo password, got %q", got)
+	}
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/jobs/"+created.Job.ID+"/cancel", "test-token", `{}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected queued cancel, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+	if got := app.jobSudoPassword(created.Job.ID); got != "" {
+		t.Fatalf("expected sudo password clear, got %q", got)
+	}
+
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/jobs", "test-token",
+		`{"kind":"runbook","host_ids":["`+host.ID+`"],"confirm":"remove","runbook":{"action":"package-remove-apply","packages":["bad;rm -rf /"]}}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected invalid package rejection, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+}

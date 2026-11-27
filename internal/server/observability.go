@@ -24,6 +24,9 @@ var settingDefaults = map[string]string{
 	"collector.facts_interval":   "12h",
 	"collector.metrics_interval": "5m",
 	"metrics.retention_days":     "30",
+	"events.enabled":             "1",
+	"events.retention_days":      "30",
+	"events.auth_window_minutes": "10",
 	"docker.scan_roots":          "/opt",
 	"backup.directory":           "",
 	"backup.retention_count":     "3",
@@ -838,6 +841,20 @@ func validateSetting(key, value string) error {
 		days, err := strconv.Atoi(value)
 		if err != nil || days < 1 || days > 3650 {
 			return errors.New("metrics.retention_days must be between 1 and 3650")
+		}
+	case "events.enabled":
+		if value != "0" && value != "1" {
+			return errors.New("events.enabled must be 0 or 1")
+		}
+	case "events.retention_days":
+		days, err := strconv.Atoi(value)
+		if err != nil || days < 1 || days > 3650 {
+			return errors.New("events.retention_days must be between 1 and 3650")
+		}
+	case "events.auth_window_minutes":
+		minutes, err := strconv.Atoi(value)
+		if err != nil || minutes < 1 || minutes > 1440 {
+			return errors.New("events.auth_window_minutes must be between 1 and 1440")
 		}
 	case "docker.scan_roots":
 		if strings.TrimSpace(value) == "" {

@@ -65,9 +65,10 @@ Out of scope:
   Selected-host and fleet jobs require key authentication and non-interactive
   sudo; they never receive a prompted password. `ssh-agent`, hardware-backed
   keys, SSH certificates, and passphrase-protected key files are not
-  implemented. Host create, update, CSV import, and CMDB import reject `agent`
-  and `certificate`; scheduled collection and background jobs only process
-  `auth_type=key` hosts.
+  implemented. Host create, update, CSV import, and CMDB import accept
+  `auth_type=agent` for monitoring-only hosts and reject `certificate`;
+  scheduled SSH collection and background jobs only process `auth_type=key`
+  hosts. Agent hosts use a per-host bearer token and cannot run SSH actions.
 - `ProxyJump` is single-hop only. Multi-hop chains, interactive bastion
   authentication, SSH agent forwarding, and a jump host behind another jump are
   not supported.
@@ -134,7 +135,8 @@ Out of scope:
 - CMDB import is not a single transaction; a mid-commit failure can leave
   earlier rows applied. Regular CSV import matches duplicates by address/port,
   not CMDB ID. Missing auth metadata defaults to `key` and requires a key path;
-  unsupported `agent`/`certificate` values are rejected.
+  unsupported `certificate` values are rejected, while `agent` is accepted for
+  monitoring-only hosts.
 - Real target, cross-distro, helper-rollout, reboot, and package-update testing
   is still required on disposable VMs before broad production use.
 
@@ -151,6 +153,13 @@ cron-based patch schedules are implemented.
   deliberately omits environment variables, command lines, mounts, and secrets.
 - The collector never prompts for credentials. Scheduled collection requires
   the restricted NOPASSWD helper; password-auth hosts are collected manually.
+- Agent hosts use a per-host bearer token. Only a SHA-256 hash is stored; the
+  token is shown once and can be rotated or revoked. Agent endpoints accept
+  heartbeat, snapshot, and normalized event data for the bound host only; they
+  cannot execute commands. The current MVP does not use mTLS, so deploy agents
+  over HTTPS and restrict the endpoint with a private network/firewall policy.
+- Windows agent support is monitoring-only. It does not perform Windows Update
+  patching, arbitrary commands, or Windows runbooks.
 - HTTP, TCP, and TLS monitors are controller-originated network probes. They do
   not use SSH, the helper, or a host assignment, so a standalone monitor works
   when the target host is offline or unreachable. The target is therefore a

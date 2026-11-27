@@ -485,8 +485,13 @@ func sudoOutputLines(output string) []string {
 }
 
 func (s *Server) runHelper(ctx context.Context, host store.Host, action, sshPassword, sudoPassword string, timeout time.Duration, args ...string) (string, int, error) {
+	return s.runHelperActionInput(ctx, host, action, sshPassword, sudoPassword, "", timeout, args...)
+}
+
+func (s *Server) runHelperActionInput(ctx context.Context, host store.Host, action, sshPassword, sudoPassword, input string, timeout time.Duration, args ...string) (string, int, error) {
 	switch action {
-	case "facts", "preview", "check", "apply", "cleanup-check", "cleanup-apply", "reboot", "reboot-check", "system-info", "metrics", "docker-list", "docker-check", "docker-apply", "docker-update-all":
+	case "facts", "preview", "check", "apply", "cleanup-check", "cleanup-apply", "reboot", "reboot-check", "system-info", "metrics", "events", "docker-list", "docker-check", "docker-apply", "docker-update-all",
+		"service-restart", "service-enable", "service-disable", "package-remove-preview", "package-remove-apply", "package-install-preview", "package-install-apply":
 	default:
 		return "", 0, errors.New("invalid helper action")
 	}
@@ -515,16 +520,19 @@ func (s *Server) runHelper(ctx context.Context, host store.Host, action, sshPass
 		helperAction += " " + args[0]
 	}
 	if s.demo != nil {
+		switch action {
+		case "service-restart", "service-enable", "service-disable", "package-remove-preview", "package-remove-apply", "package-install-preview", "package-install-apply":
+			return `{"action":"` + action + `","ok":true,"exit_code":0,"output":"demo: simulated ` + action + `"}`, 0, nil
+		}
 		// Demo hosts use safe-upgrade simulation; the demo fixture does not
 		// install a real helper or depend on the new sudoers actions.
 		demoAction := strings.TrimSuffix(helperAction, "-full")
 		return s.demo.RunHelper(ctx, host, demoAction, "", timeout)
 	}
 	command := "sudo -n /usr/local/libexec/hibp/hibp-helper " + helperAction
-	input := ""
 	if sudoPassword != "" {
 		command = "sudo -S -p '' /usr/local/libexec/hibp/hibp-helper " + helperAction
-		input = sudoPassword + "\n"
+		input = sudoPassword + "\n" + input
 	}
 	output, code, err := remote.RunWithInput(ctx, s.hostTarget(host, sshPassword), &remote.HostKey{KeyType: key.KeyType, Fingerprint: key.Fingerprint}, command, input, timeout)
 	if err != nil {
@@ -1137,19 +1145,24 @@ func (s *Server) collectFactsForHost(ctx context.Context, actor string, host sto
 
 func storeFactsFromHelper(facts helper.Facts) store.Facts {
 	return store.Facts{
-		CollectedAt:      crypto.Now(),
-		UptimeSeconds:    facts.UptimeSeconds,
-		BootTime:         facts.BootTime,
-		Kernel:           facts.Kernel,
-		OSPrettyName:     facts.OSPrettyName,
-		PackageManager:   facts.PackageManager,
-		RebootRequired:   facts.RebootRequired,
-		DiskFreeBytes:    facts.DiskFreeBytes,
-		TimeSyncOK:       facts.TimeSyncOK,
-		PendingUpdates:   facts.PendingUpdates,
-		OrphanedPackages: facts.OrphanedPackages,
-		CleanupSupported: facts.CleanupSupported,
-		Agent:            facts.Agent,
+		CollectedAt:         crypto.Now(),
+		UptimeSeconds:       facts.UptimeSeconds,
+		BootTime:            facts.BootTime,
+		Kernel:              facts.Kernel,
+		OSPrettyName:        facts.OSPrettyName,
+		PackageManager:      facts.PackageManager,
+		RebootRequired:      facts.RebootRequired,
+		DiskFreeBytes:       facts.DiskFreeBytes,
+		TimeSyncOK:          facts.TimeSyncOK,
+		TimeSyncSource:      facts.TimeSyncSource,
+		TimeSyncOffset:      facts.TimeSyncOffset,
+		TimeSyncOffsetKnown: facts.TimeSyncOffsetKnown,
+		TimeSyncStratum:     facts.TimeSyncStratum,
+		TimeSyncLastSync:    facts.TimeSyncLastSync,
+		PendingUpdates:      facts.PendingUpdates,
+		OrphanedPackages:    facts.OrphanedPackages,
+		CleanupSupported:    facts.CleanupSupported,
+		Agent:               facts.Agent,
 	}
 }
 

@@ -296,6 +296,8 @@ func (s *Server) executeJobTarget(ctx context.Context, job store.Job, payload jo
 		return s.runRebootJob(ctx, job, host)
 	case "package-install":
 		return s.runPackageInstallJob(ctx, job, payload, host)
+	case "runbook":
+		return s.runRunbookJob(ctx, job, payload, host)
 	default:
 		return jobTargetOutcome{Status: store.JobTargetFailed, Stage: "failed", Detail: "unknown job kind", Error: "unknown job kind"}
 	}
@@ -373,6 +375,41 @@ func (s *Server) runHelperSetupJob(ctx context.Context, job store.Job, host stor
 		Status: store.JobTargetSucceeded, Stage: "done", Detail: "helper installed and verified",
 		Output: output, Result: map[string]any{"output": output},
 	}
+}
+
+func (s *Server) runRunbookJob(ctx context.Context, job store.Job, payload jobPayload, host store.Host) jobTargetOutcome {
+	if payload.Runbook == nil {
+		return jobTargetOutcome{Status: store.JobTargetFailed, Stage: "failed", Detail: "runbook action is missing", Error: "runbook action is missing"}
+	}
+	spec := *payload.Runbook
+	s.stage(job, host, spec.Action)
+	requestJSON, err := json.Marshal(helper.RunbookRequest{Unit: spec.Unit, Packages: spec.Packages})
+	if err != nil {
+		return jobTargetOutcome{Status: store.JobTargetFailed, Stage: "failed", Detail: "encode runbook", Error: err.Error()}
+	}
+	output, code, err := s.runHelperActionInput(ctx, host, spec.Action, "", s.jobSudoPassword(job.ID), string(requestJSON), 15*time.Minute)
+	if errors.Is(err, errSudoPasswordRequired) {
+		return jobTargetOutcome{Status: store.JobTargetSkipped, Stage: "skipped", Detail: "sudo -n is not available; provide a shared sudo password or use an interactive runbook", Error: err.Error()}
+	}
+	if errors.Is(err, errSudoPasswordInvalid) {
+		return jobTargetOutcome{Status: store.JobTargetFailed, Stage: "failed", Detail: "sudo password rejected", Error: err.Error()}
+	}
+	if err != nil {
+		return jobTargetOutcome{Status: store.JobTargetFailed, Stage: "failed", Detail: shortRunSummary(err.Error()), Error: err.Error()}
+	}
+	var result helper.Result
+	if json.Unmarshal([]byte(output), &result) != nil {
+		return jobTargetOutcome{Status: store.JobTargetFailed, Stage: "failed", Detail: "invalid runbook result", Error: output}
+	}
+	if !result.OK {
+		detail := result.Action + " failed"
+		if result.Error != "" {
+			detail = result.Error
+		}
+		return jobTargetOutcome{Status: store.JobTargetFailed, Stage: "failed", ExitCode: code, Detail: shortRunSummary(detail), Output: result.Output, Error: result.Error}
+	}
+	_ = s.store.AddAudit(job.Actor, "runbook", "host", host.ID, spec.Action)
+	return jobTargetOutcome{Status: store.JobTargetSucceeded, Stage: "done", ExitCode: code, Detail: spec.Action + " completed", Output: result.Output, Result: result}
 }
 
 func (s *Server) runFactsJob(ctx context.Context, job store.Job, host store.Host) jobTargetOutcome {

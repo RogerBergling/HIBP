@@ -131,6 +131,9 @@ func SeedDemo(st *store.Store) error {
 		if err := st.SaveServiceState(host.ID, info.Systemd.FailedUnits, info.Systemd.RunningUnits); err != nil {
 			return err
 		}
+		if err := st.EnsureServiceBaseline(host.ID, info.Systemd.RunningUnits); err != nil {
+			return err
+		}
 		for i := 0; i < 96; i++ {
 			sample := runtime.metrics(host)
 			if err := st.SaveMetrics(host.ID, store.MetricSample{

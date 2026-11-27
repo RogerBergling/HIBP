@@ -144,6 +144,7 @@ per-host fallbacks.
 - [Production deployment checklist](#production-deployment-checklist)
 - [Authentication and MFA](#authentication-and-mfa)
 - [Docker, system information, and monitoring](#docker-system-information-and-monitoring)
+- [Enterprise monitoring design](docs/enterprise-monitoring.md)
 - [Target sudo setup](#target-sudo-setup)
 - [What HIBP is](#what-hibp-is)
 - [Why it exists](#why-it-exists)
@@ -188,7 +189,8 @@ Windows, Linux, or macOS over an SSH tunnel (or the optional LAN HTTPS
 listener), so a Windows administrator gets the same UI and actions as a Linux
 administrator. The controller and target helper
 must run on Linux. There is no native desktop client on any operating system,
-no Windows controller, and no Windows target support. See
+no Windows controller, and no Windows target patching. Windows monitoring through
+the cross-platform agent is a design target. See
 [Windows client](#windows-client).
 
 ## Install a release (recommended)
@@ -392,7 +394,7 @@ HIBP_SSH_DIR=./secrets/ssh
 HIBP_PASSPHRASE_FILE=./secrets/db.passphrase
 ```
 
-`:edge` contains schema 15 and can migrate older local databases forward. It is
+`:edge` contains schema 19 and can migrate older local databases forward. It is
 an unreleased build; after validating the migration, switch to a pinned release
 or image digest.
 
@@ -760,12 +762,15 @@ Server flags:
 Helper actions are intentionally fixed: `facts`, `facts-full`, `preview`,
 `preview-full`, `check`, `check-full`, `apply`, `apply-full`,
 `cleanup-check`, `cleanup-apply`, `reboot`, `reboot-check`, `system-info`,
-`metrics`, `docker-list`, `docker-check <project>`, `docker-apply <project>`,
-`docker-update-all`, and `install-package`. The `*-full` actions are the
-explicit APT `full-upgrade` policy variants. `install-package` reads one
-validated JSON request (package bytes, SHA-256, and installer environment) from
-stdin and never accepts package names or shell fragments as command-line
-arguments. The other actions do not accept package names, host names, or shell
+`metrics`, `events`, `docker-list`, `docker-check <project>`,
+`docker-apply <project>`, `docker-update-all`, `install-package`,
+`service-restart`, `service-enable`, `service-disable`,
+`package-remove-preview`, `package-remove-apply`, `package-install-preview`,
+and `package-install-apply`. The `*-full` actions are the explicit APT
+`full-upgrade` policy variants. `install-package` and the typed runbook actions
+read one validated JSON request from stdin and never accept package names, unit
+names, or shell fragments as command-line arguments. The other actions do not
+accept package names, host names, or shell
 fragments from the controller.
 
 Important constraints:
@@ -1773,10 +1778,22 @@ Implemented check types:
 - `host.cpu`, `host.memory`, `host.disk`, and `host.load` — warning and critical
   thresholds from the latest metrics sample. Disk monitors name a mount path
   and use the collected system information.
+- `host.ntp` — NTP synchronization and absolute clock offset from the latest
+  facts sample. The default monitor uses a 1-second warning and 5-second
+  critical threshold; both are editable.
 - `docker.project` and `docker.container` — missing, stopped, or unhealthy
   workloads. The collector refreshes Docker inventory on each metrics tick.
+- `docker.health` — fleet-wide Docker health: critical when a container is
+  unhealthy, restarting, or dead.
 - `service.systemd` — unit state from the systemd snapshot collected with
   metrics. Missing or failed units are critical; stale snapshots are unknown.
+- `service.baseline` — fleet-wide baseline drift: critical when any systemd unit
+  is failed or a unit captured in the first running-service baseline is no
+  longer running. The default monitor is created by migration and can be
+  disabled, retargeted, or deleted after review.
+- `security.auth` — fleet-wide failed-authentication count from normalized
+  journald/auth events. Warning and critical thresholds are counts inside a
+  configurable window; the default is 5 warning / 10 critical in 10 minutes.
 - `http` — HTTP/HTTPS status (2xx/3xx healthy) and optional latency thresholds.
 - `tcp` — TCP connect and optional latency thresholds.
 - `ssl` — TLS handshake plus certificate expiry in days.
@@ -1809,7 +1826,44 @@ enabled state. Each node shows the monitor name, current worst status, type,
 target or scope, and last check; click a node to edit that monitor. Use the
 **Group by** selector to change the map layout.
 
-Email settings are global; each monitor may override recipients. STARTTLS and
+### HIBP monitoring agent
+
+The optional `hibp-agent` binary covers agent-only hosts, including Windows
+monitoring, without exposing an SSH listener. Create a host with
+`auth_type=agent`, use **Agent token** on the host row to create or rotate a
+token, and install the agent with that one-time token.
+
+```bash
+make agent-build
+```
+
+Linux:
+
+```bash
+sudo ./dist/hibp-agent --server https://hibp.lan:8443 --token '<token>' --interval 5m
+```
+
+Windows service, from an elevated prompt:
+
+```powershell
+sc.exe create HIBPAgent binPath= "C:\Program Files\HIBP\hibp-agent.exe --server https://hibp.lan:8443 --token <token> --interval 5m" start= auto
+sc.exe start HIBPAgent
+```
+
+The agent pushes heartbeat, snapshot, and normalized events over HTTPS. Agent
+tokens are stored as hashes and can be revoked or rotated. Windows support is
+monitoring-only: services, W32Time, and Security/System Event Log events. Windows
+Update patching and Windows runbooks are not implemented.
+
+The planned enterprise monitoring workstream is documented separately in
+[Enterprise monitoring design](docs/enterprise-monitoring.md). Service-baseline
+drift and fleet-wide Docker health defaults are implemented; NTP offset checks,
+authentication-event collection, severity routing, typed bulk runbooks, and the
+optional persistent agent are still proposed.
+
+Email settings are global; each monitor may override recipients. The global
+configuration can define separate warning, critical, and recovery recipient
+lists; blank severity lists fall back to the default recipients. STARTTLS and
 implicit TLS are supported, and SMTP authentication is only allowed over TLS.
 Plain SMTP is available for local relays without authentication. The password
 is stored only in the encrypted database and is never returned by the API or
@@ -2411,9 +2465,9 @@ as core features rather than afterthoughts.
 
 ## Non-goals
 
-- Windows or macOS target patching in v1. The server is Linux; targets are
-  Linux. Other platforms may follow, but they are not part of the initial data
-  model or execution profiles.
+- Windows or macOS target patching in v1. The server is Linux; Windows
+  monitoring through the cross-platform agent is a design target, but Windows
+  patching and Windows runbooks are not part of this workstream.
 - Replacing a full configuration management system. HIBP does not manage
   arbitrary desired state, users, files, or services.
 - An unrestricted remote shell as a default feature. Arbitrary remote scripts
@@ -2433,9 +2487,9 @@ as core features rather than afterthoughts.
   [Packaging and "single executable"](#packaging-and-single-executable).
 - Password SSH as the default. It is a per-host manual fallback; key
   authentication remains the default and the required baseline.
-- An agent on every target in v1. The always-on server makes agentless
-  scheduling viable; an agent is a later option for DMZs, NAT, or very large
-  fleets.
+- An agent required on every target in v1. Agentless SSH remains the default;
+  the cross-platform agent is optional for monitoring and later for DMZs, NAT,
+  or very large fleets.
 - Synchronizing one database between a laptop and a server. The server is
   authoritative; the laptop is a client. Standalone laptop mode uses a separate
   database and does not sync in v1.
@@ -3000,9 +3054,11 @@ That authority must be narrow and auditable.
   restricted sudoers rule. The helper accepts a small allowlist of actions
   (`facts`, `facts-full`, `preview`, `preview-full`, `check`, `check-full`,
   `apply`, `apply-full`, `cleanup-check`, `cleanup-apply`, `reboot`,
-  `reboot-check`, `system-info`, `metrics`, `docker-list`,
+  `reboot-check`, `system-info`, `metrics`, `events`, `docker-list`,
   `docker-check <project>`, `docker-apply <project>`, `docker-update-all`,
-  `install-package`) and validates its arguments.
+  `install-package`, `service-restart`, `service-enable`, `service-disable`,
+  `package-remove-preview`, `package-remove-apply`, `package-install-preview`,
+  `package-install-apply`) and validates its arguments.
 - Example sudoers shape (illustrative, not a complete hardening guide):
 
   ```sudoers
@@ -3049,6 +3105,14 @@ code execution as root. It must be designed as a first-class, audited feature.
 
 **Decision: versioned, approved playbooks only. Arbitrary shell is not supported
 in v1.**
+
+Typed runbooks are implemented for a small allowlisted set of operational
+actions: restart, enable, or disable a systemd service; preview and apply
+package removal; and preview and apply a repository package installation.
+Parameters are validated on the controller and again by the helper, passed as
+JSON over stdin, and never interpolated into a shell. Typed runbooks run as
+durable jobs with per-host audit entries. Arbitrary shell and unapproved custom
+scripts remain unsupported.
 
 - Built-in actions cover normal patching: facts, preview, check, apply, cleanup-check,
   cleanup-apply, reboot, and reboot-check.
@@ -3156,6 +3220,27 @@ Current status:
 
 ### Implemented in current main
 
+- Fleet-wide service baseline drift monitoring. The first collected running-unit
+  snapshot per host becomes the baseline; `service.baseline` alerts on failed
+  units and baseline units that are no longer running. Migration 016 creates the
+  default fleet monitor for existing and new databases.
+- Fleet-wide `docker.health` monitor for unhealthy, restarting, or dead
+  containers. Migration 016 creates the default fleet monitor.
+- Fleet-wide `host.ntp` monitor backed by timedatectl/chrony synchronization and
+  offset telemetry. Migration 017 adds the facts fields and default monitor.
+- Global email severity routing: warning, critical, and recovery recipient
+  lists fall back to the default recipients when blank. Per-monitor recipients
+  still override the global policy.
+- Normalized security and service event collection from journald/auth logs,
+  bounded `host_events` storage with retention, and a fleet-wide
+  `security.auth` default monitor for failed-authentication counts.
+- Typed runbooks for restarting/enabling/disabling services, previewing and
+  applying package removal, and previewing/applying repository package
+  installation. Runbooks use typed JSON over stdin, durable jobs, audit entries,
+  and the existing uploaded-package install path.
+- Cross-platform `hibp-agent` MVP for Linux and Windows monitoring: token
+  authentication, heartbeat, snapshot, normalized events, agent-only host
+  records, and `make agent-build`. Windows support is monitoring-only.
 - Explicit trusted-proxy mode for an existing TLS terminator:
   `--trust-proxy`, a public HTTPS `--public-url`, and
   `--trusted-proxy-cidrs` restricted to the proxy source. The backend listener
@@ -3272,8 +3357,11 @@ Current status:
   chains are shown as unsupported rather than silently flattened.
 - Fixed helper actions (`facts`, `facts-full`, `preview`, `preview-full`,
   `check`, `check-full`, `apply`, `apply-full`, `cleanup-check`,
-  `cleanup-apply`, `reboot`, `reboot-check`, `system-info`, `metrics`,
-  `docker-list`, `docker-check`, `docker-apply`, `docker-update-all`) with
+  `cleanup-apply`, `reboot`, `reboot-check`, `system-info`, `metrics`, `events`,
+  `docker-list`, `docker-check`, `docker-apply`, `docker-update-all`,
+  `service-restart`, `service-enable`, `service-disable`,
+  `package-remove-preview`, `package-remove-apply`, `package-install-preview`,
+  `package-install-apply`) with
   absolute binary paths, a sanitized environment, no shell, and output limits.
 - Project-level Docker Compose pull/apply plus a bulk **Update all Compose
   projects** action that pulls every project and recreates only projects whose
@@ -3515,16 +3603,16 @@ Current status:
 ## Data model
 
 The current schema is implemented in `internal/store/migrations/001_init.sql`
-through `015_apt_upgrade_mode.sql`. Domain objects use UUIDs, timestamps are
+through `019_agents.sql`. Domain objects use UUIDs, timestamps are
 UTC ISO 8601, and durations are stored in seconds.
 
 > **Implemented:** `schema_migrations`, `app_meta`, `hosts`, `host_facts`,
 > `host_keys`, `runs`, `users`, `user_passkeys`, `sessions`,
 > `audit_log`, `host_system_info`, `host_metrics`, `docker_projects`,
 > `docker_containers`, `settings`, `monitors`, `monitor_assignments`,
-> `monitor_state`, `alert_events`, `host_services`, `schedules`,
-> `schedule_assignments`, `jobs`, and `job_targets`. The remaining tables below
-> are planned design targets.
+> `monitor_state`, `alert_events`, `host_services`, `host_service_baseline`,
+> `host_events`, `agents`, `schedules`, `schedule_assignments`, `jobs`, and
+> `job_targets`. The remaining tables below are planned design targets.
 >
 > Migration 014 drops the removed integration tables and settings. Historical
 > audit entries from the old integration feature remain because the audit chain
@@ -3538,7 +3626,7 @@ UTC ISO 8601, and durations are stored in seconds.
 | `user_passkeys` | WebAuthn credential records. | `id`, `user_id`, `credential_id`, `credential_json`, `sign_count`, `name`, `created_at`, `last_used_at` |
 | `sessions` | Hashed browser sessions. | `id`, `user_id`, `token_hash`, `created_at`, `expires_at`, `last_seen_at`, `mfa_verified` |
 | `hosts` | Managed hosts and optional single-hop jump host. | `id`, `name`, `address`, `port`, `username`, `auth_type`, `key_path`, `proxy_jump_address`, `proxy_jump_port`, `proxy_jump_username`, `proxy_jump_key_path`, `proxy_jump_key_type`, `proxy_jump_key_fingerprint`, `os_family`, `os_version`, `status`, `tags`, `group_name`, `cmdb_ci_id`, `apt_upgrade_mode`, `created_at`, `updated_at` |
-| `host_facts` | Latest collected facts, orphan count, and installed helper build. | `host_id`, `collected_at`, `uptime_seconds`, `boot_time`, `kernel`, `os_pretty_name`, `package_manager`, `reboot_required`, `disk_free_bytes`, `time_sync_ok`, `pending_updates`, `orphaned_packages`, `cleanup_supported`, `agent_version`, `agent_build_number`, `agent_build_commit`, `agent_build_date`, `agent_build_target`, `agent_build_type` |
+| `host_facts` | Latest collected facts, orphan count, and installed helper build. | `host_id`, `collected_at`, `uptime_seconds`, `boot_time`, `kernel`, `os_pretty_name`, `package_manager`, `reboot_required`, `disk_free_bytes`, `time_sync_ok`, `time_sync_source`, `time_sync_offset_seconds`, `time_sync_offset_known`, `time_sync_stratum`, `time_sync_last_sync`, `pending_updates`, `orphaned_packages`, `cleanup_supported`, `agent_version`, `agent_build_number`, `agent_build_commit`, `agent_build_date`, `agent_build_target`, `agent_build_type` |
 | `host_system_info` | Latest read-only system snapshot. | `host_id`, `collected_at`, `payload_json` |
 | `host_metrics` | Metric history. | `host_id`, `collected_at`, `cpu_percent`, `memory_percent`, `swap_percent`, `disk_percent`, `load1`, `load5`, `load15`, `uptime_seconds` |
 | `docker_projects`, `docker_containers` | Cached Docker inventory. | `host_id`, `name`/`id`, `project`, `state`, `health`, `image`, `ports`, `last_seen` |
@@ -3548,6 +3636,9 @@ UTC ISO 8601, and durations are stored in seconds.
 | `monitor_state` | Last status per monitor/host. | `monitor_id`, `host_id`, `status`, `message`, `checked_at`, `changed_at`, `last_notified` |
 | `alert_events` | Alert history independent of email delivery. | `id`, `monitor_id`, `host_id`, `status`, `subject`, `detail`, `created_at`, `emailed`, `error` |
 | `host_services` | systemd unit snapshot from metrics. | `host_id`, `unit`, `state`, `last_seen` |
+| `host_service_baseline` | First running-unit baseline per host for service drift monitoring. | `host_id`, `unit`, `state`, `expected`, `excluded`, `first_seen`, `last_seen` |
+| `host_events` | Normalized security/service events with retention. | `id`, `host_id`, `event_id`, `source`, `category`, `severity`, `unit`, `username`, `remote_ip`, `message`, `occurred_at`, `received_at` |
+| `agents` | Cross-platform monitoring agent identity and heartbeat. | `id`, `host_id`, `name`, `token_hash`, `platform`, `version`, `last_seen`, `created_at`, `revoked_at` |
 | `credentials` | Encrypted credential metadata and secrets. | `id`, `name`, `auth_type`, `username`, `key_path`, `secret_ref`, `wrapped_dek`, `encrypted_secret`, `sudo_mode`, `created_at`, `rotated_at` |
 | `host_credentials` | Credential assignment and precedence. | `host_id`, `credential_id`, `priority` |
 | `host_keys` | Known host keys. | `host_id`, `key_type`, `fingerprint`, `first_seen`, `last_seen`, `trusted`, `revoked_at` |
@@ -3800,7 +3891,7 @@ not accept passwords, private keys, or scripts.
 
 ### Schema migrations
 
-- Current schema version: **15** (`015_apt_upgrade_mode.sql`). The `v0.6.9`
+- Current schema version: **19** (`019_agents.sql`). The `v0.6.9`
   release used schema 9; `v0.6.6` used schema 8; `v0.6.2` used schema 7;
   `v0.5.1` used schema 6; `v0.5.0` and earlier used their respective earlier
   migrations.
@@ -4143,6 +4234,31 @@ Still missing:
 - Canary rings, approval gates, and snapshot/rollback integration.
 - Prometheus metrics and SIEM export.
 
+### M8 - Enterprise monitoring (design)
+
+- Fleet-wide monitoring defaults applied to existing and new hosts, with
+  preview and opt-out.
+- Baseline-drift service monitoring instead of one monitor per running unit.
+- NTP synchronization and offset checks.
+- Structured journald and authentication-event collection with bounded,
+  normalized storage.
+- Docker health defaults for unhealthy, restarting, and newly stopped
+  containers.
+- Global email recipients with severity routing.
+- Typed, configurable runbooks for restarting services, removing packages,
+  enabling/disabling services, repository-name package installs with preview,
+  and the existing uploaded-package install job.
+- Cross-platform `hibp-agent` MVP for Linux and Windows monitoring, plus
+  pending adapters for existing Checkmk/Wazuh/Zabbix installations. Agentless
+  helper collection remains the first path. Windows Update patching and Windows
+  runbooks are not part of this monitoring workstream.
+
+See [Enterprise monitoring design](docs/enterprise-monitoring.md) for the
+proposed data model, security controls, phases, and open decisions. Phase 1A is
+implemented: migration 016 adds the per-host service baseline plus default
+`service.baseline` and `docker.health` monitors for existing and new databases.
+The remaining bullets are design targets, not implemented features.
+
 ## Relationship to cmdb-lite
 
 **Decision: keep HIBP as a separate application and integrate at the edges.**
@@ -4276,6 +4392,8 @@ Prioritized, with an eye on value versus complexity:
 - Snapshot/rollback integration for btrfs, ZFS, LVM, or VM snapshots.
 - Post-patch service health checks and automatic rollback triggers.
 - Agent mode with mTLS and signed policy.
+- Cross-platform monitoring agent for Linux and Windows, plus adapters for
+  existing Checkmk/Wazuh/Zabbix agents.
 - Prometheus metrics and SIEM/webhook export.
 - Ansible/Salt execution backend for organizations that already have one.
 - Import from Ansible inventory, SSH config, or network discovery.
@@ -4287,7 +4405,8 @@ Prioritized, with an eye on value versus complexity:
 - Agent auto-update with signature verification.
 - Air-gapped repository mirrors and bandwidth throttling.
 - Kernel livepatch awareness.
-- Windows/macOS targets.
+- Windows/macOS patch management. Windows monitoring through the
+  cross-platform agent is covered by the enterprise monitoring workstream.
 - A plugin SDK for custom distributions and notification channels.
 
 **Avoid**
@@ -4305,7 +4424,9 @@ Prioritized, with an eye on value versus complexity:
 
 No architecture-blocking decisions remain. These are intentionally deferred:
 
-- **Agent mode** for DMZs, NAT, or scale.
+- **Agent fleet hardening** for DMZs, NAT, or scale: mTLS, signed policy,
+  auto-update, and per-agent certificate lifecycle. Cross-platform monitoring
+  agent delivery is tracked in the enterprise monitoring design.
 - **Scheduled password authentication** through an external vault.
 - **CVE correlation** through Trivy, Grype, OSV, or distro security feeds.
 - **RBAC/SSO** and multi-user audit attribution.

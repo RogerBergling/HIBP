@@ -217,14 +217,19 @@ func TestHostAndImportAuditUseAuthenticatedActor(t *testing.T) {
 
 func TestUnsupportedAuthTypesAreRejected(t *testing.T) {
 	ts, _ := testServer(t)
-	for _, authType := range []string{"agent", "certificate"} {
-		resp := request(t, http.MethodPost, ts.URL+"/api/v1/hosts", "test-token",
-			`{"name":"`+authType+`","address":"10.0.0.20","port":22,"username":"root","auth_type":"`+authType+`"}`)
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Fatalf("expected %s host creation to be rejected, got %d %s", authType, resp.StatusCode, body)
-		}
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/hosts", "test-token",
+		`{"name":"certificate","address":"10.0.0.20","port":22,"username":"root","auth_type":"certificate"}`)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected certificate host creation to be rejected, got %d %s", resp.StatusCode, body)
+	}
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/hosts", "test-token",
+		`{"name":"agent","address":"10.0.0.20","port":22,"username":"SYSTEM","auth_type":"agent"}`)
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected agent host creation to succeed, got %d %s", resp.StatusCode, body)
 	}
 }
 

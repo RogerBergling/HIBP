@@ -14,8 +14,9 @@ import (
 )
 
 var monitorTypes = map[string]bool{
-	"host.cpu": true, "host.memory": true, "host.disk": true, "host.load": true,
-	"docker.project": true, "docker.container": true, "service.systemd": true,
+	"host.cpu": true, "host.memory": true, "host.disk": true, "host.load": true, "host.ntp": true,
+	"docker.project": true, "docker.container": true, "docker.health": true,
+	"service.systemd": true, "service.baseline": true, "security.auth": true,
 	"http": true, "tcp": true, "ssl": true,
 }
 
@@ -46,7 +47,11 @@ func (s *Server) validateMonitor(request monitorRequest, monitorID string) (stor
 	}
 	target := strings.TrimSpace(request.Target)
 	switch request.Type {
-	case "host.cpu", "host.memory", "host.load":
+	case "host.cpu", "host.memory", "host.load", "host.ntp":
+		if target != "" {
+			return store.Monitor{}, errors.New("this monitor type does not take a target")
+		}
+	case "docker.health", "service.baseline", "security.auth":
 		if target != "" {
 			return store.Monitor{}, errors.New("this monitor type does not take a target")
 		}
@@ -95,6 +100,14 @@ func (s *Server) validateMonitor(request monitorRequest, monitorID string) (stor
 	case "host.load":
 		if request.Warning <= 0 || request.Critical <= request.Warning {
 			return store.Monitor{}, errors.New("load thresholds require 0 < warning < critical")
+		}
+	case "host.ntp":
+		if request.Warning <= 0 || request.Critical <= request.Warning {
+			return store.Monitor{}, errors.New("NTP thresholds require 0 < warning seconds < critical seconds")
+		}
+	case "security.auth":
+		if request.Warning <= 0 || request.Critical <= request.Warning {
+			return store.Monitor{}, errors.New("authentication thresholds require 0 < warning count < critical count")
 		}
 	case "ssl":
 		if request.Warning <= 0 || request.Critical <= 0 || request.Critical >= request.Warning {
@@ -286,4 +299,22 @@ func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 		events = []store.AlertEvent{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"alerts": events})
+}
+
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	limit := 200
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil {
+			limit = parsed
+		}
+	}
+	events, err := s.store.ListHostEvents(limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if events == nil {
+		events = []store.HostEvent{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": events})
 }

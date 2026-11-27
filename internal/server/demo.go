@@ -274,6 +274,11 @@ func (d *demoRuntime) facts(host store.Host) helper.Facts {
 	facts.BootTime = time.Now().UTC().Add(-time.Duration(facts.UptimeSeconds) * time.Second).Format(time.RFC3339)
 	facts.DiskFreeBytes = int64(20+fnvHash(host.Name)%40) << 30
 	facts.TimeSyncOK = true
+	facts.TimeSyncSource = "timedatectl"
+	facts.TimeSyncOffset = 0.02
+	facts.TimeSyncOffsetKnown = true
+	facts.TimeSyncStratum = 2
+	facts.TimeSyncLastSync = time.Now().UTC().Format(time.RFC3339)
 	facts.Agent = buildinfo.Current
 	if facts.PackageManager == "" {
 		facts.PackageManager = "apt"

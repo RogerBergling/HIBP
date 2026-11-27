@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,6 +16,8 @@ import (
 )
 
 const maxJobHosts = 500
+
+var runbookPackagePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9+._:-]{0,127}$`)
 
 type jobKindMeta struct {
 	label     string
@@ -30,6 +33,7 @@ var jobKinds = map[string]jobKindMeta{
 	"cleanup-apply":   {label: "Cleanup apply", resumable: false},
 	"reboot":          {label: "Reboot", resumable: false},
 	"package-install": {label: "Package install", resumable: false},
+	"runbook":         {label: "Runbook", resumable: false},
 }
 
 type jobPreviewSpec struct {
@@ -45,11 +49,18 @@ type jobPackageSpec struct {
 	Env    map[string]string `json:"env,omitempty"`
 }
 
+type jobRunbookSpec struct {
+	Action   string   `json:"action"`
+	Unit     string   `json:"unit,omitempty"`
+	Packages []string `json:"packages,omitempty"`
+}
+
 type jobPayload struct {
 	Confirm          string                    `json:"confirm,omitempty"`
 	RebootAfterPatch bool                      `json:"reboot_after_patch,omitempty"`
 	Previews         map[string]jobPreviewSpec `json:"previews,omitempty"`
 	Package          *jobPackageSpec           `json:"package,omitempty"`
+	Runbook          *jobRunbookSpec           `json:"runbook,omitempty"`
 }
 
 type jobCreateRequest struct {
@@ -59,6 +70,7 @@ type jobCreateRequest struct {
 	RebootAfterPatch bool                      `json:"reboot_after_patch"`
 	Previews         map[string]jobPreviewSpec `json:"previews"`
 	SudoPassword     string                    `json:"sudo_password"`
+	Runbook          *jobRunbookSpec           `json:"runbook"`
 }
 
 type jobPackageView struct {
@@ -225,8 +237,8 @@ func (s *Server) validateJobRequest(request jobCreateRequest) (string, []string,
 	if _, ok := jobKinds[kind]; !ok {
 		return "", nil, jobPayload{}, errors.New("unknown job kind")
 	}
-	if request.SudoPassword != "" && kind != "helper-setup" {
-		return "", nil, jobPayload{}, errors.New("sudo_password is only accepted for helper setup jobs")
+	if request.SudoPassword != "" && kind != "helper-setup" && kind != "runbook" {
+		return "", nil, jobPayload{}, errors.New("sudo_password is only accepted for helper setup and runbook jobs")
 	}
 	if len(request.HostIDs) == 0 {
 		return "", nil, jobPayload{}, errors.New("select at least one host")
@@ -271,6 +283,7 @@ func (s *Server) validateJobRequest(request jobCreateRequest) (string, []string,
 		Confirm:          strings.ToLower(strings.TrimSpace(request.Confirm)),
 		RebootAfterPatch: request.RebootAfterPatch,
 		Previews:         request.Previews,
+		Runbook:          request.Runbook,
 	}
 	switch kind {
 	case "helper-setup":
@@ -302,6 +315,57 @@ func (s *Server) validateJobRequest(request jobCreateRequest) (string, []string,
 		if payload.Confirm != "install" {
 			return "", nil, jobPayload{}, errors.New("confirm must be \"install\" for a package install job")
 		}
+	case "runbook":
+		if payload.Runbook == nil {
+			return "", nil, jobPayload{}, errors.New("runbook action is required")
+		}
+		action := strings.TrimSpace(payload.Runbook.Action)
+		payload.Runbook.Action = action
+		switch action {
+		case "service-restart", "service-enable", "service-disable":
+			if payload.Confirm != "run" {
+				return "", nil, jobPayload{}, errors.New("confirm must be \"run\" for a service runbook")
+			}
+			if !monitorServicePattern.MatchString(strings.TrimSpace(payload.Runbook.Unit)) {
+				return "", nil, jobPayload{}, errors.New("a valid systemd unit is required")
+			}
+			payload.Runbook.Packages = nil
+		case "package-remove-preview", "package-install-preview":
+			if payload.Confirm != "preview" {
+				return "", nil, jobPayload{}, errors.New("confirm must be \"preview\" for a package preview")
+			}
+			if len(payload.Runbook.Packages) == 0 {
+				return "", nil, jobPayload{}, errors.New("at least one package is required")
+			}
+		case "package-remove-apply":
+			if payload.Confirm != "remove" {
+				return "", nil, jobPayload{}, errors.New("confirm must be \"remove\" for a package removal")
+			}
+			if len(payload.Runbook.Packages) == 0 {
+				return "", nil, jobPayload{}, errors.New("at least one package is required")
+			}
+		case "package-install-apply":
+			if payload.Confirm != "install" {
+				return "", nil, jobPayload{}, errors.New("confirm must be \"install\" for a package installation")
+			}
+			if len(payload.Runbook.Packages) == 0 {
+				return "", nil, jobPayload{}, errors.New("at least one package is required")
+			}
+		default:
+			return "", nil, jobPayload{}, errors.New("unsupported runbook action")
+		}
+		cleaned := make([]string, 0, len(payload.Runbook.Packages))
+		for _, pkg := range payload.Runbook.Packages {
+			pkg = strings.TrimSpace(pkg)
+			if pkg == "" {
+				continue
+			}
+			if !runbookPackagePattern.MatchString(pkg) {
+				return "", nil, jobPayload{}, fmt.Errorf("invalid package name %q", pkg)
+			}
+			cleaned = append(cleaned, pkg)
+		}
+		payload.Runbook.Packages = cleaned
 	}
 	return kind, hostIDs, payload, nil
 }
@@ -336,7 +400,7 @@ func (s *Server) createJob(actor string, request jobCreateRequest, pkg *jobPacka
 	}
 	title := jobTitle(kind, targets, pkg)
 	jobID := uuid.NewString()
-	if kind == "helper-setup" && request.SudoPassword != "" {
+	if (kind == "helper-setup" || kind == "runbook") && request.SudoPassword != "" {
 		s.setJobSudoPassword(jobID, request.SudoPassword)
 	}
 	job, err := s.store.CreateJob(store.Job{
@@ -379,6 +443,8 @@ func jobTitle(kind string, targets []store.JobTarget, pkg *jobPackageSpec) strin
 			name = pkg.Name
 		}
 		return fmt.Sprintf("Install %s on %d %s", name, count, suffix)
+	case "runbook":
+		return fmt.Sprintf("Runbook for %d %s", count, suffix)
 	default:
 		return fmt.Sprintf("Job for %d %s", count, suffix)
 	}

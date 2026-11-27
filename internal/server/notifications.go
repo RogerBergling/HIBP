@@ -8,33 +8,40 @@ import (
 	"time"
 
 	"github.com/RogerBergling/hibp/internal/mailer"
+	"github.com/RogerBergling/hibp/internal/store"
 )
 
 const smtpScope = "smtp"
 
 type smtpView struct {
-	Enabled        bool   `json:"enabled"`
-	Host           string `json:"host"`
-	Port           int    `json:"port"`
-	Mode           string `json:"mode"`
-	Username       string `json:"username"`
-	From           string `json:"from"`
-	Recipients     string `json:"recipients"`
-	TimeoutSeconds int    `json:"timeout_seconds"`
-	PasswordSet    bool   `json:"password_set"`
+	Enabled            bool   `json:"enabled"`
+	Host               string `json:"host"`
+	Port               int    `json:"port"`
+	Mode               string `json:"mode"`
+	Username           string `json:"username"`
+	From               string `json:"from"`
+	Recipients         string `json:"recipients"`
+	WarningRecipients  string `json:"warning_recipients"`
+	CriticalRecipients string `json:"critical_recipients"`
+	RecoveryRecipients string `json:"recovery_recipients"`
+	TimeoutSeconds     int    `json:"timeout_seconds"`
+	PasswordSet        bool   `json:"password_set"`
 }
 
 type smtpRequest struct {
-	Enabled        bool   `json:"enabled"`
-	Host           string `json:"host"`
-	Port           int    `json:"port"`
-	Mode           string `json:"mode"`
-	Username       string `json:"username"`
-	Password       string `json:"password"`
-	ClearPassword  bool   `json:"clear_password"`
-	From           string `json:"from"`
-	Recipients     string `json:"recipients"`
-	TimeoutSeconds int    `json:"timeout_seconds"`
+	Enabled            bool   `json:"enabled"`
+	Host               string `json:"host"`
+	Port               int    `json:"port"`
+	Mode               string `json:"mode"`
+	Username           string `json:"username"`
+	Password           string `json:"password"`
+	ClearPassword      bool   `json:"clear_password"`
+	From               string `json:"from"`
+	Recipients         string `json:"recipients"`
+	WarningRecipients  string `json:"warning_recipients"`
+	CriticalRecipients string `json:"critical_recipients"`
+	RecoveryRecipients string `json:"recovery_recipients"`
+	TimeoutSeconds     int    `json:"timeout_seconds"`
 }
 
 func (s *Server) loadSMTPConfig() (mailer.Config, error) {
@@ -84,13 +91,70 @@ func smtpViewFromConfig(cfg mailer.Config) smtpView {
 	}
 }
 
+type notificationRecipients struct {
+	Warning  string
+	Critical string
+	Recovery string
+}
+
+func (s *Server) loadNotificationRecipients() (notificationRecipients, error) {
+	settings, err := s.store.ListSettings(smtpScope)
+	if err != nil {
+		return notificationRecipients{}, err
+	}
+	return notificationRecipients{
+		Warning:  settings["warning_recipients"],
+		Critical: settings["critical_recipients"],
+		Recovery: settings["recovery_recipients"],
+	}, nil
+}
+
+func (s *Server) smtpView(cfg mailer.Config) (smtpView, error) {
+	view := smtpViewFromConfig(cfg)
+	severity, err := s.loadNotificationRecipients()
+	if err != nil {
+		return smtpView{}, err
+	}
+	view.WarningRecipients = severity.Warning
+	view.CriticalRecipients = severity.Critical
+	view.RecoveryRecipients = severity.Recovery
+	return view, nil
+}
+
+func (s *Server) monitorRecipients(cfg mailer.Config, monitor store.Monitor, status string, recovery bool) ([]string, error) {
+	if strings.TrimSpace(monitor.Recipients) != "" {
+		return mailer.ParseRecipients(monitor.Recipients)
+	}
+	severity, err := s.loadNotificationRecipients()
+	if err != nil {
+		return nil, err
+	}
+	value := ""
+	if recovery {
+		value = severity.Recovery
+	} else if status == "critical" {
+		value = severity.Critical
+	} else if status == "warning" {
+		value = severity.Warning
+	}
+	if strings.TrimSpace(value) != "" {
+		return mailer.ParseRecipients(value)
+	}
+	return cfg.Recipients, nil
+}
+
 func (s *Server) handleGetSMTP(w http.ResponseWriter, _ *http.Request) {
 	cfg, err := s.loadSMTPConfig()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"smtp": smtpViewFromConfig(cfg)})
+	view, err := s.smtpView(cfg)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"smtp": view})
 }
 
 func (s *Server) handlePutSMTP(w http.ResponseWriter, r *http.Request) {
@@ -123,6 +187,21 @@ func (s *Server) handlePutSMTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	warningRecipients, err := parseRecipientsOptional(request.WarningRecipients)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "warning recipients: "+err.Error())
+		return
+	}
+	criticalRecipients, err := parseRecipientsOptional(request.CriticalRecipients)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "critical recipients: "+err.Error())
+		return
+	}
+	recoveryRecipients, err := parseRecipientsOptional(request.RecoveryRecipients)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "recovery recipients: "+err.Error())
+		return
+	}
 	mode := strings.TrimSpace(request.Mode)
 	if mode == "" {
 		mode = mailer.ModeStartTLS
@@ -144,14 +223,17 @@ func (s *Server) handlePutSMTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	values := map[string]string{
-		"enabled":         boolString(cfg.Enabled),
-		"host":            cfg.Host,
-		"port":            strconv.Itoa(cfg.Port),
-		"mode":            cfg.Mode,
-		"username":        cfg.Username,
-		"from":            cfg.From,
-		"recipients":      strings.Join(cfg.Recipients, ", "),
-		"timeout_seconds": strconv.Itoa(timeout),
+		"enabled":             boolString(cfg.Enabled),
+		"host":                cfg.Host,
+		"port":                strconv.Itoa(cfg.Port),
+		"mode":                cfg.Mode,
+		"username":            cfg.Username,
+		"from":                cfg.From,
+		"recipients":          strings.Join(cfg.Recipients, ", "),
+		"warning_recipients":  strings.Join(warningRecipients, ", "),
+		"critical_recipients": strings.Join(criticalRecipients, ", "),
+		"recovery_recipients": strings.Join(recoveryRecipients, ", "),
+		"timeout_seconds":     strconv.Itoa(timeout),
 	}
 	if cfg.Password != "" {
 		values["password"] = cfg.Password
@@ -166,7 +248,12 @@ func (s *Server) handlePutSMTP(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.DeleteSetting(smtpScope, "password")
 	}
 	_ = s.store.AddAudit(s.auditActor(r), "smtp-settings", "notifications", smtpScope, "updated")
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "smtp": smtpViewFromConfig(cfg)})
+	view, err := s.smtpView(cfg)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "smtp": view})
 }
 
 type smtpTestRequest struct {

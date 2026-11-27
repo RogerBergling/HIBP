@@ -63,6 +63,19 @@ type ServiceState struct {
 	LastSeen string `json:"last_seen"`
 }
 
+// ServiceBaseline is the per-host set of systemd units observed running at the
+// first successful service collection. It is used to detect service drift
+// without creating one monitor per unit.
+type ServiceBaseline struct {
+	HostID    string `json:"host_id"`
+	Unit      string `json:"unit"`
+	State     string `json:"state"`
+	Expected  bool   `json:"expected"`
+	Excluded  bool   `json:"excluded"`
+	FirstSeen string `json:"first_seen"`
+	LastSeen  string `json:"last_seen"`
+}
+
 func (s *Store) CreateMonitor(monitor Monitor) (Monitor, error) {
 	monitor.Name = strings.TrimSpace(monitor.Name)
 	if monitor.Name == "" || monitor.Type == "" {
@@ -357,4 +370,63 @@ func (s *Store) ListServiceStates(hostID string) ([]ServiceState, error) {
 		states = append(states, state)
 	}
 	return states, rows.Err()
+}
+
+// EnsureServiceBaseline records the first running-unit snapshot for a host. It
+// deliberately does not add newly observed units on later collections: a new
+// service is informational, not a new expected baseline entry. Operators can
+// disable the monitor or update the baseline explicitly.
+func (s *Store) EnsureServiceBaseline(hostID string, running []string) error {
+	if hostID == "" {
+		return errors.New("host id is required")
+	}
+	var count int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM host_service_baseline WHERE host_id=?", hostID).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	now := crypto.Now()
+	seen := make(map[string]bool, len(running))
+	for _, unit := range running {
+		unit = strings.TrimSpace(unit)
+		if unit == "" || seen[unit] {
+			continue
+		}
+		seen[unit] = true
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO host_service_baseline
+			(host_id,unit,state,expected,excluded,first_seen,last_seen) VALUES(?,?,?,?,?,?,?)`,
+			hostID, unit, "running", 1, 0, now, now); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) ListServiceBaseline(hostID string) ([]ServiceBaseline, error) {
+	rows, err := s.db.Query(`SELECT host_id,unit,state,expected,excluded,first_seen,last_seen
+		FROM host_service_baseline WHERE host_id=? ORDER BY unit`, hostID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var baseline []ServiceBaseline
+	for rows.Next() {
+		var item ServiceBaseline
+		var expected, excluded int
+		if err := rows.Scan(&item.HostID, &item.Unit, &item.State, &expected, &excluded,
+			&item.FirstSeen, &item.LastSeen); err != nil {
+			return nil, err
+		}
+		item.Expected = expected == 1
+		item.Excluded = excluded == 1
+		baseline = append(baseline, item)
+	}
+	return baseline, rows.Err()
 }

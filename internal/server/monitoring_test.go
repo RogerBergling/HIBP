@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -527,5 +528,175 @@ func TestMonitorCapabilitySkip(t *testing.T) {
 	serviceResult = app.evaluateService(store.Monitor{Type: "service.systemd", Target: "nginx.service"}, host)
 	if serviceResult.skip || serviceResult.status != "ok" {
 		t.Fatalf("expected running service, got %+v", serviceResult)
+	}
+}
+
+func TestServiceBaselineMonitor(t *testing.T) {
+	app, db, host := newMonitorTestApp(t)
+	if err := db.SaveSystemInfo(host.ID, time.Now().UTC().Format(time.RFC3339Nano),
+		`{"systemd":{"available":true,"units_collected":true}}`); err != nil {
+		t.Fatal(err)
+	}
+	units := []string{"ssh.service", "cron.service"}
+	if err := db.SaveServiceState(host.ID, nil, units); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.EnsureServiceBaseline(host.ID, units); err != nil {
+		t.Fatal(err)
+	}
+	result := app.evaluateServiceBaseline(host)
+	if result.status != "ok" {
+		t.Fatalf("expected healthy baseline, got %+v", result)
+	}
+
+	if err := db.SaveServiceState(host.ID, []string{"cron.service"}, []string{"ssh.service"}); err != nil {
+		t.Fatal(err)
+	}
+	result = app.evaluateServiceBaseline(host)
+	if result.status != "critical" || !strings.Contains(result.message, "cron.service") {
+		t.Fatalf("expected failed service alert, got %+v", result)
+	}
+
+	if err := db.SaveServiceState(host.ID, nil, []string{"ssh.service"}); err != nil {
+		t.Fatal(err)
+	}
+	result = app.evaluateServiceBaseline(host)
+	if result.status != "critical" || !strings.Contains(result.message, "cron.service") {
+		t.Fatalf("expected missing baseline service alert, got %+v", result)
+	}
+}
+
+func TestDockerHealthMonitor(t *testing.T) {
+	app, db, host := newMonitorTestApp(t)
+	if err := db.SaveSystemInfo(host.ID, time.Now().UTC().Format(time.RFC3339Nano),
+		`{"docker":{"available":true}}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveDockerInventory(host.ID, nil, []store.DockerContainer{
+		{ContainerID: "c1", Name: "web-1", State: "running", Health: "unhealthy"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result := app.evaluateDockerHealth(host)
+	if result.status != "critical" || !strings.Contains(result.message, "web-1") {
+		t.Fatalf("expected unhealthy container alert, got %+v", result)
+	}
+
+	if err := db.SaveDockerInventory(host.ID, nil, []store.DockerContainer{
+		{ContainerID: "c1", Name: "web-1", State: "running", Health: "healthy"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result = app.evaluateDockerHealth(host)
+	if result.status != "ok" {
+		t.Fatalf("expected healthy container state, got %+v", result)
+	}
+}
+
+func TestNTPMonitor(t *testing.T) {
+	app, db, host := newMonitorTestApp(t)
+	monitor := store.Monitor{Type: "host.ntp", Warning: 1, Critical: 5}
+	save := func(sync bool, offset float64) store.Host {
+		facts := store.Facts{
+			CollectedAt: time.Now().UTC().Format(time.RFC3339Nano),
+			TimeSyncOK:  sync, TimeSyncSource: "timedatectl",
+			TimeSyncOffset: offset, TimeSyncOffsetKnown: true,
+		}
+		if err := db.SaveFactsAs("test", host.ID, facts); err != nil {
+			t.Fatal(err)
+		}
+		updated, err := db.GetHost(host.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return updated
+	}
+	result := app.evaluateNTP(monitor, save(true, 0.1))
+	if result.status != "ok" {
+		t.Fatalf("expected synchronized clock, got %+v", result)
+	}
+	result = app.evaluateNTP(monitor, save(true, 2))
+	if result.status != "warning" {
+		t.Fatalf("expected warning offset, got %+v", result)
+	}
+	result = app.evaluateNTP(monitor, save(true, 6))
+	if result.status != "critical" {
+		t.Fatalf("expected critical offset, got %+v", result)
+	}
+	result = app.evaluateNTP(monitor, save(false, 0))
+	if result.status != "critical" || !strings.Contains(result.message, "not synchronized") {
+		t.Fatalf("expected unsynchronized clock, got %+v", result)
+	}
+}
+
+func TestSecurityAuthMonitor(t *testing.T) {
+	app, db, host := newMonitorTestApp(t)
+	monitor := store.Monitor{Type: "security.auth", Warning: 5, Critical: 10}
+	next := 0
+	add := func(count int) {
+		events := make([]store.HostEvent, 0, count)
+		for index := 0; index < count; index++ {
+			events = append(events, store.HostEvent{
+				EventID: "event-" + strconv.Itoa(next), Source: "ssh.service",
+				Category: "auth_failure", Severity: "warning",
+				OccurredAt: time.Now().UTC().Format(time.RFC3339Nano),
+			})
+			next++
+		}
+		if err := db.AddHostEvents(host.ID, events); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add(0)
+	if result := app.evaluateAuthFailures(monitor, host); result.status != "ok" {
+		t.Fatalf("expected ok, got %+v", result)
+	}
+	add(6)
+	if result := app.evaluateAuthFailures(monitor, host); result.status != "warning" {
+		t.Fatalf("expected warning, got %+v", result)
+	}
+	add(5)
+	if result := app.evaluateAuthFailures(monitor, host); result.status != "critical" {
+		t.Fatalf("expected critical, got %+v", result)
+	}
+}
+
+func TestMonitorSeverityRecipients(t *testing.T) {
+	app, db, _ := newMonitorTestApp(t)
+	for key, value := range map[string]string{
+		"recipients":          "global@example.com",
+		"warning_recipients":  "warning@example.com",
+		"critical_recipients": "critical@example.com",
+		"recovery_recipients": "recovery@example.com",
+	} {
+		if err := db.SetSetting("smtp", key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, err := app.loadSMTPConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	monitor := store.Monitor{}
+	cases := []struct {
+		status   string
+		recovery bool
+		want     string
+	}{
+		{"warning", false, "warning@example.com"},
+		{"critical", false, "critical@example.com"},
+		{"ok", true, "recovery@example.com"},
+		{"ok", false, "global@example.com"},
+	}
+	for _, tc := range cases {
+		got, err := app.monitorRecipients(cfg, monitor, tc.status, tc.recovery)
+		if err != nil || len(got) != 1 || got[0] != tc.want {
+			t.Fatalf("%s recovery=%v: got %v err=%v", tc.status, tc.recovery, got, err)
+		}
+	}
+	override := store.Monitor{Recipients: "override@example.com"}
+	got, err := app.monitorRecipients(cfg, override, "critical", false)
+	if err != nil || len(got) != 1 || got[0] != "override@example.com" {
+		t.Fatalf("monitor override not honored: %v err=%v", got, err)
 	}
 }

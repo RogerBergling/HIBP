@@ -84,19 +84,24 @@ type Host struct {
 
 // Facts is the latest collected host state.
 type Facts struct {
-	CollectedAt      string         `json:"collected_at"`
-	UptimeSeconds    int64          `json:"uptime_seconds"`
-	BootTime         string         `json:"boot_time"`
-	Kernel           string         `json:"kernel"`
-	OSPrettyName     string         `json:"os_pretty_name"`
-	PackageManager   string         `json:"package_manager"`
-	RebootRequired   bool           `json:"reboot_required"`
-	DiskFreeBytes    int64          `json:"disk_free_bytes"`
-	TimeSyncOK       bool           `json:"time_sync_ok"`
-	PendingUpdates   int            `json:"pending_updates"`
-	OrphanedPackages int            `json:"orphaned_packages"`
-	CleanupSupported bool           `json:"cleanup_supported"`
-	Agent            buildinfo.Info `json:"agent"`
+	CollectedAt         string         `json:"collected_at"`
+	UptimeSeconds       int64          `json:"uptime_seconds"`
+	BootTime            string         `json:"boot_time"`
+	Kernel              string         `json:"kernel"`
+	OSPrettyName        string         `json:"os_pretty_name"`
+	PackageManager      string         `json:"package_manager"`
+	RebootRequired      bool           `json:"reboot_required"`
+	DiskFreeBytes       int64          `json:"disk_free_bytes"`
+	TimeSyncOK          bool           `json:"time_sync_ok"`
+	TimeSyncSource      string         `json:"time_sync_source,omitempty"`
+	TimeSyncOffset      float64        `json:"time_sync_offset_seconds,omitempty"`
+	TimeSyncOffsetKnown bool           `json:"time_sync_offset_known,omitempty"`
+	TimeSyncStratum     int            `json:"time_sync_stratum,omitempty"`
+	TimeSyncLastSync    string         `json:"time_sync_last_sync,omitempty"`
+	PendingUpdates      int            `json:"pending_updates"`
+	OrphanedPackages    int            `json:"orphaned_packages"`
+	CleanupSupported    bool           `json:"cleanup_supported"`
+	Agent               buildinfo.Info `json:"agent"`
 }
 
 // HostKey is a trusted SSH host key.
@@ -634,9 +639,9 @@ func validateHost(host Host) error {
 		authType = "key"
 	}
 	switch authType {
-	case "key", "password":
+	case "key", "password", "agent":
 	default:
-		return errors.New("auth_type must be key or password; ssh-agent and SSH certificate authentication are not supported")
+		return errors.New("auth_type must be key, password, or agent; ssh-agent and SSH certificate authentication are not supported")
 	}
 	if authType == "key" && strings.TrimSpace(host.KeyPath) == "" {
 		return errors.New("key_path is required for key authentication")
@@ -849,7 +854,8 @@ func (s *Store) ListHosts() ([]Host, error) {
 		h.proxy_jump_address,h.proxy_jump_port,h.proxy_jump_username,h.proxy_jump_key_path,h.proxy_jump_key_type,h.proxy_jump_key_fingerprint,
 		h.os_family,h.os_version,h.status,h.tags,h.group_name,h.cmdb_ci_id,h.apt_upgrade_mode,h.created_at,h.updated_at,
 		f.collected_at,f.uptime_seconds,f.boot_time,f.kernel,f.os_pretty_name,f.package_manager,
-		f.reboot_required,f.disk_free_bytes,f.time_sync_ok,f.pending_updates,
+		f.reboot_required,f.disk_free_bytes,f.time_sync_ok,f.time_sync_source,f.time_sync_offset_seconds,
+		f.time_sync_offset_known,f.time_sync_stratum,f.time_sync_last_sync,f.pending_updates,
 		f.orphaned_packages,f.cleanup_supported,
 		f.agent_version,f.agent_build_number,f.agent_build_commit,f.agent_build_date,
 		f.agent_build_target,f.agent_build_type,
@@ -877,7 +883,8 @@ func (s *Store) FindHostByAddress(address string, port int) (Host, error) {
 		h.proxy_jump_address,h.proxy_jump_port,h.proxy_jump_username,h.proxy_jump_key_path,h.proxy_jump_key_type,h.proxy_jump_key_fingerprint,
 		h.os_family,h.os_version,h.status,h.tags,h.group_name,h.cmdb_ci_id,h.apt_upgrade_mode,h.created_at,h.updated_at,
 		f.collected_at,f.uptime_seconds,f.boot_time,f.kernel,f.os_pretty_name,f.package_manager,
-		f.reboot_required,f.disk_free_bytes,f.time_sync_ok,f.pending_updates,
+		f.reboot_required,f.disk_free_bytes,f.time_sync_ok,f.time_sync_source,f.time_sync_offset_seconds,
+		f.time_sync_offset_known,f.time_sync_stratum,f.time_sync_last_sync,f.pending_updates,
 		f.orphaned_packages,f.cleanup_supported,
 		f.agent_version,f.agent_build_number,f.agent_build_commit,f.agent_build_date,
 		f.agent_build_target,f.agent_build_type,
@@ -893,7 +900,8 @@ func (s *Store) GetHost(id string) (Host, error) {
 		h.proxy_jump_address,h.proxy_jump_port,h.proxy_jump_username,h.proxy_jump_key_path,h.proxy_jump_key_type,h.proxy_jump_key_fingerprint,
 		h.os_family,h.os_version,h.status,h.tags,h.group_name,h.cmdb_ci_id,h.apt_upgrade_mode,h.created_at,h.updated_at,
 		f.collected_at,f.uptime_seconds,f.boot_time,f.kernel,f.os_pretty_name,f.package_manager,
-		f.reboot_required,f.disk_free_bytes,f.time_sync_ok,f.pending_updates,
+		f.reboot_required,f.disk_free_bytes,f.time_sync_ok,f.time_sync_source,f.time_sync_offset_seconds,
+		f.time_sync_offset_known,f.time_sync_stratum,f.time_sync_last_sync,f.pending_updates,
 		f.orphaned_packages,f.cleanup_supported,
 		f.agent_version,f.agent_build_number,f.agent_build_commit,f.agent_build_date,
 		f.agent_build_target,f.agent_build_type,
@@ -913,13 +921,17 @@ func scanHost(row scanner) (Host, error) {
 	var agentVersion, agentBuildNumber, agentBuildCommit sql.NullString
 	var agentBuildDate, agentBuildTarget, agentBuildType sql.NullString
 	var uptime, disk, pending, orphaned sql.NullInt64
-	var reboot, timeSync, cleanupSupported sql.NullBool
+	var reboot, timeSync, timeSyncOffsetKnown, cleanupSupported sql.NullBool
+	var timeSyncSource, timeSyncLastSync sql.NullString
+	var timeSyncOffset sql.NullFloat64
+	var timeSyncStratum sql.NullInt64
 	var jumpAddress, jumpUsername, jumpKeyPath, jumpKeyType, jumpFingerprint string
 	var jumpPort int
 	err := row.Scan(&host.ID, &host.Name, &host.Address, &host.Port, &host.Username, &host.AuthType, &host.KeyPath,
 		&jumpAddress, &jumpPort, &jumpUsername, &jumpKeyPath, &jumpKeyType, &jumpFingerprint,
 		&host.OSFamily, &host.OSVersion, &host.Status, &host.Tags, &host.GroupName, &host.CMDBCIID, &host.APTUpgradeMode, &host.CreatedAt, &host.UpdatedAt,
-		&collectedAt, &uptime, &bootTime, &kernel, &pretty, &pkg, &reboot, &disk, &timeSync, &pending,
+		&collectedAt, &uptime, &bootTime, &kernel, &pretty, &pkg, &reboot, &disk, &timeSync,
+		&timeSyncSource, &timeSyncOffset, &timeSyncOffsetKnown, &timeSyncStratum, &timeSyncLastSync, &pending,
 		&orphaned, &cleanupSupported,
 		&agentVersion, &agentBuildNumber, &agentBuildCommit, &agentBuildDate, &agentBuildTarget, &agentBuildType,
 		&host.DockerProjectCount, &host.DockerContainerCount)
@@ -934,18 +946,23 @@ func scanHost(row scanner) (Host, error) {
 	}
 	if collectedAt.Valid {
 		host.Facts = &Facts{
-			CollectedAt:      collectedAt.String,
-			UptimeSeconds:    uptime.Int64,
-			BootTime:         bootTime.String,
-			Kernel:           kernel.String,
-			OSPrettyName:     pretty.String,
-			PackageManager:   pkg.String,
-			RebootRequired:   reboot.Bool,
-			DiskFreeBytes:    disk.Int64,
-			TimeSyncOK:       timeSync.Bool,
-			PendingUpdates:   int(pending.Int64),
-			OrphanedPackages: int(orphaned.Int64),
-			CleanupSupported: cleanupSupported.Bool,
+			CollectedAt:         collectedAt.String,
+			UptimeSeconds:       uptime.Int64,
+			BootTime:            bootTime.String,
+			Kernel:              kernel.String,
+			OSPrettyName:        pretty.String,
+			PackageManager:      pkg.String,
+			RebootRequired:      reboot.Bool,
+			DiskFreeBytes:       disk.Int64,
+			TimeSyncOK:          timeSync.Bool,
+			TimeSyncSource:      timeSyncSource.String,
+			TimeSyncOffset:      timeSyncOffset.Float64,
+			TimeSyncOffsetKnown: timeSyncOffsetKnown.Bool,
+			TimeSyncStratum:     int(timeSyncStratum.Int64),
+			TimeSyncLastSync:    timeSyncLastSync.String,
+			PendingUpdates:      int(pending.Int64),
+			OrphanedPackages:    int(orphaned.Int64),
+			CleanupSupported:    cleanupSupported.Bool,
 			Agent: buildinfo.Info{
 				Version:     agentVersion.String,
 				BuildNumber: agentBuildNumber.String,
@@ -1024,23 +1041,28 @@ func (s *Store) SaveFactsAs(actor, hostID string, facts Facts) error {
 		return err
 	}
 	_, err = tx.Exec(`INSERT INTO host_facts
-		(host_id,collected_at,uptime_seconds,boot_time,kernel,os_pretty_name,package_manager,reboot_required,disk_free_bytes,time_sync_ok,pending_updates,
+		(host_id,collected_at,uptime_seconds,boot_time,kernel,os_pretty_name,package_manager,reboot_required,disk_free_bytes,time_sync_ok,
+			time_sync_source,time_sync_offset_seconds,time_sync_offset_known,time_sync_stratum,time_sync_last_sync,pending_updates,
 			orphaned_packages,cleanup_supported,
 			agent_version,agent_build_number,agent_build_commit,agent_build_date,agent_build_target,agent_build_type)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(host_id) DO UPDATE SET
 			collected_at=excluded.collected_at, uptime_seconds=excluded.uptime_seconds,
 			boot_time=excluded.boot_time, kernel=excluded.kernel, os_pretty_name=excluded.os_pretty_name,
 			package_manager=excluded.package_manager, reboot_required=excluded.reboot_required,
 			disk_free_bytes=excluded.disk_free_bytes, time_sync_ok=excluded.time_sync_ok,
+			time_sync_source=excluded.time_sync_source, time_sync_offset_seconds=excluded.time_sync_offset_seconds,
+			time_sync_offset_known=excluded.time_sync_offset_known, time_sync_stratum=excluded.time_sync_stratum,
+			time_sync_last_sync=excluded.time_sync_last_sync,
 			pending_updates=excluded.pending_updates, orphaned_packages=excluded.orphaned_packages,
 			cleanup_supported=excluded.cleanup_supported, agent_version=excluded.agent_version,
 			agent_build_number=excluded.agent_build_number, agent_build_commit=excluded.agent_build_commit,
 			agent_build_date=excluded.agent_build_date, agent_build_target=excluded.agent_build_target,
 			agent_build_type=excluded.agent_build_type`,
 		hostID, facts.CollectedAt, facts.UptimeSeconds, facts.BootTime, facts.Kernel, facts.OSPrettyName,
-		facts.PackageManager, facts.RebootRequired, facts.DiskFreeBytes, facts.TimeSyncOK, facts.PendingUpdates,
-		facts.OrphanedPackages, facts.CleanupSupported,
+		facts.PackageManager, facts.RebootRequired, facts.DiskFreeBytes, facts.TimeSyncOK,
+		facts.TimeSyncSource, facts.TimeSyncOffset, facts.TimeSyncOffsetKnown, facts.TimeSyncStratum, facts.TimeSyncLastSync,
+		facts.PendingUpdates, facts.OrphanedPackages, facts.CleanupSupported,
 		facts.Agent.Version, facts.Agent.BuildNumber, facts.Agent.BuildCommit, facts.Agent.BuildDate,
 		facts.Agent.BuildTarget, facts.Agent.BuildType)
 	if err != nil {

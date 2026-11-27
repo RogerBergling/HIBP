@@ -37,6 +37,40 @@ func TestParseUptime(t *testing.T) {
 	}
 }
 
+func TestParseTimedatectlTimeSyncStatus(t *testing.T) {
+	status := timeSyncStatus{OK: true, Source: "timedatectl"}
+	parseTimedatectlStatus(`       Server: 10.0.0.1 (ntp.example)
+ Poll interval: 34min 8s (min: 32s; max 34min 8s)
+       Offset: +123.4ms
+        Delay: 1.2ms
+       Jitter: 300us
+     Stratum: 2
+  Leap status: normal
+`, &status)
+	if !status.OK || !status.OffsetKnown || status.Stratum != 2 {
+		t.Fatalf("unexpected timedatectl status: %+v", status)
+	}
+	if status.OffsetSeconds < 0.1233 || status.OffsetSeconds > 0.1235 {
+		t.Fatalf("unexpected offset: %f", status.OffsetSeconds)
+	}
+}
+
+func TestParseChronyTimeSyncStatus(t *testing.T) {
+	status := parseChronyTracking(`Reference ID    : 10.0.0.1 (ntp.example)
+Stratum         : 3
+System time     : 0.00123456 seconds slow of NTP time
+Last offset     : +0.00120000 seconds
+RMS offset      : 0.00150000 seconds
+Leap status     : Normal
+`)
+	if !status.OK || !status.OffsetKnown || status.Stratum != 3 {
+		t.Fatalf("unexpected chrony status: %+v", status)
+	}
+	if status.OffsetSeconds < 0.00123 || status.OffsetSeconds > 0.00124 {
+		t.Fatalf("unexpected chrony offset: %f", status.OffsetSeconds)
+	}
+}
+
 func TestCountPackages(t *testing.T) {
 	apt := "Inst curl [1.0] (1.1 Ubuntu:24.04)\nInst vim [2.0] (2.1 Ubuntu:24.04)\nConf curl\n"
 	if got := countPackages("apt", apt); got != 2 {

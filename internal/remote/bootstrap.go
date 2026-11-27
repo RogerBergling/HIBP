@@ -203,7 +203,7 @@ func runSudo(ctx context.Context, target Target, expected *HostKey, command, sud
 }
 
 func sudoersContent(username string) string {
-	return fmt.Sprintf(`# Managed by HIBP. This rule is limited to the fixed helper actions.
+	return strings.ReplaceAll(`# Managed by HIBP. This rule is limited to the fixed helper actions.
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper facts
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper facts-full
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper preview
@@ -218,12 +218,20 @@ func sudoersContent(username string) string {
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper reboot-check
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper system-info
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper metrics
+%s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper events
+%s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper service-restart
+%s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper service-enable
+%s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper service-disable
+%s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper package-remove-preview
+%s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper package-remove-apply
+%s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper package-install-preview
+%s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper package-install-apply
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-list
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-check *
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-apply *
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-update-all
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper install-package
-`, username, username, username, username, username, username, username, username, username, username, username, username, username, username, username, username, username, username, username)
+`, "%s", username)
 }
 
 func architectureMatches(uname string) bool {

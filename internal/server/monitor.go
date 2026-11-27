@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"strings"
@@ -15,7 +16,6 @@ import (
 	"time"
 
 	"github.com/RogerBergling/hibp/internal/helper"
-	"github.com/RogerBergling/hibp/internal/mailer"
 	"github.com/RogerBergling/hibp/internal/store"
 )
 
@@ -198,10 +198,18 @@ func (s *Server) evaluateMonitor(ctx context.Context, monitor store.Monitor, hos
 	switch monitor.Type {
 	case "host.cpu", "host.memory", "host.load", "host.disk":
 		return s.evaluateHostMetric(monitor, host)
+	case "host.ntp":
+		return s.evaluateNTP(monitor, host)
 	case "docker.project", "docker.container":
 		return s.evaluateDocker(monitor, host)
+	case "docker.health":
+		return s.evaluateDockerHealth(host)
 	case "service.systemd":
 		return s.evaluateService(monitor, host)
+	case "service.baseline":
+		return s.evaluateServiceBaseline(host)
+	case "security.auth":
+		return s.evaluateAuthFailures(monitor, host)
 	case "http":
 		if s.demo != nil {
 			status, message := s.demo.EvaluateNetworkMonitor(ctx, monitor)
@@ -309,6 +317,33 @@ func (s *Server) evaluateHostMetric(monitor store.Monitor, host store.Host) moni
 	return monitorResult{status: status, message: message}
 }
 
+func (s *Server) evaluateNTP(monitor store.Monitor, host store.Host) monitorResult {
+	facts := host.Facts
+	if facts == nil {
+		return monitorResult{status: "unknown", message: "no facts collected"}
+	}
+	if collected, err := time.Parse(time.RFC3339Nano, facts.CollectedAt); err != nil || time.Since(collected) > s.factsFreshness(host.ID) {
+		return monitorResult{status: "unknown", message: "facts are stale"}
+	}
+	if facts.TimeSyncSource == "" {
+		return monitorResult{status: "unknown", message: "NTP status is not available"}
+	}
+	if !facts.TimeSyncOK {
+		return monitorResult{status: "critical", message: "clock is not synchronized"}
+	}
+	if !facts.TimeSyncOffsetKnown {
+		return monitorResult{status: "ok", message: "clock synchronized; offset not reported"}
+	}
+	offset := math.Abs(facts.TimeSyncOffset)
+	if monitor.Critical > 0 && offset >= monitor.Critical {
+		return monitorResult{status: "critical", message: fmt.Sprintf("clock offset %.3fs (critical %.3fs)", offset, monitor.Critical)}
+	}
+	if monitor.Warning > 0 && offset >= monitor.Warning {
+		return monitorResult{status: "warning", message: fmt.Sprintf("clock offset %.3fs (warning %.3fs)", offset, monitor.Warning)}
+	}
+	return monitorResult{status: "ok", message: fmt.Sprintf("clock synchronized; offset %.3fs", offset)}
+}
+
 func (s *Server) evaluateDocker(monitor store.Monitor, host store.Host) monitorResult {
 	if snapshot, err := s.store.GetSystemInfo(host.ID); err == nil {
 		var info helper.SystemInfo
@@ -387,6 +422,145 @@ func (s *Server) evaluateDocker(monitor store.Monitor, host store.Host) monitorR
 		return monitorResult{status: "ok", message: "container is running"}
 	}
 	return monitorResult{status: "critical", message: "container not found"}
+}
+
+func (s *Server) evaluateDockerHealth(host store.Host) monitorResult {
+	if snapshot, err := s.store.GetSystemInfo(host.ID); err == nil {
+		var info helper.SystemInfo
+		if json.Unmarshal([]byte(snapshot.PayloadJSON), &info) == nil && !info.Docker.Available {
+			return monitorResult{status: "unknown", message: "Docker is not installed", skip: true}
+		}
+	}
+	projects, containers, err := s.store.GetDockerInventory(host.ID)
+	if err != nil || (len(projects) == 0 && len(containers) == 0) {
+		return monitorResult{status: "unknown", message: "no Docker inventory collected"}
+	}
+	latest := ""
+	for _, container := range containers {
+		if container.LastSeen > latest {
+			latest = container.LastSeen
+		}
+	}
+	for _, project := range projects {
+		if project.LastSeen > latest {
+			latest = project.LastSeen
+		}
+	}
+	if seen, err := time.Parse(time.RFC3339Nano, latest); err != nil || time.Since(seen) > s.metricsFreshness(host.ID) {
+		return monitorResult{status: "unknown", message: "Docker inventory is stale"}
+	}
+	running := 0
+	var problems []string
+	for _, container := range containers {
+		if container.State == "running" {
+			running++
+		}
+		switch {
+		case strings.EqualFold(container.Health, "unhealthy"):
+			problems = append(problems, container.Name+" unhealthy")
+		case strings.EqualFold(container.State, "restarting"):
+			problems = append(problems, container.Name+" restarting")
+		case strings.EqualFold(container.State, "dead"):
+			problems = append(problems, container.Name+" dead")
+		}
+	}
+	if len(problems) > 0 {
+		return monitorResult{status: "critical", message: "container health: " + monitorListSummary(problems)}
+	}
+	return monitorResult{status: "ok", message: fmt.Sprintf("%d/%d containers running", running, len(containers))}
+}
+
+func (s *Server) evaluateServiceBaseline(host store.Host) monitorResult {
+	if snapshot, err := s.store.GetSystemInfo(host.ID); err == nil {
+		var info helper.SystemInfo
+		if json.Unmarshal([]byte(snapshot.PayloadJSON), &info) == nil && !info.Systemd.UnitsCollected {
+			return monitorResult{status: "unknown", message: "systemd unit state is not available", skip: true}
+		}
+	}
+	states, err := s.store.ListServiceStates(host.ID)
+	if err != nil {
+		return monitorResult{status: "unknown", message: "service state is not available"}
+	}
+	latest := ""
+	for _, state := range states {
+		if state.LastSeen > latest {
+			latest = state.LastSeen
+		}
+	}
+	if latest == "" {
+		return monitorResult{status: "unknown", message: "no service state collected"}
+	}
+	if seen, err := time.Parse(time.RFC3339Nano, latest); err != nil || time.Since(seen) > s.metricsFreshness(host.ID) {
+		return monitorResult{status: "unknown", message: "service state is stale"}
+	}
+	baseline, err := s.store.ListServiceBaseline(host.ID)
+	if err != nil {
+		return monitorResult{status: "unknown", message: "service baseline is not available"}
+	}
+	excluded := make(map[string]bool, len(baseline))
+	current := make(map[string]string, len(states))
+	for _, item := range baseline {
+		if item.Excluded {
+			excluded[item.Unit] = true
+		}
+	}
+	var failed []string
+	for _, state := range states {
+		current[state.Unit] = state.State
+		if state.State == "failed" && !excluded[state.Unit] {
+			failed = append(failed, state.Unit)
+		}
+	}
+	if len(baseline) == 0 {
+		if len(failed) > 0 {
+			return monitorResult{status: "critical", message: "failed services: " + monitorListSummary(failed)}
+		}
+		return monitorResult{status: "unknown", message: "no service baseline collected yet"}
+	}
+	var missing []string
+	for _, item := range baseline {
+		if item.Excluded || !item.Expected {
+			continue
+		}
+		if state, ok := current[item.Unit]; !ok || (state != "running" && state != "failed") {
+			missing = append(missing, item.Unit)
+		}
+	}
+	if len(failed) > 0 || len(missing) > 0 {
+		parts := make([]string, 0, 2)
+		if len(failed) > 0 {
+			parts = append(parts, "failed: "+monitorListSummary(failed))
+		}
+		if len(missing) > 0 {
+			parts = append(parts, "not running: "+monitorListSummary(missing))
+		}
+		return monitorResult{status: "critical", message: strings.Join(parts, "; ")}
+	}
+	return monitorResult{status: "ok", message: fmt.Sprintf("%d baseline services running", len(baseline))}
+}
+
+func (s *Server) evaluateAuthFailures(monitor store.Monitor, host store.Host) monitorResult {
+	window := intSetting(s.store.ResolveSetting(host.ID, "events.auth_window_minutes", "10"), 10)
+	since := time.Now().UTC().Add(-time.Duration(window) * time.Minute).Format(time.RFC3339Nano)
+	count, err := s.store.CountHostEventsSince(host.ID, "auth_failure", since)
+	if err != nil {
+		return monitorResult{status: "unknown", message: "authentication events are not available"}
+	}
+	if monitor.Critical > 0 && float64(count) >= monitor.Critical {
+		return monitorResult{status: "critical", message: fmt.Sprintf("%d failed authentication events in %dm (critical %.0f)", count, window, monitor.Critical)}
+	}
+	if monitor.Warning > 0 && float64(count) >= monitor.Warning {
+		return monitorResult{status: "warning", message: fmt.Sprintf("%d failed authentication events in %dm (warning %.0f)", count, window, monitor.Warning)}
+	}
+	return monitorResult{status: "ok", message: fmt.Sprintf("%d failed authentication events in %dm", count, window)}
+}
+
+func monitorListSummary(items []string) string {
+	const limit = 8
+	if len(items) <= limit {
+		return strings.Join(items, ", ")
+	}
+	return strings.Join(items[:limit], ", ") + fmt.Sprintf(" (+%d more)", len(items)-limit)
 }
 
 func (s *Server) evaluateService(monitor store.Monitor, host store.Host) monitorResult {
@@ -539,25 +713,17 @@ func (s *Server) recordMonitorResult(monitor store.Monitor, hostID, hostName str
 		if err != nil {
 			emailError = err.Error()
 		} else {
-			recipients := cfg.Recipients
-			if strings.TrimSpace(monitor.Recipients) != "" {
-				parsed, parseErr := mailer.ParseRecipients(monitor.Recipients)
-				if parseErr != nil {
-					emailError = parseErr.Error()
-				} else {
-					recipients = parsed
-				}
-			}
-			if emailError == "" {
-				if !cfg.Enabled {
-					emailError = "SMTP notifications are disabled"
-				} else if len(recipients) == 0 {
-					emailError = "no email recipients configured"
-				} else if sendErr := s.sendEmail(cfg, recipients, subject, body); sendErr != nil {
-					emailError = sendErr.Error()
-				} else {
-					emailed = true
-				}
+			recipients, recipientErr := s.monitorRecipients(cfg, monitor, result.status, recovery)
+			if recipientErr != nil {
+				emailError = recipientErr.Error()
+			} else if !cfg.Enabled {
+				emailError = "SMTP notifications are disabled"
+			} else if len(recipients) == 0 {
+				emailError = "no email recipients configured"
+			} else if sendErr := s.sendEmail(cfg, recipients, subject, body); sendErr != nil {
+				emailError = sendErr.Error()
+			} else {
+				emailed = true
 			}
 		}
 		lastNotified = now.Format(time.RFC3339Nano)

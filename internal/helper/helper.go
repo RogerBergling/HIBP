@@ -24,20 +24,25 @@ const maxOutput = 1 << 20 // 1 MiB
 
 // Facts is the JSON contract returned by the facts action.
 type Facts struct {
-	OSID             string         `json:"os_id"`
-	OSVersion        string         `json:"os_version"`
-	OSPrettyName     string         `json:"os_pretty_name"`
-	Kernel           string         `json:"kernel"`
-	PackageManager   string         `json:"package_manager"`
-	UptimeSeconds    int64          `json:"uptime_seconds"`
-	BootTime         string         `json:"boot_time"`
-	PendingUpdates   int            `json:"pending_updates"`
-	OrphanedPackages int            `json:"orphaned_packages"`
-	CleanupSupported bool           `json:"cleanup_supported"`
-	RebootRequired   bool           `json:"reboot_required"`
-	DiskFreeBytes    int64          `json:"disk_free_bytes"`
-	TimeSyncOK       bool           `json:"time_sync_ok"`
-	Agent            buildinfo.Info `json:"agent"`
+	OSID                string         `json:"os_id"`
+	OSVersion           string         `json:"os_version"`
+	OSPrettyName        string         `json:"os_pretty_name"`
+	Kernel              string         `json:"kernel"`
+	PackageManager      string         `json:"package_manager"`
+	UptimeSeconds       int64          `json:"uptime_seconds"`
+	BootTime            string         `json:"boot_time"`
+	PendingUpdates      int            `json:"pending_updates"`
+	OrphanedPackages    int            `json:"orphaned_packages"`
+	CleanupSupported    bool           `json:"cleanup_supported"`
+	RebootRequired      bool           `json:"reboot_required"`
+	DiskFreeBytes       int64          `json:"disk_free_bytes"`
+	TimeSyncOK          bool           `json:"time_sync_ok"`
+	TimeSyncSource      string         `json:"time_sync_source,omitempty"`
+	TimeSyncOffset      float64        `json:"time_sync_offset_seconds,omitempty"`
+	TimeSyncOffsetKnown bool           `json:"time_sync_offset_known,omitempty"`
+	TimeSyncStratum     int            `json:"time_sync_stratum,omitempty"`
+	TimeSyncLastSync    string         `json:"time_sync_last_sync,omitempty"`
+	Agent               buildinfo.Info `json:"agent"`
 }
 
 // CleanupResult is the JSON contract for cleanup-check and cleanup-apply.
@@ -79,6 +84,8 @@ var lookPath = func(name string) (string, error) {
 		"apk":              {"/sbin/apk", "/usr/sbin/apk", "/usr/bin/apk"},
 		"needs-restarting": {"/usr/bin/needs-restarting", "/bin/needs-restarting"},
 		"timedatectl":      {"/usr/bin/timedatectl", "/bin/timedatectl"},
+		"chronyc":          {"/usr/bin/chronyc", "/usr/sbin/chronyc", "/bin/chronyc", "/sbin/chronyc"},
+		"journalctl":       {"/usr/bin/journalctl", "/bin/journalctl"},
 		"systemctl":        {"/usr/bin/systemctl", "/bin/systemctl"},
 		"shutdown":         {"/usr/sbin/shutdown", "/sbin/shutdown", "/usr/bin/shutdown", "/bin/shutdown"},
 		"docker":           {"/usr/bin/docker", "/usr/local/bin/docker", "/bin/docker"},
@@ -158,6 +165,28 @@ func Run(ctx context.Context, action string, out io.Writer, args ...string) erro
 			return err
 		}
 		return json.NewEncoder(out).Encode(metrics)
+	case "events":
+		events, err := collectEvents(ctx)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(out).Encode(events)
+	case "service-restart", "service-enable", "service-disable":
+		action := strings.TrimPrefix(action, "service-")
+		result, err := serviceRunbook(ctx, action)
+		return writeRunbookResult(out, result, err)
+	case "package-remove-preview":
+		result, err := packageRunbook(ctx, "remove", "preview")
+		return writeRunbookResult(out, result, err)
+	case "package-remove-apply":
+		result, err := packageRunbook(ctx, "remove", "apply")
+		return writeRunbookResult(out, result, err)
+	case "package-install-preview":
+		result, err := packageRunbook(ctx, "install", "preview")
+		return writeRunbookResult(out, result, err)
+	case "package-install-apply":
+		result, err := packageRunbook(ctx, "install", "apply")
+		return writeRunbookResult(out, result, err)
 	case "docker-list":
 		inventory, err := collectDockerInventory(ctx)
 		if err != nil {
@@ -253,17 +282,23 @@ func collectFactsWithMode(ctx context.Context, fullUpgrade bool) (Facts, error) 
 	uptime, _ := os.ReadFile("/proc/uptime")
 	uptimeSeconds := parseUptime(string(uptime))
 	now := time.Now().UTC()
+	timeSync := collectTimeSync(ctx)
 	facts := Facts{
-		OSID:           osInfo["ID"],
-		OSVersion:      osInfo["VERSION_ID"],
-		OSPrettyName:   osInfo["PRETTY_NAME"],
-		Kernel:         strings.TrimSpace(string(kernel)),
-		PackageManager: detectPackageManager(),
-		UptimeSeconds:  uptimeSeconds,
-		BootTime:       now.Add(-time.Duration(uptimeSeconds) * time.Second).Format(time.RFC3339),
-		DiskFreeBytes:  diskFreeBytes("/"),
-		TimeSyncOK:     timeSyncOK(ctx),
-		Agent:          buildinfo.Current,
+		OSID:                osInfo["ID"],
+		OSVersion:           osInfo["VERSION_ID"],
+		OSPrettyName:        osInfo["PRETTY_NAME"],
+		Kernel:              strings.TrimSpace(string(kernel)),
+		PackageManager:      detectPackageManager(),
+		UptimeSeconds:       uptimeSeconds,
+		BootTime:            now.Add(-time.Duration(uptimeSeconds) * time.Second).Format(time.RFC3339),
+		DiskFreeBytes:       diskFreeBytes("/"),
+		TimeSyncOK:          timeSync.OK,
+		TimeSyncSource:      timeSync.Source,
+		TimeSyncOffset:      timeSync.OffsetSeconds,
+		TimeSyncOffsetKnown: timeSync.OffsetKnown,
+		TimeSyncStratum:     timeSync.Stratum,
+		TimeSyncLastSync:    timeSync.LastSync,
+		Agent:               buildinfo.Current,
 	}
 	facts.PendingUpdates = countPending(ctx, facts.PackageManager, fullUpgrade)
 	facts.CleanupSupported = cleanupSupported(facts.PackageManager)
@@ -341,12 +376,139 @@ func runBinary(ctx context.Context, name string, args ...string) ([]byte, int, e
 	return commandRunner(ctx, path, args...)
 }
 
-func timeSyncOK(ctx context.Context) bool {
-	output, code, err := runBinary(ctx, "timedatectl", "show", "-p", "NTPSynchronized", "--value")
-	if err != nil || code != 0 {
-		return false
+type timeSyncStatus struct {
+	OK            bool
+	Source        string
+	OffsetSeconds float64
+	OffsetKnown   bool
+	Stratum       int
+	LastSync      string
+}
+
+func collectTimeSync(ctx context.Context) timeSyncStatus {
+	if _, err := lookPath("timedatectl"); err == nil {
+		output, code, err := runBinary(ctx, "timedatectl", "show", "-p", "NTPSynchronized", "--value")
+		if err == nil && code == 0 {
+			status := timeSyncStatus{
+				OK:       strings.EqualFold(strings.TrimSpace(string(output)), "yes"),
+				Source:   "timedatectl",
+				LastSync: time.Now().UTC().Format(time.RFC3339),
+			}
+			if detail, detailCode, detailErr := runBinary(ctx, "timedatectl", "timesync-status"); detailErr == nil && detailCode == 0 {
+				parseTimedatectlStatus(string(detail), &status)
+			}
+			return status
+		}
 	}
-	return strings.TrimSpace(string(output)) == "yes"
+	if _, err := lookPath("chronyc"); err == nil {
+		output, code, err := runBinary(ctx, "chronyc", "-n", "tracking")
+		if err == nil && code == 0 {
+			return parseChronyTracking(string(output))
+		}
+	}
+	return timeSyncStatus{}
+}
+
+func parseTimedatectlStatus(output string, status *timeSyncStatus) {
+	for _, line := range strings.Split(output, "\n") {
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		switch key {
+		case "Offset":
+			if offset, ok := parseClockOffset(value); ok {
+				status.OffsetSeconds = offset
+				status.OffsetKnown = true
+			}
+		case "Stratum":
+			if stratum, err := strconv.Atoi(value); err == nil {
+				status.Stratum = stratum
+			}
+		case "Leap status":
+			if value != "" {
+				status.OK = strings.EqualFold(value, "normal")
+			}
+		}
+	}
+}
+
+func parseChronyTracking(output string) timeSyncStatus {
+	status := timeSyncStatus{Source: "chrony"}
+	for _, line := range strings.Split(output, "\n") {
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		switch key {
+		case "Stratum":
+			if stratum, err := strconv.Atoi(value); err == nil {
+				status.Stratum = stratum
+			}
+		case "System time", "Last offset":
+			if status.OffsetKnown {
+				continue
+			}
+			if offset, ok := parseChronyOffset(value); ok {
+				status.OffsetSeconds = offset
+				status.OffsetKnown = true
+			}
+		case "Leap status":
+			status.OK = strings.EqualFold(value, "Normal")
+		case "Reference time":
+			status.LastSync = value
+		}
+	}
+	return status
+}
+
+func parseChronyOffset(value string) (float64, bool) {
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return 0, false
+	}
+	offset, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil {
+		return 0, false
+	}
+	return offset, true
+}
+
+func parseClockOffset(value string) (float64, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+	units := []struct {
+		suffix string
+		factor float64
+	}{
+		{"ns", 1e-9},
+		{"us", 1e-6},
+		{"µs", 1e-6},
+		{"ms", 1e-3},
+		{"s", 1},
+	}
+	for _, unit := range units {
+		if strings.HasSuffix(value, unit.suffix) {
+			number := strings.TrimSpace(strings.TrimSuffix(value, unit.suffix))
+			parsed, err := strconv.ParseFloat(number, 64)
+			if err == nil {
+				return parsed * unit.factor, true
+			}
+			return 0, false
+		}
+	}
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return 0, false
+	}
+	parsed, err := strconv.ParseFloat(fields[0], 64)
+	return parsed, err == nil
 }
 
 func countPending(ctx context.Context, packageManager string, fullUpgrade bool) int {

@@ -9,6 +9,7 @@ const state = {
   audit: [],
   monitors: [],
   alerts: [],
+  events: [],
   jobs: [],
   jobDetail: null,
   schedules: [],
@@ -313,6 +314,12 @@ function syncHostSelection() {
     if (!node) continue;
     node.disabled = count === 0;
     node.textContent = count ? 'Collect facts (' + count + ')' : 'Collect facts';
+  }
+  for (const id of ['table-runbook-selected', 'fleet-runbook-selected']) {
+    const node = $(id);
+    if (!node) continue;
+    node.disabled = count === 0;
+    node.textContent = count ? 'Runbook (' + count + ')' : 'Runbook';
   }
 }
 
@@ -899,12 +906,13 @@ async function loadAll(options = {}) {
   if (autoRefreshState.loading && !options.force) return;
   autoRefreshState.loading = true;
   try {
-    const [status, hosts, audit, monitors, alerts, schedules, runs, jobs] = await Promise.all([
+    const [status, hosts, audit, monitors, alerts, events, schedules, runs, jobs] = await Promise.all([
       api('/api/v1/status'),
       api('/api/v1/hosts'),
       api('/api/v1/audit?limit=200'),
       api('/api/v1/monitors'),
       api('/api/v1/alerts?limit=200'),
+      api('/api/v1/events?limit=200'),
       api('/api/v1/schedules'),
       api('/api/v1/runs?limit=100'),
       api('/api/v1/jobs?limit=40'),
@@ -914,6 +922,7 @@ async function loadAll(options = {}) {
     state.audit = audit.entries || [];
     state.monitors = monitors.monitors || [];
     state.alerts = alerts.alerts || [];
+    state.events = events.events || [];
     state.jobs = jobs.jobs || [];
     state.schedules = schedules.schedules || [];
     state.runs = runs.runs || [];
@@ -1536,12 +1545,16 @@ function hostRow(host) {
   const actionsTd = el('td');
   const actions = el('div', 'actions');
   actions.append(actionButton('Edit', () => showAddHostModal(host)));
-  actions.append(actionButton('Test', () => testHost(host)));
-  actions.append(actionButton('Setup', () => bootstrapHost(host)));
-  actions.append(actionButton('Facts', () => collectFacts(host)));
-  actions.append(actionButton('Patch', () => showPatchModal(host)));
-  actions.append(actionButton('Cleanup', () => showCleanupModal(host)));
-  actions.append(actionButton('Reboot', () => rebootHost(host), 'danger'));
+  if (host.auth_type === 'agent') {
+    actions.append(actionButton('Agent token', () => showAgentTokenModal(host)));
+  } else {
+    actions.append(actionButton('Test', () => testHost(host)));
+    actions.append(actionButton('Setup', () => bootstrapHost(host)));
+    actions.append(actionButton('Facts', () => collectFacts(host)));
+    actions.append(actionButton('Patch', () => showPatchModal(host)));
+    actions.append(actionButton('Cleanup', () => showCleanupModal(host)));
+    actions.append(actionButton('Reboot', () => rebootHost(host), 'danger'));
+  }
   actions.append(actionButton('Delete', () => deleteHost(host), 'danger'));
   actionsTd.append(actions);
 
@@ -1611,6 +1624,11 @@ const MONITOR_TYPES = {
     warningLabel: 'Warning load', criticalLabel: 'Critical load', warning: 4, critical: 8,
     note: 'Compares 1-minute load average. Set thresholds relative to the host CPU count.',
   },
+  'host.ntp': {
+    label: 'NTP clock', target: 'none', threshold: 'number',
+    warningLabel: 'Warning offset (s)', criticalLabel: 'Critical offset (s)', warning: 1, critical: 5,
+    note: 'Uses the NTP offset and synchronization state collected with facts. Critical when the clock is unsynchronized or the absolute offset exceeds the threshold.',
+  },
   'docker.project': {
     label: 'Compose project', target: 'project', targetLabel: 'Compose project',
     placeholder: 'app', threshold: 'none',
@@ -1621,10 +1639,23 @@ const MONITOR_TYPES = {
     placeholder: 'app-web-1', threshold: 'none',
     note: 'Critical when the container is missing, stopped, or unhealthy.',
   },
+  'docker.health': {
+    label: 'Docker health', target: 'none', threshold: 'none',
+    note: 'Fleet-wide Docker health. Critical when a container is unhealthy, restarting, or dead. Stopped containers are reported separately until a container baseline is added.',
+  },
   'service.systemd': {
     label: 'systemd service', target: 'service', targetLabel: 'Unit name',
     placeholder: 'nginx.service', threshold: 'none',
     note: 'Uses the systemd snapshot collected with host metrics. Add the .service suffix.',
+  },
+  'service.baseline': {
+    label: 'Service baseline', target: 'none', threshold: 'none',
+    note: 'Compares running systemd services with the first collected baseline for each host. Alerts on failed services and baseline units that are no longer running. Disable after reviewing the baseline if the default is too noisy.',
+  },
+  'security.auth': {
+    label: 'Failed authentication', target: 'none', threshold: 'number',
+    warningLabel: 'Warning count', criticalLabel: 'Critical count', warning: 5, critical: 10,
+    note: 'Counts normalized authentication-failure events collected from journald or auth logs in the configured window. The window is a fleet setting (events.auth_window_minutes, default 10).',
   },
   'http': {
     label: 'HTTP endpoint', target: 'url', targetLabel: 'URL',
@@ -1965,6 +1996,37 @@ function renderMonitoring() {
     }
     row.append(timeTd, monitorTd, hostTd, statusTd, detailTd, emailTd);
     alertBody.append(row);
+  }
+
+  const eventBody = $('event-body');
+  if (eventBody) {
+    const events = state.events || [];
+    eventBody.replaceChildren();
+    if (!events.length) {
+      eventBody.append(emptyTableRow(8, 'No security or service events collected yet.'));
+    }
+    for (const record of events) {
+      const row = el('tr');
+      const timeTd = el('td');
+      const time = el('span', 'nowrap', relativeTime(record.occurred_at));
+      time.title = record.occurred_at ? new Date(record.occurred_at).toLocaleString() : '';
+      timeTd.append(time);
+      const host = (state.hosts || []).find((entry) => entry.id === record.host_id);
+      const hostTd = el('td', '', host ? host.name : record.host_id.slice(0, 8));
+      const sourceTd = el('td', '', record.source || '—');
+      sourceTd.title = record.source || '';
+      const categoryTd = el('td', '', record.category || '—');
+      const severity = String(record.severity || 'info');
+      const severityClass = severity === 'critical' ? 'unreachable' : severity === 'warning' ? 'review' : severity === 'info' ? 'reachable' : 'unknown';
+      const severityTd = el('td');
+      severityTd.append(el('span', 'pill ' + severityClass, severity));
+      const userTd = el('td', '', record.username || '—');
+      const ipTd = el('td', '', record.remote_ip || '—');
+      const messageTd = el('td', 'alert-detail', record.message || '');
+      messageTd.title = record.message || '';
+      row.append(timeTd, hostTd, sourceTd, categoryTd, severityTd, userTd, ipTd, messageTd);
+      eventBody.append(row);
+    }
   }
   syncMonitorSelection();
 }
@@ -2462,6 +2524,12 @@ async function showSMTPModal() {
   const from = inputField(body, 'From address', 'from', 'hibp@example.com');
   const recipients = inputField(body, 'Default recipients', 'recipients', 'ops@example.com, oncall@example.com');
   recipients.spellcheck = false;
+  const severityGrid = el('div', 'settings-grid');
+  const warningRecipients = inputField(severityGrid, 'Warning recipients (optional)', 'warning_recipients', 'Defaults to the default recipients');
+  const criticalRecipients = inputField(severityGrid, 'Critical recipients (optional)', 'critical_recipients', 'Defaults to the default recipients');
+  const recoveryRecipients = inputField(severityGrid, 'Recovery recipients (optional)', 'recovery_recipients', 'Defaults to the default recipients');
+  for (const field of [warningRecipients, criticalRecipients, recoveryRecipients]) field.spellcheck = false;
+  body.append(severityGrid);
   const timeout = inputField(body, 'SMTP timeout (seconds)', 'timeout_seconds', '15', 'number');
   const testTo = inputField(body, 'Test recipient (optional)', 'test_to', 'Defaults to the recipient list');
   body.append(el('p', 'field-note', 'STARTTLS upgrades a plaintext connection before AUTH. Username and password are rejected over unencrypted SMTP. For a local Postfix relay, use its IP address, port 25, Plain text (no auth), and blank username/password. A test message is sent using the saved settings.'));
@@ -2487,6 +2555,9 @@ async function showSMTPModal() {
     clear_password: clearPassword.checked,
     from: from.value.trim(),
     recipients: recipients.value.trim(),
+    warning_recipients: warningRecipients.value.trim(),
+    critical_recipients: criticalRecipients.value.trim(),
+    recovery_recipients: recoveryRecipients.value.trim(),
     timeout_seconds: Number(timeout.value || 15),
   });
   const persist = async () => {
@@ -2506,6 +2577,9 @@ async function showSMTPModal() {
     username.value = smtp.username || '';
     from.value = smtp.from || '';
     recipients.value = smtp.recipients || '';
+    warningRecipients.value = smtp.warning_recipients || '';
+    criticalRecipients.value = smtp.critical_recipients || '';
+    recoveryRecipients.value = smtp.recovery_recipients || '';
     timeout.value = String(smtp.timeout_seconds || 15);
     if (smtp.password_set) {
       password.placeholder = 'Stored password — leave blank to keep';
@@ -3182,8 +3256,84 @@ async function bootstrapHost(host) {
   }
 }
 
-async function fleetUpdateHelpers(hosts = null) {
-  const targets = (Array.isArray(hosts) ? hosts.slice() : state.hosts.slice());
+async function showRunbookModal(hosts) {
+  const targets = (Array.isArray(hosts) ? hosts.slice() : []);
+  if (!targets.length) {
+    toast('Select at least one host', 'error');
+    return;
+  }
+  const body = el('form', 'modal-body');
+  body.append(el('p', 'muted', 'Runbooks are typed, allowlisted actions. The controller validates parameters again before the helper executes them. Package actions have separate preview and apply steps.'));
+  const action = selectField(body, 'Action', 'runbook_action', [
+    ['service-restart', 'Restart service'],
+    ['service-enable', 'Enable service'],
+    ['service-disable', 'Disable service'],
+    ['package-remove-preview', 'Preview package removal'],
+    ['package-remove-apply', 'Remove package'],
+    ['package-install-preview', 'Preview repository package install'],
+    ['package-install-apply', 'Install repository package'],
+  ]);
+  const parameter = inputField(body, 'Service unit', 'runbook_parameter', 'nginx.service');
+  const note = el('p', 'field-note', 'Service actions require one systemd unit. Package actions accept comma-separated package names and use the target distribution package manager.');
+  body.append(note);
+  const sync = () => {
+    const pkg = action.value.startsWith('package-');
+    setFieldLabel(parameter, pkg ? 'Package names' : 'Service unit');
+    parameter.placeholder = pkg ? 'checkmk-agent, checkmk-agent-plugins' : 'nginx.service';
+  };
+  action.addEventListener('change', sync);
+  sync();
+  const actions = el('div', 'modal-actions');
+  const cancel = el('button', 'btn', 'Cancel');
+  cancel.type = 'button';
+  const save = el('button', 'btn primary', 'Queue runbook');
+  save.type = 'submit';
+  actions.append(cancel, save);
+  body.append(actions);
+  const close = openModal('Runbook — ' + targets.length + ' host' + (targets.length === 1 ? '' : 's'), body);
+  cancel.addEventListener('click', close);
+  body.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const value = parameter.value.trim();
+    if (!value) {
+      toast('Enter a service unit or package name', 'error');
+      return;
+    }
+    const runbook = { action: action.value };
+    let confirm = 'run';
+    if (action.value.startsWith('service-')) {
+      runbook.unit = value;
+    } else {
+      runbook.packages = [...new Set(value.split(/[,\s]+/).map((item) => item.trim()).filter(Boolean))];
+      if (!runbook.packages.length) {
+        toast('Enter at least one package name', 'error');
+        return;
+      }
+      confirm = action.value.endsWith('-preview') ? 'preview' : action.value.startsWith('package-remove') ? 'remove' : 'install';
+    }
+    const usernames = new Set(targets.map((host) => host.username));
+    let sudoPassword = '';
+    if (usernames.size === 1 && state.sharedSudoPassword && state.sharedSudoUsername === targets[0].username) {
+      sudoPassword = state.sharedSudoPassword;
+    } else {
+      const entered = await askPassword(
+        'Shared sudo password — runbook',
+        'Used for every selected host in this runbook. Leave blank for passwordless sudo. Characters are shown as *.',
+        { allowEmpty: true },
+      );
+      if (entered === null) return;
+      sudoPassword = entered;
+      if (entered && usernames.size === 1) {
+        state.sharedSudoPassword = entered;
+        state.sharedSudoUsername = targets[0].username;
+      }
+    }
+    close();
+    await createJob('runbook', targets, { confirm, runbook, sudo_password: sudoPassword });
+  });
+}
+
+async function fleetUpdateHelpers(hosts = null) {  const targets = (Array.isArray(hosts) ? hosts.slice() : state.hosts.slice());
   if (!targets.length) {
     toast(hosts ? 'No hosts selected' : 'No hosts to update', 'error');
     return;
@@ -4454,12 +4604,18 @@ function renderHostSettings(data, host, reload) {
   const metricsInterval = inputField(grid, 'Metrics interval', 'metrics_interval', '5m');
   const factsInterval = inputField(grid, 'Facts interval', 'facts_interval', '12h');
   const retention = inputField(grid, 'Metrics retention (days)', 'retention_days', '30', 'number');
+  const eventsEnabled = selectField(grid, 'Event collection', 'events_enabled', [['1', 'Enabled'], ['0', 'Disabled']]);
+  const eventsRetention = inputField(grid, 'Event retention (days)', 'events_retention_days', '30', 'number');
+  const authWindow = inputField(grid, 'Auth-failure window (minutes)', 'auth_window_minutes', '10', 'number');
   const roots = inputField(grid, 'Docker scan roots', 'docker_roots', '/opt');
   const settings = data.settings || {};
   enabled.value = settings['collector.enabled'] || '1';
   metricsInterval.value = settings['collector.metrics_interval'] || '5m';
   factsInterval.value = settings['collector.facts_interval'] || '12h';
   retention.value = settings['metrics.retention_days'] || '30';
+  eventsEnabled.value = settings['events.enabled'] || '1';
+  eventsRetention.value = settings['events.retention_days'] || '30';
+  authWindow.value = settings['events.auth_window_minutes'] || '10';
   roots.value = settings['docker.scan_roots'] || '/opt';
   card.append(grid);
   const actions = el('div', 'modal-actions');
@@ -4474,6 +4630,9 @@ function renderHostSettings(data, host, reload) {
     'collector.metrics_interval': metricsInterval,
     'collector.facts_interval': factsInterval,
     'metrics.retention_days': retention,
+    'events.enabled': eventsEnabled,
+    'events.retention_days': eventsRetention,
+    'events.auth_window_minutes': authWindow,
     'docker.scan_roots': roots,
   };
   const hostSettings = data.host_settings || {};
@@ -4508,7 +4667,8 @@ function renderHostSettings(data, host, reload) {
           scope: 'host', host_id: host.id,
           settings: {
             'collector.enabled': '', 'collector.metrics_interval': '', 'collector.facts_interval': '',
-            'metrics.retention_days': '', 'docker.scan_roots': '',
+            'metrics.retention_days': '', 'events.enabled': '', 'events.retention_days': '',
+            'events.auth_window_minutes': '', 'docker.scan_roots': '',
           },
         }),
       });
@@ -4956,6 +5116,9 @@ async function showSettingsModal() {
   const metricsInterval = inputField(grid, 'Metrics interval', 'metrics_interval', '5m');
   const factsInterval = inputField(grid, 'Facts interval', 'facts_interval', '12h');
   const retention = inputField(grid, 'Metrics retention (days)', 'retention_days', '30', 'number');
+  const eventsEnabled = selectField(grid, 'Event collection', 'events_enabled', [['1', 'Enabled'], ['0', 'Disabled']]);
+  const eventsRetention = inputField(grid, 'Event retention (days)', 'events_retention_days', '30', 'number');
+  const authWindow = inputField(grid, 'Auth-failure window (minutes)', 'auth_window_minutes', '10', 'number');
   const roots = inputField(grid, 'Docker scan roots', 'docker_roots', '/opt');
   body.append(grid);
   body.append(el('p', 'muted', 'Backups are fleet-wide. Leave the directory blank to use the database directory. Only timestamped backups created by HIBP are pruned; lowering the count deletes older HIBP-created backups on the next backup.'));
@@ -4978,6 +5141,9 @@ async function showSettingsModal() {
     metricsInterval.value = settings['collector.metrics_interval'] || '5m';
     factsInterval.value = settings['collector.facts_interval'] || '12h';
     retention.value = settings['metrics.retention_days'] || '30';
+    eventsEnabled.value = settings['events.enabled'] || '1';
+    eventsRetention.value = settings['events.retention_days'] || '30';
+    authWindow.value = settings['events.auth_window_minutes'] || '10';
     roots.value = settings['docker.scan_roots'] || '/opt';
     backupDir.value = settings['backup.directory'] || '';
     backupRetention.value = settings['backup.retention_count'] || '3';
@@ -4995,6 +5161,9 @@ async function showSettingsModal() {
             'collector.metrics_interval': metricsInterval.value.trim(),
             'collector.facts_interval': factsInterval.value.trim(),
             'metrics.retention_days': retention.value.trim(),
+            'events.enabled': eventsEnabled.value,
+            'events.retention_days': eventsRetention.value.trim(),
+            'events.auth_window_minutes': authWindow.value.trim(),
             'docker.scan_roots': roots.value.trim(),
             'backup.directory': backupDir.value.trim(),
             'backup.retention_count': backupRetention.value.trim(),
@@ -5015,7 +5184,8 @@ async function showSettingsModal() {
           scope: 'fleet',
           settings: {
             'collector.enabled': '', 'collector.metrics_interval': '', 'collector.facts_interval': '',
-            'metrics.retention_days': '', 'docker.scan_roots': '',
+            'metrics.retention_days': '', 'events.enabled': '', 'events.retention_days': '',
+            'events.auth_window_minutes': '', 'docker.scan_roots': '',
             'backup.directory': '', 'backup.retention_count': '',
           },
         }),
@@ -5078,6 +5248,29 @@ function openModal(title, content, onClose, sizeClass = '') {
   return closeFn;
 }
 
+async function showAgentTokenModal(host) {
+  if (!confirm('Create or rotate the agent token for ' + host.name + '? The previous token will stop working immediately.')) return;
+  try {
+    const result = await api('/api/v1/hosts/' + encodeURIComponent(host.id) + '/agent', { method: 'POST', body: '{}' });
+    const body = el('div', 'modal-body');
+    body.append(el('p', 'muted', 'This token is shown once. Store it in the agent configuration on the target. It is not recoverable from the database.'));
+    const pre = el('pre', 'key-box', result.token || '');
+    pre.style.whiteSpace = 'pre-wrap';
+    body.append(pre);
+    body.append(el('p', 'field-note', 'Agent endpoint: https://<hibp-host>:<port>/api/v1/agent/v1/. The agent sends heartbeat, snapshot, and events.'));
+    const actions = el('div', 'modal-actions');
+    const close = el('button', 'btn primary', 'Close');
+    close.type = 'button';
+    actions.append(close);
+    body.append(actions);
+    const closeFn = openModal('Agent token — ' + host.name, body, null, 'wide');
+    close.addEventListener('click', closeFn);
+    await loadAll();
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
 function showAddHostModal(host = null, prefill = null) {
   // A click listener must never leak its Event into the edit path.
   if (host && !host.id) host = null;
@@ -5091,7 +5284,7 @@ function showAddHostModal(host = null, prefill = null) {
   const username = inputField(row, 'Username', 'username', 'ubuntu');
   form.append(row);
   const authRow = el('div', 'form-row');
-  const authType = selectField(authRow, 'Auth type', 'auth_type', [['key', 'SSH key file'], ['password', 'Password (manual fallback)']]);
+  const authType = selectField(authRow, 'Auth type', 'auth_type', [['key', 'SSH key file'], ['password', 'Password (manual fallback)'], ['agent', 'HIBP agent (monitoring only)']]);
   const keyPath = keyPathField(authRow, source.key_path || '', source.identity_files || []);
   form.append(authRow);
   const aptRow = el('div', 'form-row');
@@ -5979,6 +6172,8 @@ function bind() {
   $('fleet-update-selected').addEventListener('click', () => fleetUpdateHelpers(selectedHosts()));
   $('table-facts-selected').addEventListener('click', () => fleetCollectFacts(selectedHosts()));
   $('fleet-facts-selected').addEventListener('click', () => fleetCollectFacts(selectedHosts()));
+  $('table-runbook-selected').addEventListener('click', () => showRunbookModal(selectedHosts()));
+  $('fleet-runbook-selected').addEventListener('click', () => showRunbookModal(selectedHosts()));
   $('table-patch-selected').addEventListener('click', () => showFleetPatchModal(selectedHosts()));
   $('fleet-patch-selected').addEventListener('click', () => showFleetPatchModal(selectedHosts()));
   $('table-cleanup-selected').addEventListener('click', () => showFleetCleanupModal(selectedHosts()));

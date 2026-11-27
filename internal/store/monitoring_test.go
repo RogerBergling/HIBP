@@ -93,3 +93,55 @@ func TestMonitorAndServiceLifecycle(t *testing.T) {
 		t.Fatalf("expected monitor deletion, got %v", err)
 	}
 }
+
+func TestServiceBaselineAndDefaultMonitors(t *testing.T) {
+	s := openAuthTestStore(t)
+	host, err := s.CreateHost(Host{
+		Name: "web01", Address: "10.0.0.10", Port: 22, Username: "ubuntu",
+		AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EnsureServiceBaseline(host.ID, []string{"ssh.service", "cron.service"}); err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := s.ListServiceBaseline(host.ID)
+	if err != nil || len(baseline) != 2 {
+		t.Fatalf("baseline: %+v %v", baseline, err)
+	}
+	if err := s.EnsureServiceBaseline(host.ID, []string{"ssh.service", "nginx.service"}); err != nil {
+		t.Fatal(err)
+	}
+	baseline, err = s.ListServiceBaseline(host.ID)
+	if err != nil || len(baseline) != 2 {
+		t.Fatalf("baseline changed after second snapshot: %+v %v", baseline, err)
+	}
+	for _, item := range baseline {
+		if item.Unit == "nginx.service" {
+			t.Fatal("new unit was added to an existing baseline")
+		}
+	}
+	if err := s.DeleteHost(host.ID); err != nil {
+		t.Fatal(err)
+	}
+	baseline, err = s.ListServiceBaseline(host.ID)
+	if err != nil || len(baseline) != 0 {
+		t.Fatalf("baseline was not removed with host: %+v %v", baseline, err)
+	}
+
+	monitors, err := s.ListMonitors()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]bool{}
+	for _, monitor := range monitors {
+		switch monitor.ID {
+		case "default-service-baseline", "default-docker-health":
+			found[monitor.ID] = true
+		}
+	}
+	if !found["default-service-baseline"] || !found["default-docker-health"] {
+		t.Fatalf("expected default enterprise monitors, got %+v", monitors)
+	}
+}

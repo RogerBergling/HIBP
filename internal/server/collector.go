@@ -153,11 +153,48 @@ func (s *Server) scheduledMetrics(ctx context.Context, host store.Host) {
 	if metrics.ServicesCollected {
 		if err := s.store.SaveServiceState(host.ID, metrics.FailedUnits, metrics.RunningUnits); err != nil {
 			slog.Warn("collector: save service state", "host", host.Name, "error", err)
+		} else if err := s.store.EnsureServiceBaseline(host.ID, metrics.RunningUnits); err != nil {
+			slog.Warn("collector: save service baseline", "host", host.Name, "error", err)
 		}
 	}
 	// Keep Docker state fresh enough for container monitoring.
 	if _, err := s.collectDockerInventory(ctx, host, "", ""); err != nil {
 		logCollectorError(host, "docker-list", err)
+	}
+	s.collectHostEvents(ctx, host)
+}
+
+func (s *Server) collectHostEvents(ctx context.Context, host store.Host) {
+	if s.store.ResolveSetting(host.ID, "events.enabled", "1") != "1" {
+		return
+	}
+	output, code, err := s.runHelper(ctx, host, "events", "", "", 2*time.Minute)
+	if err != nil {
+		logCollectorError(host, "events", err)
+		return
+	}
+	if code != 0 {
+		slog.Warn("collector: events helper failed", "host", host.Name, "output", strings.TrimSpace(output))
+		return
+	}
+	var events []helper.Event
+	if err := json.Unmarshal([]byte(output), &events); err != nil {
+		slog.Warn("collector: invalid events", "host", host.Name, "error", err)
+		return
+	}
+	if len(events) == 0 {
+		return
+	}
+	stored := make([]store.HostEvent, 0, len(events))
+	for _, event := range events {
+		stored = append(stored, store.HostEvent{
+			EventID: event.EventID, Source: event.Source, Category: event.Category,
+			Severity: event.Severity, Unit: event.Unit, Username: event.Username,
+			RemoteIP: event.RemoteIP, Message: event.Message, OccurredAt: event.OccurredAt,
+		})
+	}
+	if err := s.store.AddHostEvents(host.ID, stored); err != nil {
+		slog.Warn("collector: save events", "host", host.Name, "error", err)
 	}
 }
 
@@ -192,6 +229,11 @@ func (s *Server) pruneMetrics(hosts []store.Host) {
 		cutoff := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour).Format(time.RFC3339Nano)
 		if err := s.store.DeleteMetricsBeforeForHost(host.ID, cutoff); err != nil {
 			slog.Warn("collector: prune metrics", "host", host.Name, "error", err)
+		}
+		eventDays := intSetting(s.store.ResolveSetting(host.ID, "events.retention_days", "30"), 30)
+		eventCutoff := time.Now().UTC().Add(-time.Duration(eventDays) * 24 * time.Hour).Format(time.RFC3339Nano)
+		if err := s.store.DeleteHostEventsBeforeForHost(host.ID, eventCutoff); err != nil {
+			slog.Warn("collector: prune events", "host", host.Name, "error", err)
 		}
 	}
 }
