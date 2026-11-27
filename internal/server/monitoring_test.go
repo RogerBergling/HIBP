@@ -850,6 +850,64 @@ func TestNetworkMonitorValidation(t *testing.T) {
 	}
 }
 
+func TestClearEventsAndAlertsAPI(t *testing.T) {
+	ts, db := testServer(t)
+	host, err := db.CreateHost(store.Host{
+		Name: "udm", Address: "192.168.4.1", AuthType: "network",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	monitor, err := db.CreateMonitor(store.Monitor{
+		Name: "clear-api", Type: "host.cpu", IntervalSeconds: 60, Enabled: true,
+		Assignments: []store.MonitorAssignment{{Scope: "fleet"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddHostEvents(host.ID, []store.HostEvent{
+		{EventID: "clear-api-1", Source: "syslog", Category: "network_wan", Severity: "critical", Message: "WAN down", OccurredAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddAlertEvent(store.AlertEvent{
+		MonitorID: monitor.ID, HostID: host.ID, Status: "critical", Subject: "WAN down",
+		Detail: "WAN down", CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resp := request(t, http.MethodDelete, ts.URL+"/api/v1/events", "test-token", "")
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		t.Fatalf("clear events failed: %d %s", resp.StatusCode, raw)
+	}
+	var cleared struct {
+		Deleted int64 `json:"deleted"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&cleared); err != nil {
+		_ = resp.Body.Close()
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if cleared.Deleted != 1 {
+		t.Fatalf("expected one deleted event, got %d", cleared.Deleted)
+	}
+	if events, err := db.ListHostEvents(10); err != nil || len(events) != 0 {
+		t.Fatalf("events after clear: %+v %v", events, err)
+	}
+	resp = request(t, http.MethodDelete, ts.URL+"/api/v1/alerts", "test-token", "")
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		t.Fatalf("clear alerts failed: %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+	if alerts, err := db.ListAlertEvents(10); err != nil || len(alerts) != 0 {
+		t.Fatalf("alerts after clear: %+v %v", alerts, err)
+	}
+}
+
 func TestHTTPMonitorInsecureSkipVerify(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

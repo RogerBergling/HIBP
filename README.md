@@ -1937,6 +1937,9 @@ read-only `auth_type=network` hosts. They have no SSH actions:
 - Syslog events are normalized into the **Security events** view in the left
   sidebar (also reachable from the **Security events** button on the Monitoring
   page), so `security.auth` can also count device authentication failures.
+  Security/service events and alert history can be cleared with a typed `CLEAR`
+  confirmation. The audit log is append-only and is not cleared; each clear
+  action records an audit entry.
 
 The SNMP MVP polls scalar OIDs with `Get`; it does not walk interface tables.
 Use `snmpwalk` on the device to identify the exact scalar OIDs for CPU, memory,

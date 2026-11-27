@@ -2048,6 +2048,38 @@ function renderEventTable() {
   }
 }
 
+async function clearSecurityEvents() {
+  const answer = prompt('Type CLEAR to delete all security and service events.\n\nThis cannot be undone. The audit log is retained.');
+  if (answer === null) return;
+  if (answer.trim().toUpperCase() !== 'CLEAR') {
+    toast('Type CLEAR to confirm', 'error');
+    return;
+  }
+  try {
+    const result = await api('/api/v1/events', { method: 'DELETE' });
+    toast('Deleted ' + (result.deleted || 0) + ' security events', 'ok');
+    await loadAll({ force: true });
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
+async function clearAlertEvents() {
+  const answer = prompt('Type CLEAR to delete all alert event history.\n\nThis cannot be undone. Current monitor state and the audit log are retained.');
+  if (answer === null) return;
+  if (answer.trim().toUpperCase() !== 'CLEAR') {
+    toast('Type CLEAR to confirm', 'error');
+    return;
+  }
+  try {
+    const result = await api('/api/v1/alerts', { method: 'DELETE' });
+    toast('Deleted ' + (result.deleted || 0) + ' alert events', 'ok');
+    await loadAll({ force: true });
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
 function renderMonitoring() {
   const body = $('monitor-body');
   if (!body) return;
@@ -6875,6 +6907,8 @@ function bind() {
 
   $('monitor-events').addEventListener('click', () => setView('events'));
   $('events-refresh').addEventListener('click', () => loadAll({ force: true }));
+  $('events-clear').addEventListener('click', clearSecurityEvents);
+  $('alerts-clear').addEventListener('click', clearAlertEvents);
   $('event-source-filter').addEventListener('change', renderEventTable);
   $('event-search').addEventListener('input', renderEventTable);
   for (const button of document.querySelectorAll('.nav-item[data-view]')) {

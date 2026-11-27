@@ -171,6 +171,9 @@ cron-based patch schedules are implemented.
   SSH actions. SNMP polling uses v1/v2c in the current MVP; the community string
   is stored in the encrypted database and masked in API responses. SNMPv2c
   sends the community in clear text, so restrict UDP 161 to the controller.
+- Clearing security/service events or alert history is an authenticated action
+  and is written to the audit log. Audit entries remain append-only and cannot
+  be cleared from the UI.
 - The syslog receiver is disabled by default. When enabled it binds the
   configured address and accepts events only from source IPs mapped to a
   `network` host (the host address plus its configured extra source IPs).

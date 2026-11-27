@@ -120,6 +120,23 @@ func (s *Store) CountHostEventsMatching(hostID, source, contains, since string) 
 	return count, err
 }
 
+// ClearHostEvents deletes security/service event history. An empty hostID
+// clears every host. The action is audited by the caller.
+func (s *Store) ClearHostEvents(hostID string) (int64, error) {
+	query := "DELETE FROM host_events"
+	args := []any{}
+	if strings.TrimSpace(hostID) != "" {
+		query += " WHERE host_id=?"
+		args = append(args, hostID)
+	}
+	result, err := s.db.Exec(query, args...)
+	if err != nil {
+		return 0, err
+	}
+	deleted, _ := result.RowsAffected()
+	return deleted, nil
+}
+
 func (s *Store) DeleteHostEventsBefore(cutoff string) error {
 	_, err := s.db.Exec("DELETE FROM host_events WHERE received_at < ?", cutoff)
 	return err

@@ -431,7 +431,10 @@
           </div>
         </section>
         <section class="card table-card" style="margin-top:14px">
-          <div class="card-head"><div class="card-title">Alert events</div></div>
+          <div class="card-head">
+            <div class="card-title">Alert events</div>
+            <div class="card-actions"><button class="link-button" id="alerts-clear" type="button">Clear alerts</button></div>
+          </div>
           <div class="table-wrap">
             <table>
               <thead>
@@ -457,6 +460,7 @@
           </div>
           <div class="head-actions">
             <button class="btn" id="events-refresh" type="button">Refresh</button>
+            <button class="btn danger" id="events-clear" type="button">Clear events</button>
           </div>
         </div>
         <div class="form-row" style="margin-bottom:12px">

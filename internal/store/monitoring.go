@@ -398,6 +398,17 @@ func (s *Store) ListAlertEvents(limit int) ([]AlertEvent, error) {
 	return events, rows.Err()
 }
 
+// ClearAlertEvents deletes alert delivery history. Monitor state and audit
+// entries are retained; the caller records the clear action in the audit log.
+func (s *Store) ClearAlertEvents() (int64, error) {
+	result, err := s.db.Exec("DELETE FROM alert_events")
+	if err != nil {
+		return 0, err
+	}
+	deleted, _ := result.RowsAffected()
+	return deleted, nil
+}
+
 func (s *Store) SaveServiceState(hostID string, failed, running []string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
