@@ -390,7 +390,11 @@ func (s *Server) runRunbookJob(ctx context.Context, job store.Job, payload jobPa
 		return jobTargetOutcome{Status: store.JobTargetFailed, Stage: "failed", Detail: "runbook action is missing", Error: "runbook action is missing"}
 	}
 	spec := *payload.Runbook
-	s.stage(job, host, spec.Action)
+	displayAction := spec.Action
+	if spec.Action == "checkmk-register" {
+		displayAction = "cmk-agent-ctl register"
+	}
+	s.stage(job, host, displayAction)
 	request := helper.RunbookRequest{Unit: spec.Unit, Packages: spec.Packages}
 	timeout := 15 * time.Minute
 	if spec.Action == "checkmk-register" {
@@ -437,15 +441,28 @@ func (s *Server) runRunbookJob(ctx context.Context, job store.Job, payload jobPa
 	if json.Unmarshal([]byte(output), &result) != nil {
 		return jobTargetOutcome{Status: store.JobTargetFailed, Stage: "failed", Detail: "invalid runbook result", Error: output}
 	}
+	displayOutput := runbookOutput(result)
 	if !result.OK {
 		detail := result.Action + " failed"
 		if result.Error != "" {
 			detail = result.Error
 		}
-		return jobTargetOutcome{Status: store.JobTargetFailed, Stage: "failed", ExitCode: code, Detail: shortRunSummary(detail), Output: result.Output, Error: result.Error}
+		return jobTargetOutcome{Status: store.JobTargetFailed, Stage: "failed", ExitCode: code, Detail: shortRunSummary(detail), Output: displayOutput, Error: result.Error}
 	}
-	_ = s.store.AddAudit(job.Actor, "runbook", "host", host.ID, spec.Action)
-	return jobTargetOutcome{Status: store.JobTargetSucceeded, Stage: "done", ExitCode: code, Detail: spec.Action + " completed", Output: result.Output, Result: result}
+	_ = s.store.AddAudit(job.Actor, "runbook", "host", host.ID, displayAction)
+	return jobTargetOutcome{Status: store.JobTargetSucceeded, Stage: "done", ExitCode: code, Detail: displayAction + " completed", Output: displayOutput, Result: result}
+}
+
+// runbookOutput shows the fixed command before its captured output so the job
+// view makes clear what ran. The helper redacts secrets in Command.
+func runbookOutput(result helper.Result) string {
+	if result.Command == "" {
+		return result.Output
+	}
+	if result.Output == "" {
+		return "command: " + result.Command
+	}
+	return "command: " + result.Command + "\n\n" + result.Output
 }
 
 func (s *Server) runFactsJob(ctx context.Context, job store.Job, host store.Host) jobTargetOutcome {

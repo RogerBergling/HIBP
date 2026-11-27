@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RogerBergling/hibp/internal/helper"
 	"github.com/RogerBergling/hibp/internal/store"
 )
 
@@ -405,4 +406,20 @@ func TestRunbookJobAcceptsTypedActionsAndSudoPassword(t *testing.T) {
 		t.Fatalf("expected invalid Checkmk server rejection, got %d", resp.StatusCode)
 	}
 	_ = resp.Body.Close()
+}
+
+func TestRunbookOutputIncludesRedactedCommand(t *testing.T) {
+	result := helper.Result{
+		Action:  "cmk-agent-ctl register",
+		Command: "cmk-agent-ctl register --hostname web01 --server checkmk:8000 --password ********",
+		Output:  "Registration complete.",
+	}
+	got := runbookOutput(result)
+	want := "command: cmk-agent-ctl register --hostname web01 --server checkmk:8000 --password ********\n\nRegistration complete."
+	if got != want {
+		t.Fatalf("unexpected runbook output:\n%s", got)
+	}
+	if strings.Contains(got, "password1") {
+		t.Fatalf("secret leaked into runbook output: %s", got)
+	}
 }

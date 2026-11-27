@@ -149,27 +149,37 @@ func serviceRunbook(ctx context.Context, action string) (Result, error) {
 	return Result{Action: action, OK: code == 0, ExitCode: code, Output: strings.TrimSpace(string(output))}, nil
 }
 
+const checkmkRegisterDisplayAction = "cmk-agent-ctl register"
+
 func checkmkRegisterRunbook(ctx context.Context) (Result, error) {
 	request, err := readRunbookRequest()
 	if err != nil {
-		return Result{Action: "checkmk-register", Error: err.Error()}, err
+		return Result{Action: checkmkRegisterDisplayAction, Error: err.Error()}, err
 	}
 	if request.Checkmk == nil {
 		err := errors.New("checkmk settings are required")
-		return Result{Action: "checkmk-register", Error: err.Error()}, err
+		return Result{Action: checkmkRegisterDisplayAction, Error: err.Error()}, err
 	}
 	return runCheckmkRegister(ctx, *request.Checkmk), nil
 }
 
 func runCheckmkRegister(ctx context.Context, request CheckmkRegisterRequest) Result {
-	const action = "checkmk-register"
 	normalized, err := normalizeCheckmkRegister(request)
 	if err != nil {
-		return Result{Action: action, Error: err.Error()}
+		return Result{Action: checkmkRegisterDisplayAction, Error: err.Error()}
 	}
+	command := "cmk-agent-ctl register" +
+		" --hostname " + normalized.Hostname +
+		" --server " + normalized.Server +
+		" --site " + normalized.Site +
+		" --user " + normalized.User +
+		" --password ********"
 	path, err := lookPath("cmk-agent-ctl")
 	if err != nil {
-		return Result{Action: action, ExitCode: 127, Error: "cmk-agent-ctl is not installed on the target"}
+		return Result{
+			Action: checkmkRegisterDisplayAction, Command: command, ExitCode: 127,
+			Error: "cmk-agent-ctl is not installed on the target",
+		}
 	}
 
 	// Answer the certificate confirmation from stdin. Passing stdin to the
@@ -184,7 +194,7 @@ func runCheckmkRegister(ctx context.Context, request CheckmkRegisterRequest) Res
 		"--password", normalized.Password,
 	)
 	result := Result{
-		Action: action, ExitCode: code,
+		Action: checkmkRegisterDisplayAction, Command: command, ExitCode: code,
 		Output: redactRunbookSecret(strings.TrimSpace(string(output)), normalized.Password),
 	}
 	if runErr != nil {

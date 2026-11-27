@@ -206,6 +206,16 @@ func TestCheckmkRegisterRunsFixedCommandAndAnswersPrompt(t *testing.T) {
 	if !result.OK || result.ExitCode != 0 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
+	if result.Action != "cmk-agent-ctl register" {
+		t.Fatalf("unexpected action: %q", result.Action)
+	}
+	wantCommand := "cmk-agent-ctl register --hostname web01 --server checkmk:8000 --site Bergling --user cmkadmin --password ********"
+	if result.Command != wantCommand {
+		t.Fatalf("unexpected command preview: %q", result.Command)
+	}
+	if strings.Contains(result.Command, "password1") {
+		t.Fatalf("password leaked into command preview: %q", result.Command)
+	}
 	if gotName != "/usr/bin/cmk-agent-ctl" {
 		t.Fatalf("unexpected binary: %s", gotName)
 	}

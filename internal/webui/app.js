@@ -3378,7 +3378,23 @@ async function showRunbookModal(hosts) {
   const checkmkSite = inputField(checkmkRow2, 'Site', 'checkmk_site', 'Bergling');
   const checkmkUser = inputField(checkmkRow2, 'User', 'checkmk_user', 'cmkadmin');
   const checkmkPassword = inputField(checkmkRow2, 'Password', 'checkmk_password', 'registration password', 'password');
-  checkmkFields.append(checkmkRow, checkmkRow2);
+  const checkmkPreviewLabel = el('p', 'field-note', 'Command preview (runs as root; password redacted):');
+  const checkmkPreview = el('pre', 'key-box');
+  checkmkPreview.style.whiteSpace = 'pre-wrap';
+  checkmkPreview.style.margin = '0';
+  const updateCheckmkPreview = () => {
+    const hostname = checkmkHostname.value.trim() || '<target local hostname>';
+    const server = checkmkServer.value.trim() || '<checkmk server>';
+    const site = checkmkSite.value.trim() || '<site>';
+    const user = checkmkUser.value.trim() || '<user>';
+    checkmkPreview.textContent = 'cmk-agent-ctl register --hostname ' + hostname +
+      ' --server ' + server + ' --site ' + site + ' --user ' + user + ' --password ********';
+  };
+  for (const field of [checkmkHostname, checkmkServer, checkmkSite, checkmkUser, checkmkPassword]) {
+    field.addEventListener('input', updateCheckmkPreview);
+  }
+  updateCheckmkPreview();
+  checkmkFields.append(checkmkRow, checkmkRow2, checkmkPreviewLabel, checkmkPreview);
   body.append(checkmkFields);
 
   const parameterField = parameter.closest('label.field');

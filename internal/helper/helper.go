@@ -62,6 +62,7 @@ type CleanupResult struct {
 // Result is the JSON contract for check/apply/reboot/reboot-check.
 type Result struct {
 	Action   string `json:"action"`
+	Command  string `json:"command,omitempty"`
 	OK       bool   `json:"ok"`
 	ExitCode int    `json:"exit_code"`
 	Output   string `json:"output"`

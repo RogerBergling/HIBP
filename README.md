@@ -3176,7 +3176,9 @@ cmk-agent-ctl register \
   --password <password>
 ```
 
-and supplies `y` on stdin when `cmk-agent-ctl` asks
+The runbook dialog shows a live command preview, and the job output starts with
+the same command line. The password is replaced with `********` in both places.
+It supplies `y` on stdin when `cmk-agent-ctl` asks
 `Do you want to establish this connection? [Y/n]`. Leave the hostname blank to
 use the target's local hostname. The registration password is held only in
 controller memory for the life of the job, is not written to the persisted job
