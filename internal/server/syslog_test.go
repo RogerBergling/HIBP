@@ -40,6 +40,19 @@ func TestParseSyslogRFC3164(t *testing.T) {
 	}
 }
 
+func TestParseSyslogWithoutPriority(t *testing.T) {
+	msg, err := parseSyslogMessage(`WAN down UDM event without a priority header`, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.Message != "WAN down UDM event without a priority header" || msg.Severity != 6 {
+		t.Fatalf("unexpected fallback message: %+v", msg)
+	}
+	if category, severity := syslogEventClass(msg); category != "network_wan" || severity != "critical" {
+		t.Fatalf("unexpected fallback classification: %s/%s", category, severity)
+	}
+}
+
 func TestSyslogEventClass(t *testing.T) {
 	tests := []struct {
 		message  string

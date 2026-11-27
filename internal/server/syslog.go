@@ -209,7 +209,22 @@ func (s *Server) handleSyslogMessage(sourceIP, line string) {
 		slog.Warn("syslog: store event", "host", host.Name, "error", err)
 		return
 	}
-	slog.Debug("syslog: accepted event", "host", host.Name, "source", sourceIP, "category", category, "severity", severity)
+	s.logSyslogAccepted(sourceIP, host.Name, category)
+}
+
+func (s *Server) logSyslogAccepted(source, host, category string) {
+	s.syslogWarnMu.Lock()
+	key := source + "|accepted|" + host
+	if last, ok := s.syslogWarnAt[key]; ok && time.Since(last) < time.Minute {
+		s.syslogWarnMu.Unlock()
+		return
+	}
+	if len(s.syslogWarnAt) > 1000 {
+		s.syslogWarnAt = make(map[string]time.Time)
+	}
+	s.syslogWarnAt[key] = time.Now()
+	s.syslogWarnMu.Unlock()
+	slog.Info("syslog: accepted event", "host", host, "source", source, "category", category)
 }
 
 // logSyslogDiagnostic reports an unmapped source or invalid message at most
@@ -272,7 +287,11 @@ func parseSyslogMessage(line string, now time.Time) (syslogMessage, error) {
 		return syslogMessage{}, errors.New("empty syslog message")
 	}
 	if line[0] != '<' {
-		return syslogMessage{}, errors.New("missing syslog priority")
+		// Some appliances send RFC3164-like or structured messages without a
+		// leading priority. The source is already restricted to a network host,
+		// so keep the bounded text as an informational event instead of dropping
+		// it silently.
+		return syslogMessage{Severity: 6, Timestamp: now, Message: line}, nil
 	}
 	end := strings.IndexByte(line, '>')
 	if end < 1 {
