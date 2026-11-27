@@ -529,12 +529,33 @@ func (s *Server) runHelperActionInput(ctx context.Context, host store.Host, acti
 		demoAction := strings.TrimSuffix(helperAction, "-full")
 		return s.demo.RunHelper(ctx, host, demoAction, "", timeout)
 	}
-	command := "sudo -n /usr/local/libexec/hibp/hibp-helper " + helperAction
-	if sudoPassword != "" {
-		command = "sudo -S -p '' /usr/local/libexec/hibp/hibp-helper " + helperAction
-		input = sudoPassword + "\n" + input
+	helperCommand := "/usr/local/libexec/hibp/hibp-helper " + helperAction
+	target := s.hostTarget(host, sshPassword)
+	hostKey := &remote.HostKey{KeyType: key.KeyType, Fingerprint: key.Fingerprint}
+	run := func(command, stdin string) (string, int, error) {
+		return remote.RunWithInput(ctx, target, hostKey, command, stdin, timeout)
 	}
-	output, code, err := remote.RunWithInput(ctx, s.hostTarget(host, sshPassword), &remote.HostKey{KeyType: key.KeyType, Fingerprint: key.Fingerprint}, command, input, timeout)
+
+	// Try passwordless sudo first even when a password was supplied. If the
+	// NOPASSWD rule is active, sudo does not consume the password line and the
+	// helper would otherwise receive the password itself as its JSON input.
+	output, code, err := run("sudo -n "+helperCommand, input)
+	if err != nil {
+		return output, code, err
+	}
+	if code == 0 || sudoPassword == "" || (!looksLikeSudoAuthFailure(output) && !looksLikeSudoPasswordInvalid(output)) {
+		if code != 0 && looksLikeSudoPasswordInvalid(output) {
+			return output, code, errSudoPasswordInvalid
+		}
+		if code != 0 && looksLikeSudoAuthFailure(output) {
+			return output, code, errSudoPasswordRequired
+		}
+		return output, code, nil
+	}
+
+	// The target needs a password. sudo consumes the first line and the helper
+	// receives the JSON payload that follows.
+	output, code, err = run("sudo -S -p '' "+helperCommand, sudoPassword+"\n"+input)
 	if err != nil {
 		return output, code, err
 	}

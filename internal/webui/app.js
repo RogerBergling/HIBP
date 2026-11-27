@@ -519,7 +519,8 @@ function setView(view) {
   const sections = ['dashboard', 'hosts', 'audit', 'monitoring', 'schedules'];
   const labels = { dashboard: 'Overview', hosts: 'Hosts', audit: 'Audit log', monitoring: 'Monitoring', schedules: 'Schedules' };
   for (const section of sections) {
-    $('view-' + section).classList.toggle('hidden', section !== view);
+    const node = $('view-' + section);
+    if (node) node.classList.toggle('hidden', section !== view);
   }
   for (const button of document.querySelectorAll('.nav-item[data-view]')) {
     button.classList.toggle('active', button.dataset.view === view);
