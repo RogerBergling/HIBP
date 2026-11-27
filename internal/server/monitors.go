@@ -185,14 +185,58 @@ func (s *Server) handleListMonitors(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	hosts, err := s.store.ListHosts()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	hostByID := make(map[string]store.Host, len(hosts))
+	for _, host := range hosts {
+		hostByID[host.ID] = host
+	}
 	for index := range monitors {
 		monitors[index].Assignments, _ = s.store.ListMonitorAssignments(monitors[index].ID)
-		monitors[index].States, _ = s.store.ListMonitorStates(monitors[index].ID)
+		states, _ := s.store.ListMonitorStates(monitors[index].ID)
+		monitors[index].States = s.filterMonitorStates(monitors[index], states, hostByID)
 	}
 	if monitors == nil {
 		monitors = []store.Monitor{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"monitors": monitors})
+}
+
+// filterMonitorStates keeps only results for hosts the monitor currently
+// targets. A monitor changed from Fleet to specific hosts must not keep showing
+// an old state for a host that is no longer assigned.
+func (s *Server) filterMonitorStates(monitor store.Monitor, states []store.MonitorState, hosts map[string]store.Host) []store.MonitorState {
+	assignments := monitor.Assignments
+	if assignments == nil {
+		assignments, _ = s.store.ListMonitorAssignments(monitor.ID)
+	}
+	targets, active, network := resolveMonitorTargets(monitor.Type, assignments, hosts)
+	if network {
+		filtered := make([]store.MonitorState, 0, 1)
+		for _, state := range states {
+			if state.HostID == "" {
+				filtered = append(filtered, state)
+			}
+		}
+		return filtered
+	}
+	if !active {
+		return nil
+	}
+	allowed := make(map[string]bool, len(targets))
+	for _, host := range targets {
+		allowed[host.ID] = true
+	}
+	filtered := make([]store.MonitorState, 0, len(states))
+	for _, state := range states {
+		if state.HostID != "" && allowed[state.HostID] {
+			filtered = append(filtered, state)
+		}
+	}
+	return filtered
 }
 
 func (s *Server) handleCreateMonitor(w http.ResponseWriter, r *http.Request) {
@@ -245,8 +289,28 @@ func (s *Server) handleUpdateMonitor(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	_ = s.store.AddAudit(s.auditActor(r), "monitor-update", "monitor", monitor.ID, monitor.Name)
-	monitor.Assignments, _ = s.store.ListMonitorAssignments(monitor.ID)
-	monitor.States, _ = s.store.ListMonitorStates(monitor.ID)
+	hosts, err := s.store.ListHosts()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	hostByID := make(map[string]store.Host, len(hosts))
+	for _, host := range hosts {
+		hostByID[host.ID] = host
+	}
+	states, _ := s.store.ListMonitorStates(monitor.ID)
+	filtered := s.filterMonitorStates(monitor, states, hostByID)
+	keep := make(map[string]bool, len(filtered))
+	for _, state := range filtered {
+		keep[state.HostID] = true
+	}
+	for _, state := range states {
+		if keep[state.HostID] {
+			continue
+		}
+		_ = s.store.DeleteMonitorState(monitor.ID, state.HostID)
+	}
+	monitor.States = filtered
 	writeJSON(w, http.StatusOK, monitor)
 }
 

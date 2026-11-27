@@ -148,12 +148,26 @@ func (s *Server) handleResetServiceBaseline(w http.ResponseWriter, r *http.Reque
 // service-baseline monitor after an exclusion, reset, or per-host setting
 // change instead of waiting for the normal interval.
 func (s *Server) markBaselineMonitorsDue() {
+	s.markMonitorTypesDue("service.baseline")
+}
+
+// markMonitorTypesDue queues an immediate check for monitors of the given
+// types. It is used after a per-host monitoring setting changes so stale
+// unknown/critical states are cleared without waiting for the next interval.
+func (s *Server) markMonitorTypesDue(types ...string) {
+	if len(types) == 0 {
+		return
+	}
+	wanted := make(map[string]bool, len(types))
+	for _, monitorType := range types {
+		wanted[monitorType] = true
+	}
 	monitors, err := s.store.ListMonitors()
 	if err != nil {
 		return
 	}
 	for _, monitor := range monitors {
-		if monitor.Type != "service.baseline" {
+		if !wanted[monitor.Type] {
 			continue
 		}
 		_ = s.store.SetMonitorChecked(monitor.ID, "1970-01-01T00:00:00Z")

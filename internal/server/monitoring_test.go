@@ -555,6 +555,85 @@ func TestDisablingMonitorClearsRecordedStates(t *testing.T) {
 	}
 }
 
+func TestMonitorAssignmentChangeClearsOldHostStates(t *testing.T) {
+	ts, db := testServer(t)
+	hostA, err := db.CreateHost(store.Host{
+		Name: "docker-a", Address: "10.0.0.21", Port: 22, Username: "ubuntu",
+		AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostB, err := db.CreateHost(store.Host{
+		Name: "no-docker-b", Address: "10.0.0.22", Port: 22, Username: "ubuntu",
+		AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	monitor, err := db.CreateMonitor(store.Monitor{
+		Name: "Docker health", Type: "docker.health", IntervalSeconds: 60,
+		RepeatMinutes: 60, CooldownMinutes: 15, Enabled: true,
+		Assignments: []store.MonitorAssignment{{Scope: "fleet", Target: ""}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, host := range []store.Host{hostA, hostB} {
+		if err := db.UpsertMonitorState(store.MonitorState{
+			MonitorID: monitor.ID, HostID: host.ID, Status: "unknown",
+			Message: "Docker inventory is stale", CheckedAt: now, ChangedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	payload, err := json.Marshal(map[string]any{
+		"name": "Docker health", "type": "docker.health", "target": "",
+		"interval_seconds": 60, "repeat_minutes": 60, "cooldown_minutes": 15,
+		"enabled": true, "assignments": []map[string]any{{"scope": "host", "target": hostA.ID}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := request(t, http.MethodPut, ts.URL+"/api/v1/monitors/"+monitor.ID, "test-token", string(payload))
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		t.Fatalf("update monitor failed: %d %s", resp.StatusCode, raw)
+	}
+	_ = resp.Body.Close()
+	if _, err := db.GetMonitorState(monitor.ID, hostB.ID); err == nil {
+		t.Fatal("expected removed host state to be deleted")
+	}
+	if _, err := db.GetMonitorState(monitor.ID, hostA.ID); err != nil {
+		t.Fatalf("expected assigned host state to remain: %v", err)
+	}
+
+	resp = request(t, http.MethodGet, ts.URL+"/api/v1/monitors", "test-token", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list monitors failed: %d", resp.StatusCode)
+	}
+	var listed struct {
+		Monitors []store.Monitor `json:"monitors"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		_ = resp.Body.Close()
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	for _, entry := range listed.Monitors {
+		if entry.ID != monitor.ID {
+			continue
+		}
+		if len(entry.States) != 1 || entry.States[0].HostID != hostA.ID {
+			t.Fatalf("expected only the assigned host state in the API response, got %+v", entry.States)
+		}
+		return
+	}
+	t.Fatal("updated monitor not found in list response")
+}
+
 func TestMonitorCapabilitySkip(t *testing.T) {
 	app, db, host := newMonitorTestApp(t)
 	if err := db.SaveSystemInfo(host.ID, time.Now().UTC().Format(time.RFC3339Nano),
@@ -661,6 +740,17 @@ func TestDockerAllContainersMonitor(t *testing.T) {
 	result = app.evaluateDocker(store.Monitor{Type: "docker.container", Target: "*"}, host)
 	if result.status != "ok" || !strings.Contains(result.message, "1/1") {
 		t.Fatalf("expected all-container monitor to be healthy, got %+v", result)
+	}
+	if err := db.SetSetting("host:"+host.ID, "monitor.docker.enabled", "0"); err != nil {
+		t.Fatal(err)
+	}
+	result = app.evaluateDocker(store.Monitor{Type: "docker.container", Target: "*"}, host)
+	if result.status != "ok" || !strings.Contains(result.message, "disabled") {
+		t.Fatalf("expected per-host Docker disable to suppress container alerts, got %+v", result)
+	}
+	health := app.evaluateDockerHealth(host)
+	if health.status != "ok" || !strings.Contains(health.message, "disabled") {
+		t.Fatalf("expected per-host Docker disable to suppress health alerts, got %+v", health)
 	}
 }
 

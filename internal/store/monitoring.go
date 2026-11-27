@@ -287,6 +287,13 @@ func (s *Store) DeleteMonitorStates(monitorID string) error {
 	return err
 }
 
+// DeleteMonitorState removes one host's recorded result from a monitor. It is
+// used when an assignment change stops targeting that host.
+func (s *Store) DeleteMonitorState(monitorID, hostID string) error {
+	_, err := s.db.Exec("DELETE FROM monitor_state WHERE monitor_id=? AND host_id=?", monitorID, hostID)
+	return err
+}
+
 func (s *Store) AddAlertEvent(event AlertEvent) error {
 	emailed := 0
 	if event.Emailed {

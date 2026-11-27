@@ -79,6 +79,8 @@ Implemented in the current tree:
 - `docker.health` is a fleet-assigned default monitor for unhealthy,
   restarting, or dead containers. A `docker.container` monitor with target `*`
   provides strict all-container monitoring, including stopped containers.
+  Per-host settings can disable Docker monitoring without changing the fleet
+  monitor.
 - The Monitoring view shows per-host monitor detail inline and through a
   per-monitor **Details** view.
 - Migration 016 creates both default monitors for existing and new databases.

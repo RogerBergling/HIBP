@@ -30,6 +30,7 @@ var settingDefaults = map[string]string{
 	"docker.scan_roots":                 "/opt",
 	"monitor.service_baseline.enabled":  "1",
 	"monitor.service_baseline.auto_add": "1",
+	"monitor.docker.enabled":            "1",
 	"backup.directory":                  "",
 	"backup.retention_count":            "3",
 }
@@ -800,6 +801,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	updates := make(map[string]string, len(request.Settings))
 	baselineChanged := false
+	dockerChanged := false
 	for key, value := range request.Settings {
 		if _, ok := settingDefaults[key]; !ok {
 			writeError(w, http.StatusBadRequest, "unknown setting: "+key)
@@ -807,6 +809,9 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if strings.HasPrefix(key, "monitor.service_baseline.") {
 			baselineChanged = true
+		}
+		if key == "monitor.docker.enabled" {
+			dockerChanged = true
 		}
 		if scope != "fleet" && (key == "backup.directory" || key == "backup.retention_count") {
 			writeError(w, http.StatusBadRequest, key+" is a fleet-level backup setting")
@@ -835,6 +840,9 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	if baselineChanged {
 		s.markBaselineMonitorsDue()
 	}
+	if dockerChanged {
+		s.markMonitorTypesDue("docker.health", "docker.project", "docker.container")
+	}
 	_ = s.store.AddAudit(s.auditActor(r), "settings-update", "settings", scope, "updated")
 	s.handleGetSettings(w, r)
 }
@@ -859,7 +867,7 @@ func validateSetting(key, value string) error {
 		if value != "0" && value != "1" {
 			return errors.New("events.enabled must be 0 or 1")
 		}
-	case "monitor.service_baseline.enabled", "monitor.service_baseline.auto_add":
+	case "monitor.service_baseline.enabled", "monitor.service_baseline.auto_add", "monitor.docker.enabled":
 		if value != "0" && value != "1" {
 			return errors.New(key + " must be 0 or 1")
 		}

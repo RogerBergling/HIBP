@@ -1792,7 +1792,8 @@ Implemented check types:
 - `docker.health` — fleet-wide Docker health: critical when a container is
   unhealthy, restarting, or dead. Cleanly stopped containers are ignored here;
   use a `docker.container` monitor with target `*` for a strict all-container
-  check.
+  check. Open a host’s **Containers** tab to disable Docker monitoring for that
+  host without changing the fleet monitor.
 - `service.systemd` — unit state from the systemd snapshot collected with
   metrics. Missing or failed units are critical; stale snapshots are unknown.
 - `service.baseline` — per-host running-service baseline drift. The first
@@ -1862,7 +1863,9 @@ Docker uses two different checks. The fleet `docker.health` monitor watches all
 containers for unhealthy, restarting, or dead states and ignores cleanly stopped
 containers. A `Container` monitor with target `*` is stricter: every container
 on each assigned host must be running, so stopped or exited containers are
-critical.
+critical. To suppress Docker health, project, and container alerts for one host
+without changing the fleet monitor, open the host **Containers** tab and set
+**Docker monitoring for this host** to **Disabled**.
 
 ### HIBP monitoring agent
 

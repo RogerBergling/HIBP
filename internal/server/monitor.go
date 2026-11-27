@@ -345,6 +345,9 @@ func (s *Server) evaluateNTP(monitor store.Monitor, host store.Host) monitorResu
 }
 
 func (s *Server) evaluateDocker(monitor store.Monitor, host store.Host) monitorResult {
+	if s.store.ResolveSetting(host.ID, "monitor.docker.enabled", "1") == "0" {
+		return monitorResult{status: "ok", message: "Docker monitoring is disabled for this host"}
+	}
 	projects, containers, unavailable := s.dockerInventoryForMonitor(host)
 	if unavailable != nil {
 		return *unavailable
@@ -408,6 +411,9 @@ func (s *Server) evaluateDocker(monitor store.Monitor, host store.Host) monitorR
 }
 
 func (s *Server) evaluateDockerHealth(host store.Host) monitorResult {
+	if s.store.ResolveSetting(host.ID, "monitor.docker.enabled", "1") == "0" {
+		return monitorResult{status: "ok", message: "Docker monitoring is disabled for this host"}
+	}
 	_, containers, unavailable := s.dockerInventoryForMonitor(host)
 	if unavailable != nil {
 		return *unavailable

@@ -1782,7 +1782,10 @@ function showMonitorDetails(monitor) {
       const actionTd = el('td');
       const host = entry.host_id ? (state.hosts || []).find((candidate) => candidate.id === entry.host_id) : null;
       if (host) {
-        actionTd.append(actionButton('Services', () => showHostDetails(host, 'services')));
+        const tab = monitor.type.startsWith('docker.') ? 'containers'
+          : monitor.type.startsWith('service.') ? 'services' : 'overview';
+        const label = tab === 'containers' ? 'Containers' : tab === 'services' ? 'Services' : 'Host';
+        actionTd.append(actionButton(label, () => showHostDetails(host, tab)));
       }
       row.append(el('td', '', monitorHostName(entry.host_id)), statusTd, detailTd, checkedTd, actionTd);
       table.append(row);
@@ -5188,6 +5191,40 @@ function renderServicesPanel(panel, data, host, reload) {
 
 function renderContainersPanel(panel, data, host, reload) {
   panel.replaceChildren();
+  const settings = data.settings || {};
+  const hostSettings = data.host_settings || {};
+  const dockerSettings = el('div', 'detail-card');
+  dockerSettings.append(el('h3', '', 'Docker monitoring'));
+  dockerSettings.append(el('p', 'muted', 'Disabling Docker monitoring for this host suppresses Docker health, project, and container alerts. Cached inventory remains visible below.'));
+  const dockerGrid = el('div', 'settings-grid');
+  const dockerEnabled = selectField(dockerGrid, 'Docker monitoring for this host', 'docker_enabled', [
+    ['', 'Inherit fleet default'], ['1', 'Enabled'], ['0', 'Disabled'],
+  ]);
+  dockerEnabled.value = Object.prototype.hasOwnProperty.call(hostSettings, 'monitor.docker.enabled')
+    ? hostSettings['monitor.docker.enabled'] : '';
+  dockerSettings.append(dockerGrid);
+  const dockerEffective = settings['monitor.docker.enabled'] === '0' ? 'disabled' : 'enabled';
+  dockerSettings.append(el('p', 'field-note', 'Effective now: Docker monitoring is ' + dockerEffective + '. The fleet Docker health monitor itself can be disabled under Monitoring.'));
+  const saveDocker = el('button', 'btn primary', 'Save Docker monitoring');
+  saveDocker.type = 'button';
+  saveDocker.addEventListener('click', async () => {
+    try {
+      await api('/api/v1/settings', {
+        method: 'PUT',
+        body: JSON.stringify({
+          scope: 'host', host_id: host.id,
+          settings: { 'monitor.docker.enabled': dockerEnabled.value },
+        }),
+      });
+      toast('Docker monitoring setting saved', 'ok');
+      await reload();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  });
+  dockerSettings.append(saveDocker);
+  panel.append(dockerSettings);
+
   const info = (data.system_info && data.system_info.docker) || {};
   const projects = data.docker_projects || [];
   const containers = data.docker_containers || [];
