@@ -1957,6 +1957,19 @@ Example UDM setup:
    `snmp.poll`, `snmp.value` for each useful OID, and `syslog.event` for
    messages such as `WAN down` or `authentication failure`.
 
+Docker notes:
+
+- `compose.production.yaml` uses `network_mode: host`, so no Compose port
+  mapping is required for syslog or SNMP. Allow **inbound UDP/TCP 5514** from the
+  UDM and **outbound UDP 161** from the controller to the UDM in the host
+  firewall.
+- If you switch the controller to bridge networking, publish the syslog port
+  explicitly, for example `5514:5514/udp`.
+- The controller drops all capabilities. Binding a port below 1024, such as 514,
+  requires extra capability or a local syslog relay. Prefer 5514.
+- `compose.yaml` is the bridge-networked demo; add a 5514 mapping only if you
+  are testing syslog there. Do not run the demo for production monitoring.
+
 The planned enterprise monitoring workstream is documented separately in
 [Enterprise monitoring design](docs/enterprise-monitoring.md). Service-baseline
 drift, fleet-wide Docker health defaults, NTP offset checks, authentication-event

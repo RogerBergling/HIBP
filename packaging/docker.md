@@ -80,6 +80,31 @@ CIDR allowlist is mandatory for a non-loopback listener. Do not use
 on the same Docker host, `HIBP_LISTEN=127.0.0.1:8017` and
 `HIBP_TRUSTED_PROXY_CIDRS=127.0.0.1/32` is the least-privilege setup.
 
+## Network device monitoring
+
+`compose.production.yaml` uses `network_mode: host`, so the configurable syslog
+receiver and SNMP poller need no Compose port mappings.
+
+- Allow **inbound UDP/TCP 5514** from the network devices to the controller, or
+  whichever `syslog.listen` port you configure.
+- Allow **outbound UDP 161** from the controller to the devices for SNMP.
+- If you switch the controller to bridge networking, publish the syslog port
+  explicitly:
+
+  ```yaml
+  ports:
+    - "5514:5514/udp"
+  ```
+
+- The image/container drops all capabilities. Binding a port below 1024, such as
+  514, requires `NET_BIND_SERVICE` or a relay such as rsyslog/Vector. Prefer
+  5514.
+- SNMP community strings, listen addresses, protocols, intervals, OIDs, and
+  syslog source IPs are configured in the UI; no environment variable is
+  required.
+- `compose.yaml` is the bridge-networked demo and would need an explicit 5514
+  mapping if you test syslog there.
+
 ## Migrating a local database
 
 The complete local-to-container procedure is in
