@@ -81,7 +81,7 @@ func normalizeCheckmkRegister(request CheckmkRegisterRequest) (CheckmkRegisterRe
 	request.Site = strings.TrimSpace(request.Site)
 	request.User = strings.TrimSpace(request.User)
 
-	if request.Hostname == "" || request.Hostname == "%HOSTNAME" {
+	if request.Hostname == "" || request.Hostname == "%HOSTNAME" || request.Hostname == "$HOSTNAME" {
 		hostname, err := os.Hostname()
 		if err != nil {
 			return CheckmkRegisterRequest{}, fmt.Errorf("resolve target hostname: %w", err)

@@ -365,7 +365,7 @@ func TestRunbookJobAcceptsTypedActionsAndSudoPassword(t *testing.T) {
 	_ = resp.Body.Close()
 
 	resp = request(t, http.MethodPost, ts.URL+"/api/v1/jobs", "test-token",
-		`{"kind":"runbook","host_ids":["`+host.ID+`"],"confirm":"register","runbook":{"action":"checkmk-register","checkmk":{"server":"checkmk:8000","site":"Bergling","user":"cmkadmin","password":"checkmk-secret"}}}`)
+		`{"kind":"runbook","host_ids":["`+host.ID+`"],"confirm":"register","runbook":{"action":"checkmk-register","checkmk":{"hostname":"$HOSTNAME","server":"checkmk:8000","site":"Bergling","user":"cmkadmin","password":"checkmk-secret"}}}`)
 	if resp.StatusCode != http.StatusCreated {
 		raw, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
@@ -390,6 +390,9 @@ func TestRunbookJobAcceptsTypedActionsAndSudoPassword(t *testing.T) {
 	}
 	if !strings.Contains(stored.Payload, `"server":"checkmk:8000"`) || !strings.Contains(stored.Payload, `"site":"Bergling"`) {
 		t.Fatalf("Checkmk settings missing from the persisted job payload: %s", stored.Payload)
+	}
+	if !strings.Contains(stored.Payload, `"hostname":"$HOSTNAME"`) {
+		t.Fatalf("Checkmk hostname placeholder missing from the persisted job payload: %s", stored.Payload)
 	}
 	resp = request(t, http.MethodPost, ts.URL+"/api/v1/jobs/"+checkmkCreated.Job.ID+"/cancel", "test-token", `{}`)
 	if resp.StatusCode != http.StatusOK {

@@ -278,7 +278,7 @@ func validateCheckmkRunbook(spec *jobCheckmkSpec) error {
 	spec.Server = strings.TrimSpace(spec.Server)
 	spec.Site = strings.TrimSpace(spec.Site)
 	spec.User = strings.TrimSpace(spec.User)
-	if spec.Hostname != "" && spec.Hostname != "%HOSTNAME" {
+	if spec.Hostname != "" && spec.Hostname != "%HOSTNAME" && spec.Hostname != "$HOSTNAME" {
 		if !runbookCheckmkHostPattern.MatchString(strings.TrimSuffix(spec.Hostname, ".")) {
 			return errors.New("a valid Checkmk hostname is required")
 		}

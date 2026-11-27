@@ -164,6 +164,14 @@ func TestReadCheckmkRunbookRequestValidatesFields(t *testing.T) {
 		t.Fatal("expected an empty hostname to resolve to the target hostname")
 	}
 
+	request, err = readRunbookRequestFrom(strings.NewReader(`{"checkmk":{"hostname":"$HOSTNAME","server":"checkmk","site":"Bergling","user":"cmkadmin","password":"password1"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Checkmk == nil || request.Checkmk.Hostname == "" || request.Checkmk.Hostname == "$HOSTNAME" {
+		t.Fatal("expected $HOSTNAME to resolve to the target hostname")
+	}
+
 	invalid := []string{
 		`{"checkmk":{"hostname":"bad host","server":"checkmk","site":"Bergling","user":"cmkadmin","password":"password1"}}`,
 		`{"checkmk":{"server":"checkmk:bad","site":"Bergling","user":"cmkadmin","password":"password1"}}`,

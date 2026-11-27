@@ -3372,29 +3372,35 @@ async function showRunbookModal(hosts) {
   const checkmkFields = el('div');
   checkmkFields.style.display = 'none';
   const checkmkRow = el('div', 'form-row');
-  const checkmkHostname = inputField(checkmkRow, 'Target hostname', 'checkmk_hostname', 'blank = target local hostname');
+  const checkmkHostname = inputField(checkmkRow, 'Target hostname', 'checkmk_hostname', 'blank, %HOSTNAME, or $HOSTNAME');
   const checkmkServer = inputField(checkmkRow, 'Checkmk server', 'checkmk_server', 'checkmk:8000');
-  const checkmkRow2 = el('div', 'form-row three');
+  const checkmkRow2 = el('div', 'form-row');
   const checkmkSite = inputField(checkmkRow2, 'Site', 'checkmk_site', 'Bergling');
   const checkmkUser = inputField(checkmkRow2, 'User', 'checkmk_user', 'cmkadmin');
-  const checkmkPassword = inputField(checkmkRow2, 'Password', 'checkmk_password', 'registration password', 'password');
-  const checkmkPreviewLabel = el('p', 'field-note', 'Command preview (runs as root; password redacted):');
+  checkmkFields.append(checkmkRow, checkmkRow2);
+  const checkmkPassword = inputField(checkmkFields, 'Checkmk password (required)', 'checkmk_password', 'held only in controller memory', 'password');
+  checkmkPassword.autocomplete = 'new-password';
+  checkmkFields.append(el('p', 'field-note', 'The registration password is required. It is kept only in controller memory and is not written to the job payload.'));
+  const checkmkPreviewLabel = el('p', 'field-note', 'Command preview (runs as root; password never shown):');
   const checkmkPreview = el('pre', 'key-box');
   checkmkPreview.style.whiteSpace = 'pre-wrap';
   checkmkPreview.style.margin = '0';
   const updateCheckmkPreview = () => {
-    const hostname = checkmkHostname.value.trim() || '<target local hostname>';
+    const rawHostname = checkmkHostname.value.trim();
+    const hostname = (!rawHostname || rawHostname === '%HOSTNAME' || rawHostname === '$HOSTNAME')
+      ? '<target local hostname>' : rawHostname;
     const server = checkmkServer.value.trim() || '<checkmk server>';
     const site = checkmkSite.value.trim() || '<site>';
     const user = checkmkUser.value.trim() || '<user>';
+    const password = checkmkPassword.value ? '********' : '<password>';
     checkmkPreview.textContent = 'cmk-agent-ctl register --hostname ' + hostname +
-      ' --server ' + server + ' --site ' + site + ' --user ' + user + ' --password ********';
+      ' --server ' + server + ' --site ' + site + ' --user ' + user + ' --password ' + password;
   };
   for (const field of [checkmkHostname, checkmkServer, checkmkSite, checkmkUser, checkmkPassword]) {
     field.addEventListener('input', updateCheckmkPreview);
   }
   updateCheckmkPreview();
-  checkmkFields.append(checkmkRow, checkmkRow2, checkmkPreviewLabel, checkmkPreview);
+  checkmkFields.append(checkmkPreviewLabel, checkmkPreview);
   body.append(checkmkFields);
 
   const parameterField = parameter.closest('label.field');
@@ -3426,8 +3432,13 @@ async function showRunbookModal(hosts) {
       const site = checkmkSite.value.trim();
       const user = checkmkUser.value.trim();
       const password = checkmkPassword.value;
-      if (!server || !site || !user || !password) {
-        toast('Enter the Checkmk server, site, user, and password', 'error');
+      if (!server || !site || !user) {
+        toast('Enter the Checkmk server, site, and user', 'error');
+        return;
+      }
+      if (!password) {
+        checkmkPassword.focus();
+        toast('Enter the Checkmk registration password', 'error');
         return;
       }
       runbook = {
