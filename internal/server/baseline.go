@@ -20,6 +20,7 @@ type serviceBaselineView struct {
 	Current  []store.ServiceState    `json:"current"`
 	Enabled  bool                    `json:"enabled"`
 	AutoAdd  bool                    `json:"auto_add"`
+	Exclude  []string                `json:"exclude"`
 }
 
 func (s *Server) serviceBaselineView(host store.Host) (serviceBaselineView, error) {
@@ -40,10 +41,12 @@ func (s *Server) serviceBaselineView(host store.Host) (serviceBaselineView, erro
 	if current == nil {
 		current = []store.ServiceState{}
 	}
+	excluded, _ := parseUnitList(s.store.ResolveSetting(host.ID, "monitor.service_baseline.exclude", ""))
 	return serviceBaselineView{
 		HostID: host.ID, Baseline: baseline, Current: current,
 		Enabled: s.store.ResolveSetting(host.ID, "monitor.service_baseline.enabled", "1") != "0",
 		AutoAdd: s.store.ResolveSetting(host.ID, "monitor.service_baseline.auto_add", "1") != "0",
+		Exclude: excluded,
 	}, nil
 }
 

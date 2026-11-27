@@ -540,6 +540,9 @@ func (s *Server) evaluateServiceBaseline(host store.Host) monitorResult {
 			excluded[item.Unit] = true
 		}
 	}
+	for unit := range unitSet(s.store.ResolveSetting(host.ID, "monitor.service_baseline.exclude", "")) {
+		excluded[unit] = true
+	}
 	var failed []string
 	for _, state := range states {
 		current[state.Unit] = state.State
@@ -556,7 +559,7 @@ func (s *Server) evaluateServiceBaseline(host store.Host) monitorResult {
 	var missing []string
 	expected := 0
 	for _, item := range baseline {
-		if item.Excluded || !item.Expected {
+		if item.Excluded || !item.Expected || excluded[item.Unit] {
 			continue
 		}
 		expected++

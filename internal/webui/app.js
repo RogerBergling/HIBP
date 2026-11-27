@@ -5079,6 +5079,8 @@ function renderServicesPanel(panel, data, host, reload) {
   const settings = data.settings || {};
   const hostSettings = data.host_settings || {};
   const inherited = data.inherited_settings || {};
+  const fleetExcluded = new Set(String(settings['monitor.service_baseline.exclude'] || '')
+    .split(/[\s,]+/).filter(Boolean));
 
   const intro = el('div', 'detail-card');
   intro.append(el('h3', '', 'Service baseline'));
@@ -5100,6 +5102,10 @@ function renderServicesPanel(panel, data, host, reload) {
     'automatic expansion ' + (settings['monitor.service_baseline.auto_add'] === '0' ? 'disabled' : 'enabled'),
   ];
   intro.append(el('p', 'field-note', 'Effective now: ' + effective.join(' · ') + '. Fleet default for automatic expansion: ' + (inherited['monitor.service_baseline.auto_add'] === '0' ? 'disabled' : 'enabled') + '.'));
+  const fleetList = [...fleetExcluded].sort();
+  intro.append(el('p', 'field-note', fleetList.length
+    ? 'Fleet-wide exclusions from Settings: ' + fleetList.join(', ') + '.'
+    : 'No fleet-wide baseline exclusions are configured.'));
   const save = el('button', 'btn primary', 'Save baseline settings');
   save.type = 'button';
   save.addEventListener('click', async () => {
@@ -5125,7 +5131,7 @@ function renderServicesPanel(panel, data, host, reload) {
 
   const counts = { expected: 0, excluded: 0, failed: 0, running: 0 };
   for (const item of baseline) {
-    if (item.excluded) counts.excluded++;
+    if (item.excluded || fleetExcluded.has(item.unit)) counts.excluded++;
     else if (item.expected) counts.expected++;
   }
   for (const state of states) {
@@ -5168,9 +5174,12 @@ function renderServicesPanel(panel, data, host, reload) {
         currentTd.append(el('span', 'pill ' + currentClass, currentText));
         row.append(currentTd);
 
+        const fleet = fleetExcluded.has(unit);
         const baselineTd = el('td');
-        const baselineText = item ? (item.excluded ? 'excluded' : item.expected ? 'expected' : 'tracked') : 'not in baseline';
-        const baselineClass = item ? (item.excluded ? 'review' : 'reachable') : 'unknown';
+        const baselineText = fleet ? 'fleet excluded'
+          : item ? (item.excluded ? 'excluded' : item.expected ? 'expected' : 'tracked') : 'not in baseline';
+        const baselineClass = fleet ? 'review'
+          : item ? (item.excluded ? 'review' : 'reachable') : 'unknown';
         baselineTd.append(el('span', 'pill ' + baselineClass, baselineText));
         row.append(baselineTd);
 
@@ -5182,21 +5191,27 @@ function renderServicesPanel(panel, data, host, reload) {
         row.append(seenTd);
 
         const actionTd = el('td');
-        const excluded = Boolean(item && item.excluded);
-        const toggle = actionButton(excluded ? 'Include' : 'Exclude', async () => {
-          try {
-            await api('/api/v1/hosts/' + encodeURIComponent(host.id) + '/service-baseline/' + encodeURIComponent(unit), {
-              method: 'PUT',
-              body: JSON.stringify({ excluded: !excluded }),
-            });
-            toast(excluded ? 'Unit included in baseline monitoring' : 'Unit excluded from baseline monitoring', 'ok');
-            await reload();
-          } catch (error) {
-            toast(error.message, 'error');
-          }
-        });
-        toggle.title = excluded ? 'Restore failed and missing alerts for this unit' : 'Ignore failed and missing alerts for this unit';
-        actionTd.append(toggle);
+        if (fleet) {
+          const fleetNote = el('span', 'muted', 'Fleet excluded');
+          fleetNote.title = 'Remove this unit from Settings → Fleet-wide baseline exclusions to re-enable it.';
+          actionTd.append(fleetNote);
+        } else {
+          const excluded = Boolean(item && item.excluded);
+          const toggle = actionButton(excluded ? 'Include' : 'Exclude', async () => {
+            try {
+              await api('/api/v1/hosts/' + encodeURIComponent(host.id) + '/service-baseline/' + encodeURIComponent(unit), {
+                method: 'PUT',
+                body: JSON.stringify({ excluded: !excluded }),
+              });
+              toast(excluded ? 'Unit included in baseline monitoring' : 'Unit excluded from baseline monitoring', 'ok');
+              await reload();
+            } catch (error) {
+              toast(error.message, 'error');
+            }
+          });
+          toggle.title = excluded ? 'Restore failed and missing alerts for this unit' : 'Ignore failed and missing alerts for this unit';
+          actionTd.append(toggle);
+        }
         row.append(actionTd);
         tbody.append(row);
       }
@@ -5472,7 +5487,14 @@ async function showSettingsModal() {
   const roots = inputField(grid, 'Docker scan roots', 'docker_roots', '/opt');
   const baselineAutoAdd = selectField(grid, 'Add new running services to baseline', 'baseline_auto_add', [['1', 'Enabled'], ['0', 'Disabled']]);
   body.append(grid);
-  body.append(el('p', 'field-note', 'Service baseline monitoring, exclusions, and per-host overrides are managed from a host’s Services tab. This fleet setting only controls whether units newly observed running are added to each host baseline.'));
+  const baselineExcludeWrap = el('label', 'field', 'Fleet-wide baseline exclusions');
+  const baselineExclude = el('textarea');
+  baselineExclude.rows = 3;
+  baselineExclude.spellcheck = false;
+  baselineExclude.placeholder = 'packagekit.service, systemd-timedated.service';
+  baselineExcludeWrap.append(baselineExclude);
+  body.append(baselineExcludeWrap);
+  body.append(el('p', 'field-note', 'Comma- or whitespace-separated systemd units ignored by the Service baseline monitor on every host. Per-host exclusions and the built-in transient-unit defaults still apply. Automatic expansion controls whether newly observed running units are added to each host baseline.'));
   body.append(el('p', 'muted', 'Backups are fleet-wide. Leave the directory blank to use the database directory. Only timestamped backups created by HIBP are pruned; lowering the count deletes older HIBP-created backups on the next backup.'));
   const backupGrid = el('div', 'settings-grid');
   const backupDir = inputField(backupGrid, 'Backup directory', 'backup_directory', '/var/lib/hibp/backups');
@@ -5498,6 +5520,7 @@ async function showSettingsModal() {
     authWindow.value = settings['events.auth_window_minutes'] || '10';
     roots.value = settings['docker.scan_roots'] || '/opt';
     baselineAutoAdd.value = settings['monitor.service_baseline.auto_add'] || '1';
+    baselineExclude.value = settings['monitor.service_baseline.exclude'] || '';
     backupDir.value = settings['backup.directory'] || '';
     backupRetention.value = settings['backup.retention_count'] || '3';
   } catch (error) {
@@ -5519,6 +5542,7 @@ async function showSettingsModal() {
             'events.auth_window_minutes': authWindow.value.trim(),
             'docker.scan_roots': roots.value.trim(),
             'monitor.service_baseline.auto_add': baselineAutoAdd.value,
+            'monitor.service_baseline.exclude': baselineExclude.value.trim(),
             'backup.directory': backupDir.value.trim(),
             'backup.retention_count': backupRetention.value.trim(),
           },
@@ -5540,7 +5564,7 @@ async function showSettingsModal() {
             'collector.enabled': '', 'collector.metrics_interval': '', 'collector.facts_interval': '',
             'metrics.retention_days': '', 'events.enabled': '', 'events.retention_days': '',
             'events.auth_window_minutes': '', 'docker.scan_roots': '',
-            'monitor.service_baseline.auto_add': '',
+            'monitor.service_baseline.auto_add': '', 'monitor.service_baseline.exclude': '',
             'backup.directory': '', 'backup.retention_count': '',
           },
         }),

@@ -31,6 +31,7 @@ var settingDefaults = map[string]string{
 	"docker.scan_roots":                 "/opt",
 	"monitor.service_baseline.enabled":  "1",
 	"monitor.service_baseline.auto_add": "1",
+	"monitor.service_baseline.exclude":  "",
 	"monitor.docker.enabled":            "1",
 	"backup.directory":                  "",
 	"backup.retention_count":            "3",
@@ -851,6 +852,37 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	s.handleGetSettings(w, r)
 }
 
+var settingUnitSeparator = regexp.MustCompile(`[\s,]+`)
+
+// parseUnitList accepts a comma- or whitespace-separated systemd unit list and
+// returns unique validated names. Empty input is valid and clears the list.
+func parseUnitList(value string) ([]string, error) {
+	parts := settingUnitSeparator.Split(strings.TrimSpace(value), -1)
+	units := make([]string, 0, len(parts))
+	seen := make(map[string]bool, len(parts))
+	for _, unit := range parts {
+		unit = strings.TrimSpace(unit)
+		if unit == "" || seen[unit] {
+			continue
+		}
+		if !monitorServicePattern.MatchString(unit) {
+			return nil, fmt.Errorf("invalid systemd unit %q", unit)
+		}
+		seen[unit] = true
+		units = append(units, unit)
+	}
+	return units, nil
+}
+
+func unitSet(value string) map[string]bool {
+	units, _ := parseUnitList(value)
+	set := make(map[string]bool, len(units))
+	for _, unit := range units {
+		set[unit] = true
+	}
+	return set
+}
+
 func validateSetting(key, value string) error {
 	switch key {
 	case "collector.enabled":
@@ -874,6 +906,10 @@ func validateSetting(key, value string) error {
 	case "monitor.service_baseline.enabled", "monitor.service_baseline.auto_add", "monitor.docker.enabled":
 		if value != "0" && value != "1" {
 			return errors.New(key + " must be 0 or 1")
+		}
+	case "monitor.service_baseline.exclude":
+		if _, err := parseUnitList(value); err != nil {
+			return err
 		}
 	case "events.retention_days":
 		days, err := strconv.Atoi(value)

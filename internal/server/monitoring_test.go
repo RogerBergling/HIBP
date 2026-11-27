@@ -716,6 +716,42 @@ func TestServiceBaselineMonitor(t *testing.T) {
 	}
 }
 
+func TestServiceBaselineFleetExclusion(t *testing.T) {
+	app, db, host := newMonitorTestApp(t)
+	if err := db.SaveSystemInfo(host.ID, time.Now().UTC().Format(time.RFC3339Nano),
+		`{"systemd":{"available":true,"units_collected":true}}`); err != nil {
+		t.Fatal(err)
+	}
+	units := []string{"ssh.service", "cron.service"}
+	if err := db.SaveServiceState(host.ID, nil, units); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.EnsureServiceBaseline(host.ID, units); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveServiceState(host.ID, nil, []string{"ssh.service"}); err != nil {
+		t.Fatal(err)
+	}
+	result := app.evaluateServiceBaseline(host)
+	if result.status != "critical" || !strings.Contains(result.message, "cron.service") {
+		t.Fatalf("expected missing service alert before fleet exclusion, got %+v", result)
+	}
+	if err := db.SetSetting("fleet", "monitor.service_baseline.exclude", "cron.service"); err != nil {
+		t.Fatal(err)
+	}
+	result = app.evaluateServiceBaseline(host)
+	if result.status != "ok" {
+		t.Fatalf("expected fleet-excluded missing service to be ignored, got %+v", result)
+	}
+	if err := db.SaveServiceState(host.ID, []string{"cron.service"}, []string{"ssh.service"}); err != nil {
+		t.Fatal(err)
+	}
+	result = app.evaluateServiceBaseline(host)
+	if result.status != "ok" {
+		t.Fatalf("expected fleet-excluded failed service to be ignored, got %+v", result)
+	}
+}
+
 func TestDockerAllContainersMonitor(t *testing.T) {
 	app, db, host := newMonitorTestApp(t)
 	if err := db.SaveSystemInfo(host.ID, time.Now().UTC().Format(time.RFC3339Nano),
