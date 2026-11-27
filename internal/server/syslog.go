@@ -84,56 +84,75 @@ func (s *Server) runSyslogUDP(ctx context.Context, listen string) {
 		slog.Warn("syslog: resolve UDP address", "listen", listen, "error", err)
 		return
 	}
-	conn, err := net.ListenUDP("udp", addr)
-	if err != nil {
-		slog.Warn("syslog: listen UDP", "listen", listen, "error", err)
-		return
-	}
-	go func() {
-		<-ctx.Done()
-		_ = conn.Close()
-	}()
-	buffer := make([]byte, 16<<10)
 	for {
-		n, source, err := conn.ReadFromUDP(buffer)
+		conn, err := net.ListenUDP("udp", addr)
 		if err != nil {
-			if ctx.Err() == nil {
-				slog.Warn("syslog: read UDP", "error", err)
+			slog.Warn("syslog: listen UDP", "listen", listen, "error", err)
+			if !waitSyslogRetry(ctx) {
+				return
 			}
-			return
-		}
-		line := strings.TrimSpace(string(buffer[:n]))
-		if line == "" {
 			continue
 		}
-		for _, entry := range strings.Split(line, "\n") {
-			entry = strings.TrimSpace(entry)
-			if entry != "" {
-				s.handleSyslogMessage(source.IP.String(), entry)
+		go func() {
+			<-ctx.Done()
+			_ = conn.Close()
+		}()
+		buffer := make([]byte, 16<<10)
+		for {
+			n, source, err := conn.ReadFromUDP(buffer)
+			if err != nil {
+				if ctx.Err() == nil {
+					slog.Warn("syslog: read UDP", "error", err)
+				}
+				return
+			}
+			line := strings.TrimSpace(string(buffer[:n]))
+			if line == "" {
+				continue
+			}
+			for _, entry := range strings.Split(line, "\n") {
+				entry = strings.TrimSpace(entry)
+				if entry != "" {
+					s.handleSyslogMessage(source.IP.String(), entry)
+				}
 			}
 		}
 	}
 }
 
 func (s *Server) runSyslogTCP(ctx context.Context, listen string) {
-	listener, err := net.Listen("tcp", listen)
-	if err != nil {
-		slog.Warn("syslog: listen TCP", "listen", listen, "error", err)
-		return
-	}
-	go func() {
-		<-ctx.Done()
-		_ = listener.Close()
-	}()
 	for {
-		conn, err := listener.Accept()
+		listener, err := net.Listen("tcp", listen)
 		if err != nil {
-			if ctx.Err() == nil {
-				slog.Warn("syslog: accept TCP", "error", err)
+			slog.Warn("syslog: listen TCP", "listen", listen, "error", err)
+			if !waitSyslogRetry(ctx) {
+				return
 			}
-			return
+			continue
 		}
-		go s.handleSyslogConnection(ctx, conn)
+		go func() {
+			<-ctx.Done()
+			_ = listener.Close()
+		}()
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				if ctx.Err() == nil {
+					slog.Warn("syslog: accept TCP", "error", err)
+				}
+				return
+			}
+			go s.handleSyslogConnection(ctx, conn)
+		}
+	}
+}
+
+func waitSyslogRetry(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(10 * time.Second):
+		return true
 	}
 }
 

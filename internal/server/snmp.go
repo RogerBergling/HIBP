@@ -145,17 +145,17 @@ func (s *Server) pollSNMPHost(ctx context.Context, host store.Host) {
 		MaxOids:   20,
 	}
 	if err := params.Connect(); err != nil {
-		_ = s.store.SetSNMPPollState(host.ID, now, boundError(err))
+		_ = s.store.SetSNMPPollState(host.ID, now, fmt.Sprintf("%s:%d: %s", host.Address, port, boundError(err)))
 		_ = s.store.SetHostStatus(host.ID, "unreachable")
-		slog.Warn("snmp: connect", "host", host.Name, "error", err)
+		slog.Warn("snmp: connect", "host", host.Name, "target", host.Address, "port", port, "error", err)
 		return
 	}
 	defer params.Conn.Close()
 	packet, err := params.Get(oids)
 	if err != nil {
-		_ = s.store.SetSNMPPollState(host.ID, now, boundError(err))
+		_ = s.store.SetSNMPPollState(host.ID, now, fmt.Sprintf("%s:%d: %s", host.Address, port, boundError(err)))
 		_ = s.store.SetHostStatus(host.ID, "unreachable")
-		slog.Warn("snmp: get", "host", host.Name, "error", err)
+		slog.Warn("snmp: get", "host", host.Name, "target", host.Address, "port", port, "error", err)
 		return
 	}
 	values := make([]store.SNMPValue, 0, len(packet.Variables))
