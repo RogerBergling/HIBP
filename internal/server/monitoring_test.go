@@ -369,6 +369,7 @@ func TestResolveMonitorTargets(t *testing.T) {
 		"a": {ID: "a", Name: "web01", GroupName: "web", Tags: "prod,web"},
 		"b": {ID: "b", Name: "web02", GroupName: "web", Tags: "test"},
 		"c": {ID: "c", Name: "db01", GroupName: "db", Tags: "prod"},
+		"n": {ID: "n", Name: "udm", AuthType: "network", Tags: "prod"},
 	}
 	targets, active, network := resolveMonitorTargets("host.cpu", []store.MonitorAssignment{{Scope: "fleet"}}, hosts)
 	if !active || network || len(targets) != 3 {
@@ -385,6 +386,26 @@ func TestResolveMonitorTargets(t *testing.T) {
 	targets, active, _ = resolveMonitorTargets("host.cpu", []store.MonitorAssignment{{Scope: "host", Target: "c"}}, hosts)
 	if !active || len(targets) != 1 || targets[0].ID != "c" {
 		t.Fatalf("host targets: %+v active=%v", targets, active)
+	}
+	targets, active, _ = resolveMonitorTargets("host.cpu", []store.MonitorAssignment{{Scope: "host", Target: "n"}}, hosts)
+	if active || len(targets) != 0 {
+		t.Fatalf("network host must not receive host.cpu: %+v active=%v", targets, active)
+	}
+	targets, active, _ = resolveMonitorTargets("snmp.poll", []store.MonitorAssignment{{Scope: "fleet"}}, hosts)
+	if !active || len(targets) != 1 || targets[0].ID != "n" {
+		t.Fatalf("snmp fleet targets: %+v active=%v", targets, active)
+	}
+	targets, active, _ = resolveMonitorTargets("service.baseline", []store.MonitorAssignment{{Scope: "fleet"}}, hosts)
+	if !active || len(targets) != 3 {
+		t.Fatalf("service baseline must exclude network hosts: %+v active=%v", targets, active)
+	}
+	targets, active, _ = resolveMonitorTargets("syslog.event", []store.MonitorAssignment{{Scope: "fleet"}}, hosts)
+	if !active || len(targets) != 1 || targets[0].ID != "n" {
+		t.Fatalf("syslog fleet targets: %+v active=%v", targets, active)
+	}
+	targets, active, _ = resolveMonitorTargets("security.auth", []store.MonitorAssignment{{Scope: "fleet"}}, hosts)
+	if !active || len(targets) != 4 {
+		t.Fatalf("security auth fleet targets: %+v active=%v", targets, active)
 	}
 	targets, active, network = resolveMonitorTargets("http", []store.MonitorAssignment{{Scope: "fleet"}}, hosts)
 	if !active || !network || len(targets) != 0 {

@@ -190,9 +190,29 @@ func resolveMonitorTargets(monitorType string, assignments []store.MonitorAssign
 	}
 	result := make([]store.Host, 0, len(targets))
 	for _, host := range targets {
+		if !monitorHostCompatible(monitorType, host) {
+			continue
+		}
 		result = append(result, host)
 	}
 	return result, active && len(result) > 0, false
+}
+
+// monitorHostCompatible keeps fleet/group/tag assignments from evaluating
+// monitors against hosts that cannot produce their data. Network devices have
+// no SSH metrics, facts, systemd, or Docker inventory; they only support SNMP
+// and syslog monitors.
+func monitorHostCompatible(monitorType string, host store.Host) bool {
+	switch monitorType {
+	case "snmp.value", "snmp.poll", "syslog.event":
+		return host.AuthType == "network"
+	case "host.cpu", "host.memory", "host.load", "host.disk", "host.ntp",
+		"service.systemd", "service.baseline",
+		"docker.project", "docker.container", "docker.health":
+		return host.AuthType != "network"
+	default:
+		return true
+	}
 }
 
 func (s *Server) evaluateMonitor(ctx context.Context, monitor store.Monitor, host store.Host) monitorResult {
