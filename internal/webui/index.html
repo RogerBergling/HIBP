@@ -137,6 +137,11 @@
             <span class="nav-status-count ok" id="nav-monitor-ok" title="OK monitors">0</span>
           </span>
         </button>
+        <button class="nav-item" data-view="events">
+          <span class="ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 3l7 3v5.2c0 4.4-2.9 7.6-7 9.8-4.1-2.2-7-5.4-7-9.8V6l7-3z" stroke="currentColor" stroke-width="1.6"/><path d="M12 8v4m0 3h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></span>
+          Security events
+          <span id="nav-event-count" class="nav-badge">0</span>
+        </button>
         <button class="nav-item" data-view="schedules">
           <span class="ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="3.5" y="5" width="17" height="15" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M7 3v4M17 3v4M3.5 9h17M8 13h2M14 13h2M8 17h2M14 17h2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></span>
           Schedules
@@ -443,8 +448,22 @@
             </table>
           </div>
         </section>
-        <section class="card table-card" style="margin-top:14px">
-          <div class="card-head"><div class="card-title">Security and service events</div></div>
+      </section>
+      <section id="view-events" class="hidden">
+        <div class="page-head">
+          <div>
+            <div class="page-title">Security and service events</div>
+            <div class="page-sub">Normalized syslog, authentication, and service events with retention.</div>
+          </div>
+          <div class="head-actions">
+            <button class="btn" id="events-refresh" type="button">Refresh</button>
+          </div>
+        </div>
+        <section class="card table-card">
+          <div class="card-head">
+            <div class="card-title">Recent events</div>
+            <div class="card-actions" id="events-summary"></div>
+          </div>
           <div class="table-wrap">
             <table>
               <thead>
@@ -463,6 +482,7 @@
             </table>
           </div>
         </section>
+        <p class="field-note">Network-device syslog events appear here. If this is empty, verify the syslog receiver is listening, the UDM sends to the correct HIBP IP and port, and the UDM source IP matches the host address or an extra syslog source IP.</p>
       </section>
       <section id="view-schedules" class="hidden">
         <div class="page-head">

@@ -1934,10 +1934,9 @@ read-only `auth_type=network` hosts. They have no SSH actions:
     count to warning/critical thresholds inside the configured syslog window.
   - `snmp.value` compares a numeric OID value to warning/critical thresholds.
   - `snmp.poll` alerts when the latest SNMP poll failed or is stale.
-- Syslog events are normalized into the existing security/service event table,
-  so `security.auth` can also count device authentication failures. Open
-  **Monitoring** and scroll to **Security and service events** below the alert
-  table, or use the **Security events** button in the Monitoring header.
+- Syslog events are normalized into the **Security events** view in the left
+  sidebar (also reachable from the **Security events** button on the Monitoring
+  page), so `security.auth` can also count device authentication failures.
 
 The SNMP MVP polls scalar OIDs with `Get`; it does not walk interface tables.
 Use `snmpwalk` on the device to identify the exact scalar OIDs for CPU, memory,

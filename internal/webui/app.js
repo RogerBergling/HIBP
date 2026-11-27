@@ -516,8 +516,8 @@ function updateUserDisplay() {
 
 function setView(view) {
   state.view = view;
-  const sections = ['dashboard', 'hosts', 'audit', 'monitoring', 'schedules'];
-  const labels = { dashboard: 'Overview', hosts: 'Hosts', audit: 'Audit log', monitoring: 'Monitoring', schedules: 'Schedules' };
+  const sections = ['dashboard', 'hosts', 'audit', 'monitoring', 'events', 'schedules'];
+  const labels = { dashboard: 'Overview', hosts: 'Hosts', audit: 'Audit log', monitoring: 'Monitoring', events: 'Security events', schedules: 'Schedules' };
   for (const section of sections) {
     const node = $('view-' + section);
     if (node) node.classList.toggle('hidden', section !== view);
@@ -527,6 +527,7 @@ function setView(view) {
   }
   $('crumb-view').textContent = labels[view] || 'Overview';
   if (view === 'monitoring') renderMonitoring();
+  if (view === 'events') renderMonitoring();
   if (view === 'schedules') renderSchedules();
 }
 
@@ -2146,6 +2147,10 @@ function renderMonitoring() {
       row.append(timeTd, hostTd, sourceTd, categoryTd, severityTd, userTd, ipTd, messageTd);
       eventBody.append(row);
     }
+    const count = $('nav-event-count');
+    if (count) count.textContent = String(events.length);
+    const summary = $('events-summary');
+    if (summary) summary.textContent = events.length + ' recent event' + (events.length === 1 ? '' : 's');
   }
   syncMonitorSelection();
 }
@@ -6831,10 +6836,8 @@ function bind() {
   $('sign-out').addEventListener('click', signOut);
   $('account-security').addEventListener('click', showAccountSecurityModal);
 
-  $('monitor-events').addEventListener('click', () => {
-    const body = $('event-body');
-    if (body) body.closest('.table-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  });
+  $('monitor-events').addEventListener('click', () => setView('events'));
+  $('events-refresh').addEventListener('click', () => loadAll({ force: true }));
   for (const button of document.querySelectorAll('.nav-item[data-view]')) {
     button.addEventListener('click', () => setView(button.dataset.view));
   }
