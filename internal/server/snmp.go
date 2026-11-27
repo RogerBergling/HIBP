@@ -14,7 +14,10 @@ import (
 	"github.com/gosnmp/gosnmp"
 )
 
-const defaultSNMPInterval = 60 * time.Second
+const (
+	defaultSNMPInterval = 60 * time.Second
+	maxSNMPOIDs         = 20
+)
 
 // RunSNMP polls configured network-device hosts. It is a pull path separate
 // from the SSH collector and the syslog receiver.
@@ -132,8 +135,10 @@ func (s *Server) pollSNMPHost(ctx context.Context, host store.Host) {
 		return
 	}
 	version := gosnmp.Version2c
+	versionLabel := "2c"
 	if s.store.ResolveSetting(host.ID, "snmp.version", "2c") == "1" {
 		version = gosnmp.Version1
+		versionLabel = "1"
 	}
 	params := &gosnmp.GoSNMP{
 		Target:    host.Address,
@@ -142,20 +147,33 @@ func (s *Server) pollSNMPHost(ctx context.Context, host store.Host) {
 		Version:   version,
 		Timeout:   5 * time.Second,
 		Retries:   1,
-		MaxOids:   20,
+		MaxOids:   maxSNMPOIDs,
+		Context:   ctx,
 	}
 	if err := params.Connect(); err != nil {
-		_ = s.store.SetSNMPPollState(host.ID, now, fmt.Sprintf("%s:%d: %s", host.Address, port, boundError(err)))
+		message := snmpPollError(host.Address, port, versionLabel, err)
+		_ = s.store.SetSNMPPollState(host.ID, now, message)
 		_ = s.store.SetHostStatus(host.ID, "unreachable")
-		slog.Warn("snmp: connect", "host", host.Name, "target", host.Address, "port", port, "error", err)
+		slog.Warn("snmp: connect", "host", host.Name, "target", host.Address,
+			"port", port, "version", versionLabel, "error", err)
 		return
 	}
 	defer params.Conn.Close()
 	packet, err := params.Get(oids)
 	if err != nil {
-		_ = s.store.SetSNMPPollState(host.ID, now, fmt.Sprintf("%s:%d: %s", host.Address, port, boundError(err)))
+		message := snmpPollError(host.Address, port, versionLabel, err)
+		_ = s.store.SetSNMPPollState(host.ID, now, message)
 		_ = s.store.SetHostStatus(host.ID, "unreachable")
-		slog.Warn("snmp: get", "host", host.Name, "target", host.Address, "port", port, "error", err)
+		slog.Warn("snmp: get", "host", host.Name, "target", host.Address,
+			"port", port, "version", versionLabel, "oids", len(oids), "error", err)
+		return
+	}
+	if len(packet.Variables) == 0 {
+		message := fmt.Sprintf("%s:%d (SNMP v%s): no values returned", host.Address, port, versionLabel)
+		_ = s.store.SetSNMPPollState(host.ID, now, message)
+		_ = s.store.SetHostStatus(host.ID, "unknown")
+		slog.Warn("snmp: no values", "host", host.Name, "target", host.Address,
+			"port", port, "version", versionLabel, "oids", len(oids))
 		return
 	}
 	values := make([]store.SNMPValue, 0, len(packet.Variables))
@@ -179,6 +197,24 @@ func (s *Server) pollSNMPHost(ctx context.Context, host store.Host) {
 		slog.Warn("snmp: save poll state", "host", host.Name, "error", err)
 	}
 	_ = s.store.SetHostStatus(host.ID, "reachable")
+	slog.Debug("snmp: poll succeeded", "host", host.Name, "target", host.Address,
+		"port", port, "version", versionLabel, "values", len(values))
+}
+
+// snmpPollError keeps the target visible and adds a short hint for the most
+// common v1/v2c failure: a timeout caused by the wrong address, filtered UDP
+// port, or mismatched community string.
+func snmpPollError(target string, port int, version string, err error) string {
+	message := fmt.Sprintf("%s:%d (SNMP v%s): %s", target, port, version, boundError(err))
+	lower := strings.ToLower(message)
+	if strings.Contains(lower, "timeout") || strings.Contains(lower, "no response") ||
+		strings.Contains(lower, "deadline exceeded") {
+		message += "; verify the host address, UDP port, firewall, and community string"
+	}
+	if len(message) > 512 {
+		message = message[:512]
+	}
+	return message
 }
 
 func normalizeOID(oid string) string {

@@ -1530,6 +1530,31 @@ func TestSNMPCommunityMaskedAndPreserved(t *testing.T) {
 	}
 }
 
+func TestSNMPCommunityTrimmed(t *testing.T) {
+	ts, db := testServer(t)
+	resp := request(t, http.MethodPut, ts.URL+"/api/v1/settings", "test-token",
+		`{"scope":"fleet","settings":{"snmp.community":"  padded-community  "}}`)
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		t.Fatalf("save SNMP community failed: %d %s", resp.StatusCode, raw)
+	}
+	_ = resp.Body.Close()
+	if value, err := db.GetSetting("fleet", "snmp.community"); err != nil || value != "padded-community" {
+		t.Fatalf("stored community: %q %v", value, err)
+	}
+}
+
+func TestSNMPOIDLimit(t *testing.T) {
+	oids := make([]string, 0, maxSNMPOIDs+1)
+	for index := 0; index <= maxSNMPOIDs; index++ {
+		oids = append(oids, fmt.Sprintf(".1.3.6.1.2.1.1.%d.0", index))
+	}
+	if _, err := parseOIDList(strings.Join(oids, ",")); err == nil {
+		t.Fatalf("expected more than %d OIDs to be rejected", maxSNMPOIDs)
+	}
+}
+
 func TestHostTargetProxyJump(t *testing.T) {
 	_, _, app := testServerWithApp(t, true)
 	host := store.Host{

@@ -457,6 +457,12 @@ th:last-child, td:last-child { padding-right: 15px; }
 .detail-card h3 { margin: 0 0 7px; font-size: 11px; color: #cfe0f5; }
 .detail-card p, .detail-card li { margin: 3px 0; font-size: 10.5px; color: var(--muted); }
 .detail-card b { color: #e7eef9; font-weight: 600; }
+.snmp-alert { border: 1px solid rgba(242, 109, 109, .32); border-radius: 9px; background: var(--red-bg); padding: 10px 12px; }
+.snmp-alert strong { display: block; margin-bottom: 4px; color: var(--red); font-size: 11px; }
+.snmp-alert p { margin: 0 0 4px; color: var(--muted); font-size: 10.5px; line-height: 1.55; overflow-wrap: anywhere; }
+.snmp-alert p:last-child { margin-bottom: 0; }
+.snmp-alert.warning { border-color: rgba(244, 183, 64, .3); background: var(--amber-bg); }
+.snmp-alert.warning strong { color: var(--amber); }
 .mfa-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 .mfa-factor { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: 7px; background: #0a1424; }
 .mfa-setup-card { margin-top: 12px; }

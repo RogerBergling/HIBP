@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -283,5 +284,13 @@ func TestSNMPPDUValue(t *testing.T) {
 	}
 	if value, kind := snmpPDUValue(gosnmp.SnmpPDU{Value: []byte("udm")}); value != "udm" || kind != "string" {
 		t.Fatalf("unexpected string conversion: %s %s", value, kind)
+	}
+}
+
+func TestSNMPPollErrorHintsTimeout(t *testing.T) {
+	message := snmpPollError("192.168.4.1", 161, "2c", errors.New("request timeout (after 1 retries)"))
+	if !strings.Contains(message, "192.168.4.1:161") || !strings.Contains(message, "SNMP v2c") ||
+		!strings.Contains(message, "verify the host address") {
+		t.Fatalf("missing timeout diagnostics: %q", message)
 	}
 }

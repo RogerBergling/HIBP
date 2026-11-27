@@ -828,8 +828,11 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "unknown setting: "+key)
 			return
 		}
-		if key == "snmp.community" && value == "********" {
-			continue
+		if key == "snmp.community" {
+			value = strings.TrimSpace(value)
+			if value == "********" {
+				continue
+			}
 		}
 		if strings.HasPrefix(key, "monitor.service_baseline.") {
 			baselineChanged = true
@@ -920,6 +923,9 @@ func parseOIDList(value string) ([]string, error) {
 		}
 		if !snmpOIDPattern.MatchString(oid) {
 			return nil, fmt.Errorf("invalid SNMP OID %q", oid)
+		}
+		if len(oids) >= maxSNMPOIDs {
+			return nil, fmt.Errorf("at most %d SNMP OIDs are supported", maxSNMPOIDs)
 		}
 		seen[oid] = true
 		oids = append(oids, oid)

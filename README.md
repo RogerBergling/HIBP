@@ -1929,6 +1929,10 @@ read-only `auth_type=network` hosts. They have no SSH actions:
 - **SNMP is polled by HIBP.** Open the host’s **Network** action to set the SNMP
   version (`v1` or `v2c`), community string, port, poll interval, and scalar OID
   list. The community is masked in API responses and stored encrypted at rest.
+  The host **System** tab shows the actual SNMP target, version, community
+  state, configured OIDs, last poll error, and the latest values. **Poll SNMP
+  now** uses the saved settings, so save changes before polling. SNMP errors
+  include the target address/port and a hint for timeouts.
 - **Monitors:**
   - `syslog.event` counts events whose message contains a text and compares the
     count to warning/critical thresholds inside the configured syslog window.
@@ -1951,7 +1955,8 @@ read-only `auth_type=network` hosts. They have no SSH actions:
   UDM WAN, link, Wi-Fi, VPN, firewall, authentication, and system events appear
   with a useful category and severity instead of a generic `syslog`/`info` row.
 
-The SNMP MVP polls scalar OIDs with `Get`; it does not walk interface tables.
+The SNMP MVP polls up to 20 scalar OIDs with `Get`; it does not walk interface
+tables.
 Use `snmpwalk` on the device to identify the exact scalar OIDs for CPU, memory,
 temperature, or interface status. Syslog is unauthenticated, so bind the
 receiver to the LAN and firewall it to the device/network CIDR.

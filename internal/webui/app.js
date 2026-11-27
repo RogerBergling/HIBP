@@ -5020,6 +5020,52 @@ function detailSection(title, content) {
   return card;
 }
 
+function networkSNMPPort(host, settings) {
+  const configured = Number(settings && settings['snmp.port']);
+  if (Number.isFinite(configured) && configured > 0 && configured !== 22) return configured;
+  const hostPort = Number(host && host.port);
+  if (Number.isFinite(hostPort) && hostPort > 0 && hostPort !== 22) return hostPort;
+  return 161;
+}
+
+function networkSNMPOIDs(settings) {
+  const raw = String((settings && settings['snmp.oids']) || '');
+  return [...new Set(raw.split(/[\s,]+/).map((oid) => oid.trim()).filter(Boolean))];
+}
+
+function networkSNMPOIDLabel(oid) {
+  const labels = {
+    '1.3.6.1.2.1.1.1.0': 'sysDescr',
+    '1.3.6.1.2.1.1.2.0': 'sysObjectID',
+    '1.3.6.1.2.1.1.3.0': 'sysUpTime',
+    '1.3.6.1.2.1.1.4.0': 'sysContact',
+    '1.3.6.1.2.1.1.5.0': 'sysName',
+    '1.3.6.1.2.1.1.6.0': 'sysLocation',
+    '1.3.6.1.2.1.1.7.0': 'sysServices',
+  };
+  return labels[String(oid || '').replace(/^\./, '')] || '';
+}
+
+function networkSyslogReceiver(settings) {
+  if ((settings['syslog.enabled'] || '0') !== '1') return 'disabled';
+  return (settings['syslog.listen'] || '0.0.0.0:5514') + ' · ' + (settings['syslog.protocol'] || 'udp');
+}
+
+function networkSNMPDisplayValue(value) {
+  if (String(value.oid || '').replace(/^\./, '') === '1.3.6.1.2.1.1.3.0') {
+    const ticks = Number(value.value);
+    if (Number.isFinite(ticks) && ticks >= 0) {
+      const seconds = ticks / 100;
+      const days = Math.floor(seconds / 86400);
+      const hours = Math.floor((seconds % 86400) / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      const uptime = days > 0 ? days + 'd ' + hours + 'h' : hours > 0 ? hours + 'h ' + minutes + 'm' : minutes + 'm';
+      return uptime + ' (raw ' + value.value + ')';
+    }
+  }
+  return value.value;
+}
+
 function metricCard(label, samples, key, color) {
   const card = el('div', 'metric-card');
   const latest = samples.length ? Number(samples[samples.length - 1][key] || 0) : 0;
@@ -5061,22 +5107,33 @@ function renderOverviewPanel(panel, data, host) {
   if (host.auth_type === 'network') {
     const settings = data.settings || {};
     const state = data.snmp_state || {};
+    const port = networkSNMPPort(host, settings);
+    const oids = networkSNMPOIDs(settings);
     const grid = el('div', 'detail-grid');
     grid.append(
       detailCard('Network device', [
-        ['Address', host.address + ':' + host.port],
+        ['Address', host.address],
+        ['SNMP target', host.address + ':' + port],
         ['Auth', host.auth_type],
         ['Status', host.status || 'unknown'],
         ['Group', host.group_name],
         ['Tags', host.tags],
         ['CMDB CI ID', host.cmdb_ci_id],
       ]),
-      detailCard('SNMP and syslog', [
-        ['SNMP polling', settings['snmp.enabled'] === '1' ? 'enabled' : 'disabled'],
-        ['SNMP version', settings['snmp.version'] || '2c'],
-        ['Last poll', state.last_poll ? relativeTime(state.last_poll) : 'not polled'],
-        ['Poll error', state.last_error || 'none'],
-        ['Syslog sources', settings['syslog.sources'] || 'host address'],
+      detailCard('SNMP polling', [
+        ['Polling', settings['snmp.enabled'] === '1' ? 'enabled' : 'disabled'],
+        ['Version', 'v' + (settings['snmp.version'] || '2c')],
+        ['Port', port],
+        ['Community', settings['snmp.community'] ? 'configured' : 'not configured'],
+        ['OIDs', oids.length + ' configured'],
+        ['Interval', settings['snmp.interval'] || '60s'],
+        ['Last poll', state.last_poll ? relativeTime(state.last_poll) : 'never'],
+        ['Last error', state.last_error || 'none'],
+      ]),
+      detailCard('Syslog reception', [
+        ['Receiver', networkSyslogReceiver(settings)],
+        ['Host source', host.address],
+        ['Extra sources', settings['syslog.sources'] || 'none'],
       ]),
     );
     panel.append(grid);
@@ -5126,13 +5183,7 @@ function renderOverviewPanel(panel, data, host) {
 function renderSystemPanel(panel, data, host, reload, onMetricsDaysChange = async () => {}) {
   panel.replaceChildren();
   if (host.auth_type === 'network') {
-    panel.append(el('p', 'muted', 'System information for network devices is collected with SNMP polling, not over SSH. Use the Network action to configure SNMP credentials, OIDs, and syslog source IPs.'));
-    const actions = el('div', 'modal-actions');
-    const network = el('button', 'btn primary', 'Network settings');
-    network.type = 'button';
-    network.addEventListener('click', () => showNetworkHostModal(host));
-    actions.append(network);
-    panel.append(actions);
+    renderNetworkSystemPanel(panel, data, host, reload);
     return;
   }
   const metrics = data.metrics || [];
@@ -5821,6 +5872,138 @@ function renderServicesPanel(panel, data, host, reload) {
   panel.append(card);
 }
 
+function renderNetworkSystemPanel(panel, data, host, reload) {
+  panel.replaceChildren();
+  const settings = data.settings || {};
+  const state = data.snmp_state || {};
+  const values = data.snmp_values || [];
+  const port = networkSNMPPort(host, settings);
+  const oids = networkSNMPOIDs(settings);
+  const enabled = settings['snmp.enabled'] === '1';
+  const communityConfigured = Boolean(settings['snmp.community']);
+
+  if (!enabled) {
+    const alert = el('div', 'snmp-alert warning');
+    alert.append(el('strong', '', 'SNMP polling is disabled'));
+    alert.append(el('p', '', 'Enable it in Network settings and save, then poll again.'));
+    panel.append(alert);
+  } else if (!communityConfigured) {
+    const alert = el('div', 'snmp-alert warning');
+    alert.append(el('strong', '', 'SNMP community is not configured'));
+    alert.append(el('p', '', 'Save the SNMP community in Network settings before polling.'));
+    panel.append(alert);
+  } else if (state.last_error) {
+    const alert = el('div', 'snmp-alert');
+    alert.append(el('strong', '', 'Last SNMP poll failed'));
+    alert.append(el('p', '', state.last_error));
+    alert.append(el('p', 'field-note',
+      'HIBP polled ' + host.address + ':' + port + ' with SNMP v' + (settings['snmp.version'] || '2c') +
+      '. Verify the address answers snmpget, UDP 161 is allowed from HIBP, and the community matches the device.'));
+    panel.append(alert);
+  }
+
+  const grid = el('div', 'detail-grid');
+  grid.append(
+    detailCard('SNMP diagnostics', [
+      ['Polling', enabled ? 'enabled' : 'disabled'],
+      ['Target', host.address + ':' + port],
+      ['Version', 'v' + (settings['snmp.version'] || '2c')],
+      ['Community', communityConfigured ? 'configured' : 'not configured'],
+      ['OIDs', oids.length + ' configured'],
+      ['Interval', settings['snmp.interval'] || '60s'],
+      ['Last poll', state.last_poll ? relativeTime(state.last_poll) : 'never'],
+      ['Last error', state.last_error || 'none'],
+    ]),
+    detailCard('Network and syslog', [
+      ['Address', host.address],
+      ['Status', host.status || 'unknown'],
+      ['Syslog receiver', networkSyslogReceiver(settings)],
+      ['Extra syslog sources', settings['syslog.sources'] || 'none'],
+    ]),
+  );
+  panel.append(grid);
+
+  const valuesCard = el('div', 'detail-card');
+  valuesCard.append(el('h3', '', 'Latest SNMP values'));
+  if (values.length) {
+    const wrap = el('div', 'scroll-list');
+    const table = el('table');
+    const head = el('thead');
+    const headRow = el('tr');
+    for (const label of ['OID', 'Value', 'Type', 'Collected']) headRow.append(el('th', '', label));
+    head.append(headRow);
+    const tbody = el('tbody');
+    for (const value of values) {
+      const row = el('tr');
+      const oidCell = el('td');
+      const label = networkSNMPOIDLabel(value.oid);
+      if (label) oidCell.append(el('div', 'host-name', label));
+      oidCell.append(el('div', 'mono', value.oid || '—'));
+      const valueCell = el('td', '', networkSNMPDisplayValue(value) || '—');
+      valueCell.title = value.value || '';
+      const collectedCell = el('td');
+      const collected = el('span', 'nowrap', relativeTime(value.collected_at));
+      collected.title = value.collected_at ? new Date(value.collected_at).toLocaleString() : '';
+      collectedCell.append(collected);
+      row.append(oidCell, valueCell, el('td', '', value.value_type || '—'), collectedCell);
+      tbody.append(row);
+    }
+    table.append(head, tbody);
+    wrap.append(table);
+    valuesCard.append(wrap);
+  } else {
+    valuesCard.append(el('p', 'muted', 'No SNMP values collected yet.'));
+    if (state.last_error) {
+      valuesCard.append(el('p', 'field-note', 'Fix the poll error above, then click Poll SNMP now.'));
+    } else if (enabled && communityConfigured && oids.length) {
+      valuesCard.append(el('p', 'field-note', 'Click Poll SNMP now to collect the configured OIDs immediately.'));
+    }
+  }
+  panel.append(valuesCard);
+
+  const actions = el('div', 'modal-actions');
+  const poll = el('button', 'btn primary', 'Poll SNMP now');
+  poll.type = 'button';
+  poll.disabled = !enabled || !communityConfigured || oids.length === 0;
+  poll.title = poll.disabled
+    ? 'Enable polling, configure a community, and add at least one OID first'
+    : 'Poll the saved SNMP settings immediately';
+  poll.addEventListener('click', async () => {
+    poll.disabled = true;
+    try {
+      const result = await api('/api/v1/hosts/' + encodeURIComponent(host.id) + '/snmp/poll', {
+        method: 'POST', body: '{}',
+      });
+      if (result.state && result.state.last_error) {
+        toast('SNMP poll failed: ' + result.state.last_error, 'error');
+      } else {
+        toast('SNMP poll completed: ' + (result.values || []).length + ' value(s)', 'ok');
+      }
+      await loadAll({ silent: true });
+      await reload();
+    } catch (error) {
+      toast(error.message, 'error');
+      poll.disabled = false;
+    }
+  });
+  const network = el('button', 'btn', 'Network settings');
+  network.type = 'button';
+  network.addEventListener('click', () => showNetworkHostModal(host));
+  const refresh = el('button', 'btn', 'Refresh');
+  refresh.type = 'button';
+  refresh.addEventListener('click', async () => {
+    try {
+      await reload();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  });
+  actions.append(poll, network, refresh);
+  panel.append(actions);
+  panel.append(el('p', 'field-note',
+    'Poll SNMP now uses the saved settings. The current MVP performs scalar SNMP GET requests and does not walk interface tables.'));
+}
+
 function renderContainersPanel(panel, data, host, reload) {
   panel.replaceChildren();
   if (host.auth_type === 'network') {
@@ -6274,7 +6457,7 @@ async function showNetworkHostModal(host) {
   const version = selectField(grid, 'SNMP version', 'snmp_version', [['2c', 'v2c'], ['1', 'v1']]);
   version.value = settings['snmp.version'] || '2c';
   const port = inputField(grid, 'SNMP port', 'snmp_port', '161', 'number');
-  port.value = settings['snmp.port'] || String(host.port || 161);
+  port.value = String(networkSNMPPort(host, settings));
   const interval = inputField(grid, 'Poll interval', 'snmp_interval', '60s');
   interval.value = settings['snmp.interval'] || '60s';
   form.append(grid);
@@ -6284,7 +6467,7 @@ async function showNetworkHostModal(host) {
   const clearWrap = el('label', 'field checkbox-field');
   const clearCommunity = el('input');
   clearCommunity.type = 'checkbox';
-  clearWrap.append(clearCommunity, document.createTextNode('Clear the stored community string'));
+  clearWrap.append(clearCommunity, document.createTextNode('Remove this host’s community override'));
   form.append(clearWrap);
   const oidWrap = el('label', 'field', 'OIDs to poll');
   const oids = el('textarea');
@@ -6305,6 +6488,10 @@ async function showNetworkHostModal(host) {
     ? 'Last poll: ' + relativeTime(pollState.last_poll) + (pollState.last_error ? ' · error: ' + pollState.last_error : '')
     : 'Not polled yet.';
   valuesCard.append(el('p', 'muted', pollText));
+  valuesCard.append(el('p', 'field-note',
+    'Target ' + host.address + ':' + networkSNMPPort(host, settings) +
+    ' · SNMP v' + (settings['snmp.version'] || '2c') +
+    ' · community ' + (settings['snmp.community'] ? 'configured' : 'not configured')));
   const values = data.snmp_values || [];
   if (values.length) {
     const wrap = el('div', 'scroll-list');
@@ -6314,9 +6501,15 @@ async function showNetworkHostModal(host) {
     table.append(head);
     for (const value of values) {
       const row = el('tr');
+      const oidCell = el('td');
+      const label = networkSNMPOIDLabel(value.oid);
+      if (label) oidCell.append(el('div', 'host-name', label));
+      oidCell.append(el('div', 'mono', value.oid || '—'));
+      const valueCell = el('td', '', networkSNMPDisplayValue(value) || '—');
+      valueCell.title = value.value || '';
       row.append(
-        el('td', '', value.oid),
-        el('td', '', value.value),
+        oidCell,
+        valueCell,
         el('td', '', value.value_type || '—'),
         el('td', '', relativeTime(value.collected_at)),
       );
@@ -6332,7 +6525,10 @@ async function showNetworkHostModal(host) {
   const actions = el('div', 'modal-actions');
   const poll = el('button', 'btn', 'Poll SNMP now');
   poll.type = 'button';
-  poll.title = 'Run an immediate poll using the saved SNMP settings';
+  poll.disabled = settings['snmp.enabled'] !== '1' || !settings['snmp.community'];
+  poll.title = poll.disabled
+    ? 'Save settings with polling enabled and a community first'
+    : 'Run an immediate poll using the saved SNMP settings';
   poll.addEventListener('click', async () => {
     try {
       const result = await api('/api/v1/hosts/' + encodeURIComponent(host.id) + '/snmp/poll', {
@@ -6350,17 +6546,26 @@ async function showNetworkHostModal(host) {
       toast(error.message, 'error');
     }
   });
+  if (!poll.disabled) {
+    const markDirty = () => {
+      poll.disabled = true;
+      poll.title = 'Save your changes before polling';
+    };
+    form.addEventListener('input', markDirty);
+    form.addEventListener('change', markDirty);
+  }
   const reset = el('button', 'btn', 'Use fleet defaults');
   reset.type = 'button';
   const save = el('button', 'btn primary', 'Save network settings');
   save.type = 'submit';
   actions.append(poll, reset, save);
   form.append(actions);
+  form.append(el('p', 'field-note', 'Poll SNMP now uses the saved settings. Save your changes first, then poll.'));
   const close = openModal('Network — ' + host.name, form, null, 'wide');
 
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
-    let communityValue = community.value;
+    let communityValue = community.value.trim();
     if (communityValue === '') {
       if (clearCommunity.checked) communityValue = '';
       else if ((settings['snmp.community'] || '') === '********') communityValue = '********';
