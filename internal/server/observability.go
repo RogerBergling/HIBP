@@ -746,6 +746,7 @@ func (s *Server) handleHostDetails(w http.ResponseWriter, r *http.Request) {
 	serviceBaseline, _ := s.store.ListServiceBaseline(host.ID)
 	serviceStates, _ := s.store.ListServiceStates(host.ID)
 	snmpValues, _ := s.store.ListSNMPValues(host.ID)
+	s.enrichSNMPValues(snmpValues)
 	snmpState, _ := s.store.GetSNMPPollState(host.ID)
 	settings := s.resolveSettings(host.ID)
 	hostSettings, _ := s.store.ListSettings("host:" + host.ID)
@@ -833,6 +834,14 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 			if value == "********" {
 				continue
 			}
+		}
+		if key == "snmp.oids" && strings.TrimSpace(value) != "" {
+			normalized, err := s.normalizeSNMPOIDList(value)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			value = normalized
 		}
 		if strings.HasPrefix(key, "monitor.service_baseline.") {
 			baselineChanged = true

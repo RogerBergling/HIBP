@@ -14,6 +14,9 @@ type SNMPValue struct {
 	Value       string `json:"value"`
 	ValueType   string `json:"value_type"`
 	CollectedAt string `json:"collected_at"`
+	Name        string `json:"name,omitempty"`
+	Syntax      string `json:"syntax,omitempty"`
+	EnumLabel   string `json:"enum_label,omitempty"`
 }
 
 // SNMPPollState records the last SNMP poll attempt for a host. LastError is

@@ -463,6 +463,12 @@ th:last-child, td:last-child { padding-right: 15px; }
 .snmp-alert p:last-child { margin-bottom: 0; }
 .snmp-alert.warning { border-color: rgba(244, 183, 64, .3); background: var(--amber-bg); }
 .snmp-alert.warning strong { color: var(--amber); }
+.mib-diagnostics { display: flex; flex-direction: column; gap: 6px; }
+.mib-diagnostics .scroll-list { max-height: 180px; }
+.mib-diagnostic { display: flex; align-items: flex-start; gap: 8px; padding: 5px 7px; border: 1px solid var(--border-soft); border-radius: 6px; font-size: 10px; color: var(--muted); }
+.mib-diagnostic-severity { flex: 0 0 auto; color: var(--amber); font-size: 8px; font-weight: 750; letter-spacing: .05em; text-transform: uppercase; }
+.mib-diagnostic-severity.error, .mib-diagnostic-severity.fatal { color: var(--red); }
+.mib-diagnostic-severity.warning { color: var(--amber); }
 .mfa-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 .mfa-factor { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: 7px; background: #0a1424; }
 .mfa-setup-card { margin-top: 12px; }
@@ -552,6 +558,8 @@ label.field.checkbox-field input { width: auto; accent-color: #14b8a6; }
 .field-static { min-height: 35px; display: flex; align-items: center; border: 1px dashed var(--border); border-radius: 7px; padding: 0 9px; color: var(--muted-2); font-size: 10.5px; background: #08101d; }
 .assignment-chips { display: flex; flex-wrap: wrap; gap: 6px; min-height: 24px; align-items: center; }
 .assignment-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 4px 3px 8px; border: 1px solid var(--border); border-radius: 999px; background: #0a1220; color: #cbd9ec; font-size: 10px; }
+.assignment-chip.incompatible { border-color: rgba(244, 183, 64, .5); }
+.warning-note { color: var(--amber); }
 .chip-remove { border: none; background: transparent; color: var(--muted); width: 17px; height: 17px; border-radius: 50%; padding: 0; line-height: 1; font-size: 14px; }
 .chip-remove:hover { background: var(--red-bg); color: #fca5a5; }
 .assignment-pills { display: flex; flex-wrap: wrap; gap: 3px; }

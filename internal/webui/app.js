@@ -1679,10 +1679,10 @@ const MONITOR_TYPES = {
     note: 'Counts syslog events whose message contains this text during syslog.window_minutes. Blank matches every syslog event.',
   },
   'snmp.value': {
-    label: 'SNMP value', target: 'oid', targetLabel: 'OID',
+    label: 'SNMP value', target: 'oid', targetLabel: 'OID or MIB symbol',
     placeholder: '.1.3.6.1.2.1.1.3.0', threshold: 'number',
     warningLabel: 'Warning value', criticalLabel: 'Critical value', warning: 0, critical: 1,
-    note: 'Numeric value from the host SNMP poll. Thresholds compare the raw OID value; TimeTicks are in 1/100s.',
+    note: 'Numeric value from the host SNMP poll. Enter a numeric OID or an imported MIB name; scalars get .0 automatically and columns need an instance suffix. Thresholds compare the raw OID value; TimeTicks are in 1/100s.',
   },
   'snmp.poll': {
     label: 'SNMP poll', target: 'none', threshold: 'none',
@@ -1725,6 +1725,61 @@ function monitorHostName(hostID) {
 
 function isNetworkMonitorType(type) {
   return type === 'http' || type === 'tcp' || type === 'ssl';
+}
+
+function monitorHostCompatible(type, host) {
+  if (!host) return false;
+  if (type === 'snmp.poll' || type === 'snmp.value' || type === 'syslog.event') {
+    return host.auth_type === 'network';
+  }
+  if (type === 'host.cpu' || type === 'host.memory' || type === 'host.load' ||
+      type === 'host.disk' || type === 'host.ntp' || type === 'service.systemd' ||
+      type === 'service.baseline' || type === 'docker.project' ||
+      type === 'docker.container' || type === 'docker.health') {
+    return host.auth_type !== 'network';
+  }
+  return true;
+}
+
+function compatibleMonitorHosts(type) {
+  return (state.hosts || []).filter((host) => monitorHostCompatible(type, host));
+}
+
+function monitorPresetForNetworkHost(host) {
+  return {
+    name: host.name + ' SNMP poll',
+    type: 'snmp.poll',
+    enabled: true,
+    interval_seconds: 60,
+    repeat_minutes: 60,
+    cooldown_minutes: 15,
+    assignments: [{ scope: 'host', target: host.id }],
+  };
+}
+
+function monitorAssignedToHost(monitor, host) {
+  return (monitor.assignments || []).some((assignment) => {
+    if (assignment.scope === 'fleet') return true;
+    if (assignment.scope === 'host') return assignment.target === host.id;
+    if (assignment.scope === 'group') {
+      return String(assignment.target || '').toLowerCase() === String(host.group_name || '').toLowerCase();
+    }
+    if (assignment.scope === 'tag') {
+      return String(host.tags || '').split(',').some((tag) =>
+        tag.trim().toLowerCase() === String(assignment.target || '').toLowerCase());
+    }
+    return false;
+  });
+}
+
+function openSNMPPollMonitor(host) {
+  const existing = (state.monitors || []).find((monitor) =>
+    monitor.type === 'snmp.poll' && monitor.enabled && monitorAssignedToHost(monitor, host));
+  if (existing) {
+    toast('SNMP poll monitor already covers ' + host.name + ': ' + existing.name, 'ok');
+    return;
+  }
+  showMonitorModal(null, monitorPresetForNetworkHost(host));
 }
 
 function monitorAssignmentLabel(assignment) {
@@ -2869,7 +2924,15 @@ function showMonitorModal(monitor = null, preset = null) {
   target.type = 'text';
   target.autocomplete = 'off';
   target.spellcheck = false;
-  targetWrap.append(target);
+  const browseTarget = el('button', 'btn small hidden', 'Browse MIBs');
+  browseTarget.type = 'button';
+  browseTarget.addEventListener('click', () => showMIBModal({
+    onSelect: (symbol, oid) => {
+      target.value = oid;
+      target.dispatchEvent(new Event('input', { bubbles: true }));
+    },
+  }));
+  targetWrap.append(target, browseTarget);
   form.append(targetWrap);
 
   const insecureWrap = el('label', 'field checkbox-field hidden');
@@ -2913,11 +2976,6 @@ function showMonitorModal(monitor = null, preset = null) {
   const assignmentTargetWrap = el('label', 'field', 'Target');
   const hostSelect = el('select');
   hostSelect.name = 'assignment_host';
-  for (const hostEntry of state.hosts) {
-    const option = el('option', '', hostEntry.name + ' (' + hostEntry.address + ')');
-    option.value = hostEntry.id;
-    hostSelect.append(option);
-  }
   const textTarget = el('input');
   textTarget.name = 'assignment_target';
   textTarget.type = 'text';
@@ -2944,10 +3002,31 @@ function showMonitorModal(monitor = null, preset = null) {
   const addAssignment = el('button', 'btn', 'Add');
   addAssignment.type = 'button';
   assignmentControls.append(addAssignment);
-  assignmentCard.append(assignmentControls, groupDatalist, tagDatalist);
+  const assignmentNote = el('p', 'field-note');
+  const assignmentsWarning = el('p', 'field-note warning-note hidden');
   const chips = el('div', 'assignment-chips');
-  assignmentCard.append(chips);
+  assignmentCard.append(assignmentControls, assignmentNote, groupDatalist, tagDatalist, chips, assignmentsWarning);
   form.append(assignmentCard);
+
+  const renderHostOptions = () => {
+    const current = hostSelect.value;
+    const hosts = compatibleMonitorHosts(type.value);
+    hostSelect.replaceChildren();
+    for (const hostEntry of hosts) {
+      const option = el('option', '', hostEntry.name + ' (' + hostEntry.address + ')');
+      option.value = hostEntry.id;
+      hostSelect.append(option);
+    }
+    if (hosts.some((hostEntry) => hostEntry.id === current)) hostSelect.value = current;
+    else if (hosts.length) hostSelect.value = hosts[0].id;
+    if (scope.value === 'host') addAssignment.disabled = hosts.length === 0;
+    const snmp = type.value === 'snmp.poll' || type.value === 'snmp.value' || type.value === 'syslog.event';
+    assignmentNote.textContent = snmp
+      ? (hosts.length
+        ? 'SNMP and syslog monitors apply to network-device hosts only.'
+        : 'No network-device hosts are configured. Add a network device first.')
+      : '';
+  };
 
   const standaloneNote = el('div', 'detail-card hidden');
   standaloneNote.append(
@@ -2971,17 +3050,27 @@ function showMonitorModal(monitor = null, preset = null) {
       textTarget.placeholder = '';
       textTarget.removeAttribute('list');
     }
-    addAssignment.disabled = value === 'host' && state.hosts.length === 0;
+    addAssignment.disabled = value === 'host' && compatibleMonitorHosts(type.value).length === 0;
   };
   const renderAssignments = () => {
     chips.replaceChildren();
     if (!assignments.length) {
       chips.append(el('span', 'muted', 'No assignments yet.'));
+      assignmentsWarning.classList.add('hidden');
       return;
     }
+    let incompatible = 0;
     for (const assignment of assignments) {
       const chip = el('span', 'assignment-chip');
       chip.append(el('span', '', monitorAssignmentLabel(assignment)));
+      if (assignment.scope === 'host') {
+        const host = (state.hosts || []).find((entry) => entry.id === assignment.target);
+        if (!monitorHostCompatible(type.value, host)) {
+          incompatible += 1;
+          chip.classList.add('incompatible');
+          chip.title = 'This host is not compatible with the selected monitor type.';
+        }
+      }
       const remove = el('button', 'chip-remove', '×');
       remove.type = 'button';
       remove.title = 'Remove assignment';
@@ -2993,6 +3082,10 @@ function showMonitorModal(monitor = null, preset = null) {
       chip.append(remove);
       chips.append(chip);
     }
+    assignmentsWarning.classList.toggle('hidden', incompatible === 0);
+    assignmentsWarning.textContent = incompatible
+      ? 'Some host assignments are not compatible with this monitor type and will be ignored.'
+      : '';
   };
   addAssignment.addEventListener('click', () => {
     const selectedScope = scope.value;
@@ -3016,6 +3109,7 @@ function showMonitorModal(monitor = null, preset = null) {
     const network = isNetworkMonitorType(type.value);
     const http = type.value === 'http';
     targetWrap.classList.toggle('hidden', info.target === 'none');
+    browseTarget.classList.toggle('hidden', type.value !== 'snmp.value');
     insecureWrap.classList.toggle('hidden', !http);
     if (!http) insecure.checked = false;
     name.placeholder = info.namePlaceholder || 'Monitor name';
@@ -3029,6 +3123,7 @@ function showMonitorModal(monitor = null, preset = null) {
       assignments.length = 0;
       renderAssignments();
     }
+    renderHostOptions();
     if (info.threshold && info.threshold !== 'none') {
       setFieldLabel(warning, info.warningLabel || 'Warning');
       setFieldLabel(critical, info.criticalLabel || 'Critical');
@@ -3056,6 +3151,11 @@ function showMonitorModal(monitor = null, preset = null) {
   cooldown.value = String(source.cooldown_minutes ?? 15);
   recipients.value = source.recipients || '';
   applyMonitorType(false);
+  if (assignments.length) {
+    scope.value = assignments[0].scope === 'fleet' ? 'fleet' : assignments[0].scope;
+    if (scope.value === 'host') hostSelect.value = assignments[0].target;
+    else if (scope.value !== 'fleet') textTarget.value = assignments[0].target;
+  }
   syncAssignmentTarget();
   renderAssignments();
   type.addEventListener('change', () => applyMonitorType(true));
@@ -5052,7 +5152,9 @@ function networkSyslogReceiver(settings) {
 }
 
 function networkSNMPDisplayValue(value) {
-  if (String(value.oid || '').replace(/^\./, '') === '1.3.6.1.2.1.1.3.0') {
+  if (value.enum_label) return value.value + ' (' + value.enum_label + ')';
+  if (value.name === 'sysUpTime' || value.syntax === 'TimeTicks' ||
+      String(value.oid || '').replace(/^\./, '') === '1.3.6.1.2.1.1.3.0') {
     const ticks = Number(value.value);
     if (Number.isFinite(ticks) && ticks >= 0) {
       const seconds = ticks / 100;
@@ -5138,10 +5240,13 @@ function renderOverviewPanel(panel, data, host) {
     );
     panel.append(grid);
     const actions = el('div', 'modal-actions');
+    const monitor = el('button', 'btn', 'Add SNMP poll monitor');
+    monitor.type = 'button';
+    monitor.addEventListener('click', () => openSNMPPollMonitor(host));
     const network = el('button', 'btn primary', 'Network settings');
     network.type = 'button';
     network.addEventListener('click', () => showNetworkHostModal(host));
-    actions.append(network);
+    actions.append(monitor, network);
     panel.append(actions);
     return;
   }
@@ -5936,7 +6041,7 @@ function renderNetworkSystemPanel(panel, data, host, reload) {
     for (const value of values) {
       const row = el('tr');
       const oidCell = el('td');
-      const label = networkSNMPOIDLabel(value.oid);
+      const label = value.name || networkSNMPOIDLabel(value.oid);
       if (label) oidCell.append(el('div', 'host-name', label));
       oidCell.append(el('div', 'mono', value.oid || '—'));
       const valueCell = el('td', '', networkSNMPDisplayValue(value) || '—');
@@ -5989,6 +6094,9 @@ function renderNetworkSystemPanel(panel, data, host, reload) {
   const network = el('button', 'btn', 'Network settings');
   network.type = 'button';
   network.addEventListener('click', () => showNetworkHostModal(host));
+  const monitor = el('button', 'btn', 'Add SNMP poll monitor');
+  monitor.type = 'button';
+  monitor.addEventListener('click', () => openSNMPPollMonitor(host));
   const refresh = el('button', 'btn', 'Refresh');
   refresh.type = 'button';
   refresh.addEventListener('click', async () => {
@@ -5998,7 +6106,7 @@ function renderNetworkSystemPanel(panel, data, host, reload) {
       toast(error.message, 'error');
     }
   });
-  actions.append(poll, network, refresh);
+  actions.append(poll, monitor, network, refresh);
   panel.append(actions);
   panel.append(el('p', 'field-note',
     'Poll SNMP now uses the saved settings. The current MVP performs scalar SNMP GET requests and does not walk interface tables.'));
@@ -6271,6 +6379,11 @@ async function showSettingsModal() {
   snmpOidsWrap.append(snmpOids);
   body.append(snmpOidsWrap);
   body.append(el('p', 'field-note', 'The syslog receiver binds the configured address; restrict it to the device/network CIDR with a firewall. SNMP community strings are configured per host and are never returned by the API.'));
+  const mibButton = el('button', 'btn', 'MIB library');
+  mibButton.type = 'button';
+  mibButton.addEventListener('click', () => showMIBModal());
+  body.append(mibButton);
+  body.append(el('p', 'field-note', 'Import SMIv1/SMIv2 MIB files to use symbolic OID names in network settings and to show MIB labels and enum values in SNMP results.'));
   body.append(el('p', 'muted', 'Backups are fleet-wide. Leave the directory blank to use the database directory. Only timestamped backups created by HIBP are pruned; lowering the count deletes older HIBP-created backups on the next backup.'));
   const backupGrid = el('div', 'settings-grid');
   const backupDir = inputField(backupGrid, 'Backup directory', 'backup_directory', '/var/lib/hibp/backups');
@@ -6440,6 +6553,252 @@ async function showAgentTokenModal(host) {
   }
 }
 
+function mibSuggestedOID(symbol) {
+  const oid = String(symbol.oid || '').replace(/^\./, '');
+  if (!oid) return '';
+  if (symbol.kind === 'scalar') return '.' + oid + '.0';
+  return '.' + oid;
+}
+
+function appendMIBOID(target, symbol) {
+  const oid = mibSuggestedOID(symbol);
+  if (!oid) return;
+  const current = String(target.value || '').trim();
+  target.value = current ? current + '\n' + oid : oid;
+  target.dispatchEvent(new Event('input', { bubbles: true }));
+  toast('Added ' + oid, 'ok');
+}
+
+async function showMIBModal(options = {}) {
+  const selectMode = typeof options.onSelect === 'function';
+  const body = el('div', 'modal-body');
+  body.append(el('p', 'muted', selectMode
+    ? 'Choose an imported MIB symbol to insert its numeric OID. Scalar symbols include the .0 instance; table columns need an index.'
+    : 'Import SMIv1 and SMIv2 MIB files to resolve symbolic OID names, show friendly labels, and translate enumeration values. MIBs that import other modules need those dependency files imported too.'));
+  const uploadCard = el('section', 'detail-card');
+  uploadCard.append(el('h3', '', 'Import MIB files'));
+  const fileInput = el('input');
+  fileInput.type = 'file';
+  fileInput.multiple = true;
+  fileInput.accept = '.mib,.txt,.smi,.my';
+  const fileLabel = el('p', 'field-note', 'No files selected. Maximum 2 MiB per file.');
+  const importButton = el('button', 'btn primary', 'Import selected');
+  importButton.type = 'button';
+  const diagnostics = el('div', 'mib-diagnostics');
+  uploadCard.append(fileInput, fileLabel, importButton, diagnostics);
+  body.append(uploadCard);
+
+  const filesCard = el('section', 'detail-card');
+  filesCard.append(el('h3', '', 'Imported MIBs'));
+  const filesSummary = el('p', 'field-note');
+  const filesBody = el('tbody');
+  const filesTableWrap = el('div', 'scroll-list');
+  const filesTable = el('table');
+  const filesHead = el('tr');
+  for (const label of ['File', 'Modules', 'Symbols', 'Size', 'Imported', '']) filesHead.append(el('th', '', label));
+  filesTable.append(filesHead, filesBody);
+  filesTableWrap.append(filesTable);
+  filesCard.append(filesSummary, filesTableWrap);
+  body.append(filesCard);
+
+  const searchCard = el('section', 'detail-card');
+  searchCard.append(el('h3', '', 'Search symbols'));
+  const searchRow = el('div', 'input-with-button');
+  const searchInput = el('input');
+  searchInput.type = 'search';
+  searchInput.placeholder = 'name, OID prefix, or module';
+  const searchButton = el('button', 'btn', 'Search');
+  searchButton.type = 'button';
+  searchRow.append(searchInput, searchButton);
+  const searchWrap = el('div', 'scroll-list');
+  const searchTable = el('table');
+  const searchBody = el('tbody');
+  const searchHead = el('tr');
+  const searchColumns = ['Name', 'OID', 'Instance', 'Module', 'Type', 'Description'];
+  if (selectMode) searchColumns.push('');
+  for (const label of searchColumns) searchHead.append(el('th', '', label));
+  searchTable.append(searchHead, searchBody);
+  searchWrap.append(searchTable);
+  searchCard.append(searchRow, searchWrap);
+  body.append(searchCard);
+
+  const actions = el('div', 'modal-actions');
+  const closeButton = el('button', 'btn', 'Close');
+  closeButton.type = 'button';
+  actions.append(closeButton);
+  body.append(actions);
+  const close = openModal(selectMode ? 'Select MIB OID' : 'MIB library', body, null, 'wide');
+
+  const renderDiagnostics = (items) => {
+    diagnostics.replaceChildren();
+    if (!items || !items.length) return;
+    const head = el('p', 'field-note', 'Import completed with ' + items.length + ' diagnostic(s):');
+    const list = el('div', 'scroll-list');
+    for (const item of items.slice(0, 20)) {
+      const row = el('div', 'mib-diagnostic');
+      row.append(el('span', 'mib-diagnostic-severity ' + String(item.severity || '').toLowerCase(), item.severity || 'warning'));
+      row.append(el('span', '', (item.module ? item.module + ': ' : '') + (item.message || item.code || '')));
+      list.append(row);
+    }
+    diagnostics.append(head, list);
+  };
+
+  const renderFiles = (summary) => {
+    filesBody.replaceChildren();
+    const files = summary.files || [];
+    filesSummary.textContent = summary.symbol_count + ' resolved symbols across ' +
+      (summary.modules || []).length + ' module(s) in ' + files.length + ' file(s).';
+    if (!files.length) {
+      const row = el('tr');
+      const cell = el('td', 'empty-state', 'No MIB files imported yet.');
+      cell.colSpan = 6;
+      row.append(cell);
+      filesBody.append(row);
+      return;
+    }
+    for (const file of files) {
+      const row = el('tr');
+      row.append(
+        el('td', 'mono', file.filename),
+        el('td', '', (file.modules || []).join(', ') || '—'),
+        el('td', '', String(file.symbol_count || 0)),
+        el('td', '', formatBytes(file.size_bytes || 0)),
+        el('td', '', relativeTime(file.imported_at)),
+      );
+      const actionCell = el('td');
+      const remove = el('button', 'btn small danger', 'Delete');
+      remove.type = 'button';
+      remove.addEventListener('click', async () => {
+        if (!confirm('Remove MIB file ' + file.filename + '?')) return;
+        try {
+          await api('/api/v1/snmp/mibs/' + encodeURIComponent(file.id), { method: 'DELETE' });
+          toast('MIB file removed', 'ok');
+          diagnostics.replaceChildren();
+          await reload();
+          await runSearch();
+        } catch (error) {
+          toast(error.message, 'error');
+        }
+      });
+      actionCell.append(remove);
+      row.append(actionCell);
+      filesBody.append(row);
+    }
+  };
+
+  const renderSearch = (symbols) => {
+    searchBody.replaceChildren();
+    if (!symbols.length) {
+      const row = el('tr');
+      const cell = el('td', 'empty-state', 'No matching MIB symbols.');
+      cell.colSpan = searchColumns.length;
+      row.append(cell);
+      searchBody.append(row);
+      return;
+    }
+    for (const symbol of symbols) {
+      const row = el('tr');
+      const nameCell = el('td');
+      nameCell.append(el('div', 'host-name', symbol.name));
+      const oidCell = el('td', 'mono', symbol.oid);
+      const instanceCell = el('td', 'mono', mibSuggestedOID(symbol));
+      if (symbol.kind === 'column') instanceCell.title = 'Add the table index, for example .1 or .5';
+      const descriptionCell = el('td', 'alert-detail', symbol.description || '');
+      descriptionCell.title = symbol.description || '';
+      row.append(
+        nameCell,
+        oidCell,
+        instanceCell,
+        el('td', '', symbol.module || '—'),
+        el('td', '', symbol.syntax || symbol.kind || '—'),
+        descriptionCell,
+      );
+      if (selectMode) {
+        const actionCell = el('td');
+        if (symbol.kind === 'scalar' || symbol.kind === 'column') {
+          const use = el('button', 'btn small', 'Use');
+          use.type = 'button';
+          use.addEventListener('click', () => {
+            options.onSelect(symbol, mibSuggestedOID(symbol));
+            close();
+          });
+          actionCell.append(use);
+        } else {
+          actionCell.append(el('span', 'muted', 'not pollable'));
+        }
+        row.append(actionCell);
+      }
+      searchBody.append(row);
+    }
+  };
+
+  let searchTimer = null;
+  const runSearch = async () => {
+    try {
+      const result = await api('/api/v1/snmp/oids?limit=100&q=' + encodeURIComponent(searchInput.value.trim()));
+      renderSearch(result.symbols || []);
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  };
+  const reload = async () => {
+    const summary = await api('/api/v1/snmp/mibs');
+    renderFiles(summary);
+  };
+
+  fileInput.addEventListener('change', () => {
+    const files = [...(fileInput.files || [])];
+    fileLabel.textContent = files.length
+      ? files.map((file) => file.name + ' · ' + formatBytes(file.size)).join(', ')
+      : 'No files selected. Maximum 2 MiB per file.';
+  });
+  importButton.addEventListener('click', async () => {
+    const files = [...(fileInput.files || [])];
+    if (!files.length) {
+      toast('Select one or more MIB files first', 'error');
+      return;
+    }
+    importButton.disabled = true;
+    diagnostics.replaceChildren();
+    try {
+      const payloadFiles = [];
+      for (const file of files) {
+        if (file.size > 2 * 1024 * 1024) {
+          throw new Error(file.name + ' exceeds the 2 MiB limit');
+        }
+        payloadFiles.push({ filename: file.name, content: await file.text() });
+      }
+      const result = await api('/api/v1/snmp/mibs', {
+        method: 'POST',
+        body: JSON.stringify({ files: payloadFiles }),
+      });
+      toast('Imported ' + result.imported + ' file(s), ' + result.symbols + ' symbols', 'ok');
+      renderDiagnostics(result.diagnostics || []);
+      fileInput.value = '';
+      fileLabel.textContent = 'No files selected. Maximum 2 MiB per file.';
+      await reload();
+      await runSearch();
+    } catch (error) {
+      toast(error.message, 'error');
+    } finally {
+      importButton.disabled = false;
+    }
+  });
+  searchButton.addEventListener('click', runSearch);
+  searchInput.addEventListener('input', () => {
+    window.clearTimeout(searchTimer);
+    searchTimer = window.setTimeout(runSearch, 250);
+  });
+  closeButton.addEventListener('click', close);
+
+  try {
+    await reload();
+    await runSearch();
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
 async function showNetworkHostModal(host) {
   let data;
   try {
@@ -6473,13 +6832,18 @@ async function showNetworkHostModal(host) {
   const oids = el('textarea');
   oids.rows = 4;
   oids.spellcheck = false;
-  oids.placeholder = '.1.3.6.1.2.1.1.3.0\n.1.3.6.1.2.1.1.5.0';
-  oidWrap.append(oids);
+  oids.placeholder = '.1.3.6.1.2.1.1.3.0\nsysUpTime.0\nhibpStatus';
+  const browseOIDs = el('button', 'btn small', 'Browse MIBs');
+  browseOIDs.type = 'button';
+  browseOIDs.addEventListener('click', () => showMIBModal({
+    onSelect: (symbol) => appendMIBOID(oids, symbol),
+  }));
+  oidWrap.append(oids, browseOIDs);
   form.append(oidWrap);
   oids.value = settings['snmp.oids'] || '';
   const sources = inputField(form, 'Extra syslog source IPs', 'syslog_sources', 'The host address is always accepted');
   sources.value = settings['syslog.sources'] || '';
-  form.append(el('p', 'field-note', 'Comma- or whitespace-separated OIDs and IPs. The SNMP community is stored encrypted at rest, never returned by the API, and only used by the controller poller.'));
+  form.append(el('p', 'field-note', 'Comma- or whitespace-separated OIDs and IPs. OIDs may be numeric or imported MIB names; scalars get .0 automatically and table columns need an instance suffix. The SNMP community is stored encrypted at rest, never returned by the API, and only used by the controller poller.'));
 
   const valuesCard = el('div', 'detail-card');
   valuesCard.append(el('h3', '', 'Latest SNMP values'));
@@ -6502,7 +6866,7 @@ async function showNetworkHostModal(host) {
     for (const value of values) {
       const row = el('tr');
       const oidCell = el('td');
-      const label = networkSNMPOIDLabel(value.oid);
+      const label = value.name || networkSNMPOIDLabel(value.oid);
       if (label) oidCell.append(el('div', 'host-name', label));
       oidCell.append(el('div', 'mono', value.oid || '—'));
       const valueCell = el('td', '', networkSNMPDisplayValue(value) || '—');

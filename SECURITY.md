@@ -174,6 +174,9 @@ cron-based patch schedules are implemented.
 - Clearing security/service events or alert history is an authenticated action
   and is written to the audit log. Audit entries remain append-only and cannot
   be cleared from the UI.
+- Imported MIB files are untrusted text. HIBP caps file size, total library
+  size, and resolved symbol count; parses MIBs in-process; and never executes
+  MIB content. MIB import and deletion are authenticated and audited.
 - The syslog receiver is disabled by default. When enabled it binds the
   configured address and accepts events only from source IPs mapped to a
   `network` host (the host address plus its configured extra source IPs).

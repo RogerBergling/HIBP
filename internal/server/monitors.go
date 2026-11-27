@@ -63,9 +63,13 @@ func (s *Server) validateMonitor(request monitorRequest, monitorID string) (stor
 			return store.Monitor{}, errors.New("snmp.poll does not take a target")
 		}
 	case "snmp.value":
-		target = normalizeOID(target)
+		resolved, err := s.resolveSNMPOIDValue(target)
+		if err != nil {
+			return store.Monitor{}, err
+		}
+		target = normalizeOID(resolved)
 		if !snmpOIDPattern.MatchString(target) {
-			return store.Monitor{}, errors.New("snmp.value requires a valid numeric OID")
+			return store.Monitor{}, errors.New("snmp.value requires a valid numeric OID or imported MIB symbol")
 		}
 	case "syslog.event":
 		if target != "" && len(target) > 128 {

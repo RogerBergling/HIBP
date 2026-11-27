@@ -1938,6 +1938,16 @@ read-only `auth_type=network` hosts. They have no SSH actions:
     count to warning/critical thresholds inside the configured syslog window.
   - `snmp.value` compares a numeric OID value to warning/critical thresholds.
   - `snmp.poll` alerts when the latest SNMP poll failed or is stale.
+  - SNMP and syslog monitors are assigned to the network host, not run as a
+    standalone probe. The host **System** tab has an **Add SNMP poll monitor**
+    shortcut that pre-assigns the monitor to that device.
+- **MIB library:** **Settings → MIB library** imports SMIv1 and SMIv2 MIB files.
+  Imported symbols can be used instead of numeric OIDs in the host OID list and
+  in `snmp.value` monitor targets. Scalars automatically get the `.0` instance;
+  table columns need an explicit instance suffix such as `.5`. Imported MIBs also
+  add friendly names and enumeration labels to SNMP values. MIBs that import
+  other modules require those dependency files to be imported too. Uploads are
+  capped at 2 MiB per file and 25 MiB total.
 - Syslog events are normalized into the **Security dashboard** in the left
   sidebar (also reachable from the **Security dashboard** button on the
   Monitoring page), so `security.auth` can also count device authentication

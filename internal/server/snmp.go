@@ -52,6 +52,7 @@ func (s *Server) handleSNMPPoll(w http.ResponseWriter, r *http.Request) {
 	_ = s.store.AddAudit(s.auditActor(r), "snmp-poll", "host", host.ID, "manual poll")
 	state, _ := s.store.GetSNMPPollState(host.ID)
 	values, _ := s.store.ListSNMPValues(host.ID)
+	s.enrichSNMPValues(values)
 	if values == nil {
 		values = []store.SNMPValue{}
 	}

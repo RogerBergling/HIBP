@@ -78,6 +78,7 @@ type Server struct {
 	networkHostsMu      sync.Mutex
 	networkHosts        map[string]store.Host
 	networkHostsAt      time.Time
+	mibMu               sync.Mutex
 	syslogWarnMu        sync.Mutex
 	syslogWarnAt        map[string]time.Time
 	schedulerMu         sync.Mutex
@@ -297,6 +298,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/reboot", s.auth(s.handleReboot))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/system-info", s.auth(s.handleSystemInfo))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/snmp/poll", s.auth(s.handleSNMPPoll))
+	s.mux.HandleFunc("GET /api/v1/snmp/mibs", s.auth(s.handleListMIBs))
+	s.mux.HandleFunc("POST /api/v1/snmp/mibs", s.auth(s.handleImportMIBs))
+	s.mux.HandleFunc("DELETE /api/v1/snmp/mibs/{id}", s.auth(s.handleDeleteMIB))
+	s.mux.HandleFunc("GET /api/v1/snmp/oids", s.auth(s.handleSearchMIBSymbols))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/docker/list", s.auth(s.handleDockerList))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/docker/check", s.auth(s.handleDockerCheck))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/docker/check-all", s.auth(s.handleDockerCheckAll))
@@ -442,7 +447,11 @@ func writeError(w http.ResponseWriter, status int, message string) {
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, value any) error {
-	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
+	return decodeJSONLimit(w, r, value, 10<<20)
+}
+
+func decodeJSONLimit(w http.ResponseWriter, r *http.Request, value any, limit int64) error {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(value); err != nil {

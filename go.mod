@@ -4,6 +4,7 @@ go 1.27.4
 
 require (
 	github.com/go-webauthn/webauthn v0.18.2
+	github.com/golangsnmp/gomib v0.13.2
 	github.com/google/uuid v1.6.0
 	github.com/gosnmp/gosnmp v1.47.0
 	github.com/mattn/go-sqlite3 v1.14.53
