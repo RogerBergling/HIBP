@@ -1948,7 +1948,8 @@ Example UDM setup:
    and port `161`.
 2. Open the host **Network** action. Enable SNMP, choose `v2c`, enter the
    community string, set the poll interval, and add the scalar OIDs you want.
-   Add any extra syslog source IPs the UDM uses.
+   The dialog shows the latest OID values, the last poll error, and a
+   **Poll SNMP now** button. Add any extra syslog source IPs the UDM uses.
 3. In **Settings**, enable the syslog receiver, bind it to the HIBP LAN address
    and port `5514` (or `514` through a relay), and choose UDP or TCP.
 4. Point the UDM remote syslog at that HIBP address/port. Restrict UDM SNMP

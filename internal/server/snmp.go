@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +29,30 @@ func (s *Server) RunSNMP(ctx context.Context) {
 		case <-ticker.C:
 		}
 	}
+}
+
+func (s *Server) handleSNMPPoll(w http.ResponseWriter, r *http.Request) {
+	host, err := s.store.GetHost(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "host not found")
+		return
+	}
+	if host.AuthType != "network" {
+		writeError(w, http.StatusBadRequest, "SNMP polling is only available for network devices")
+		return
+	}
+	if s.store.ResolveSetting(host.ID, "snmp.enabled", "0") != "1" {
+		writeError(w, http.StatusBadRequest, "SNMP polling is disabled for this host")
+		return
+	}
+	s.pollSNMPHost(r.Context(), host)
+	_ = s.store.AddAudit(s.auditActor(r), "snmp-poll", "host", host.ID, "manual poll")
+	state, _ := s.store.GetSNMPPollState(host.ID)
+	values, _ := s.store.ListSNMPValues(host.ID)
+	if values == nil {
+		values = []store.SNMPValue{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"state": state, "values": values})
 }
 
 func (s *Server) pollSNMPHosts(ctx context.Context) {

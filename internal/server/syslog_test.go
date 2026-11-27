@@ -1,6 +1,9 @@
 package server
 
 import (
+	"encoding/json"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -153,6 +156,55 @@ func TestSNMPValueAndPollMonitors(t *testing.T) {
 	if result.status != "ok" || result.message == "" {
 		t.Fatalf("expected disabled SNMP result, got %+v", result)
 	}
+}
+
+func TestSNMPPollEndpoint(t *testing.T) {
+	ts, db := testServer(t)
+	networkHost, err := db.CreateHost(store.Host{
+		Name: "udm", Address: "192.0.2.1", AuthType: "network",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sshHost, err := db.CreateHost(store.Host{
+		Name: "web", Address: "192.0.2.2", Username: "ubuntu",
+		AuthType: "key", KeyPath: "/tmp/key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/hosts/"+networkHost.ID+"/snmp/poll", "test-token", `{}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		_ = resp.Body.Close()
+		t.Fatalf("expected disabled SNMP poll rejection, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+	if err := db.SetSetting("host:"+networkHost.ID, "snmp.enabled", "1"); err != nil {
+		t.Fatal(err)
+	}
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/hosts/"+networkHost.ID+"/snmp/poll", "test-token", `{}`)
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		t.Fatalf("expected SNMP poll response, got %d", resp.StatusCode)
+	}
+	var result struct {
+		State  store.SNMPPollState `json:"state"`
+		Values []store.SNMPValue   `json:"values"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		_ = resp.Body.Close()
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if !strings.Contains(result.State.LastError, "community") || len(result.Values) != 0 {
+		t.Fatalf("unexpected SNMP poll result: %+v", result)
+	}
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/hosts/"+sshHost.ID+"/snmp/poll", "test-token", `{}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		_ = resp.Body.Close()
+		t.Fatalf("expected non-network SNMP poll rejection, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
 }
 
 func TestSNMPPDUValue(t *testing.T) {

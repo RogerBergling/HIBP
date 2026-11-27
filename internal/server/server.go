@@ -293,6 +293,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/cleanup", s.auth(s.handleCleanup))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/reboot", s.auth(s.handleReboot))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/system-info", s.auth(s.handleSystemInfo))
+	s.mux.HandleFunc("POST /api/v1/hosts/{id}/snmp/poll", s.auth(s.handleSNMPPoll))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/docker/list", s.auth(s.handleDockerList))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/docker/check", s.auth(s.handleDockerCheck))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/docker/check-all", s.auth(s.handleDockerCheckAll))

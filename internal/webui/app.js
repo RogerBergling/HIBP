@@ -5854,11 +5854,31 @@ async function showNetworkHostModal(host) {
   form.append(valuesCard);
 
   const actions = el('div', 'modal-actions');
+  const poll = el('button', 'btn', 'Poll SNMP now');
+  poll.type = 'button';
+  poll.title = 'Run an immediate poll using the saved SNMP settings';
+  poll.addEventListener('click', async () => {
+    try {
+      const result = await api('/api/v1/hosts/' + encodeURIComponent(host.id) + '/snmp/poll', {
+        method: 'POST', body: '{}',
+      });
+      if (result.state && result.state.last_error) {
+        toast('SNMP poll failed: ' + result.state.last_error, 'error');
+        return;
+      }
+      toast('SNMP poll completed', 'ok');
+      close();
+      await loadAll({ silent: true });
+      await showNetworkHostModal(host);
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  });
   const reset = el('button', 'btn', 'Use fleet defaults');
   reset.type = 'button';
   const save = el('button', 'btn primary', 'Save network settings');
   save.type = 'submit';
-  actions.append(reset, save);
+  actions.append(poll, reset, save);
   form.append(actions);
   const close = openModal('Network — ' + host.name, form, null, 'wide');
 
