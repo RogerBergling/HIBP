@@ -139,7 +139,7 @@
         </button>
         <button class="nav-item" data-view="events">
           <span class="ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 3l7 3v5.2c0 4.4-2.9 7.6-7 9.8-4.1-2.2-7-5.4-7-9.8V6l7-3z" stroke="currentColor" stroke-width="1.6"/><path d="M12 8v4m0 3h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></span>
-          Security events
+          Security dashboard
           <span id="nav-event-count" class="nav-badge">0</span>
         </button>
         <button class="nav-item" data-view="schedules">
@@ -372,7 +372,7 @@
             <div class="page-sub">Host health, Docker, services, and standalone web endpoints with email alerts.</div>
           </div>
           <div class="head-actions">
-            <button class="btn" id="monitor-events" type="button">Security events</button>
+            <button class="btn" id="monitor-events" type="button">Security dashboard</button>
             <button class="btn" id="monitor-notifications" type="button">Email settings</button>
             <button class="btn" id="monitor-add-web" type="button">Web service</button>
             <button class="btn primary" id="monitor-add" type="button">Add monitor</button>
@@ -455,25 +455,58 @@
       <section id="view-events" class="hidden">
         <div class="page-head">
           <div>
-            <div class="page-title">Security and service events</div>
-            <div class="page-sub">Normalized syslog, authentication, and service events with retention.</div>
+            <div class="page-title">Security dashboard</div>
+            <div class="page-sub" id="events-page-sub">Critical, warning, and informational events from syslog, authentication, and services.</div>
           </div>
           <div class="head-actions">
             <button class="btn" id="events-refresh" type="button">Refresh</button>
             <button class="btn danger" id="events-clear" type="button">Clear events</button>
           </div>
         </div>
-        <div class="form-row" style="margin-bottom:12px">
+        <div class="security-cards" id="security-cards"></div>
+        <div class="security-breakdowns">
+          <section class="card security-panel">
+            <div class="card-head">
+              <div class="card-title">Top categories</div>
+              <div class="card-actions" id="event-categories-range"></div>
+            </div>
+            <div class="security-panel-body" id="event-categories"></div>
+          </section>
+          <section class="card security-panel">
+            <div class="card-head">
+              <div class="card-title">Hosts</div>
+              <div class="card-actions" id="event-hosts-range"></div>
+            </div>
+            <div class="security-panel-body" id="event-hosts"></div>
+          </section>
+        </div>
+        <div class="security-filter-bar">
+          <label class="field">Range
+            <select id="event-window">
+              <option value="24h" selected>Last 24 hours</option>
+              <option value="7d">Last 7 days</option>
+              <option value="all">All retained</option>
+            </select>
+          </label>
+          <label class="field">Severity
+            <select id="event-severity-filter">
+              <option value="">All severities</option>
+              <option value="critical">Critical</option>
+              <option value="warning">Warning</option>
+              <option value="info">Info</option>
+            </select>
+          </label>
           <label class="field">Source
             <select id="event-source-filter"><option value="">All sources</option></select>
           </label>
-          <label class="field">Search
+          <label class="field security-search">Search
             <input id="event-search" type="search" placeholder="host, category, severity, message">
           </label>
+          <button class="btn" id="event-filters-reset" type="button">Reset filters</button>
         </div>
-        <section class="card table-card">
+        <section class="card table-card" id="events-table-card">
           <div class="card-head">
-            <div class="card-title">Recent events</div>
+            <div class="card-title">Events</div>
             <div class="card-actions" id="events-summary"></div>
           </div>
           <div class="table-wrap">
@@ -494,7 +527,7 @@
             </table>
           </div>
         </section>
-        <p class="field-note">Network-device syslog events appear here. If this is empty, verify the syslog receiver is listening, the UDM sends to the correct HIBP IP and port, and the UDM source IP matches the host address or an extra syslog source IP.</p>
+        <p class="field-note">Counts cover the selected range and the whole retained event store; the table loads the latest 200 matching events. Click a severity card to filter, and click any row for full details. Network-device syslog events appear here. If this is empty, verify the syslog receiver, the UDM destination IP and port, and that the UDM source IP matches the host address or an extra syslog source IP.</p>
       </section>
       <section id="view-schedules" class="hidden">
         <div class="page-head">

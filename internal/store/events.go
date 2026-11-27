@@ -72,11 +72,37 @@ func (s *Store) AddHostEvents(hostID string, events []HostEvent) error {
 }
 
 func (s *Store) ListHostEvents(limit int) ([]HostEvent, error) {
+	return s.listHostEvents(limit, "", "")
+}
+
+// ListHostEventsFiltered optionally restricts the list to one severity so a
+// dashboard severity filter can reach events older than the newest page.
+func (s *Store) ListHostEventsFiltered(limit int, since, severity string) ([]HostEvent, error) {
+	return s.listHostEvents(limit, since, severity)
+}
+
+func (s *Store) listHostEvents(limit int, since, severity string) ([]HostEvent, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
-	rows, err := s.db.Query(`SELECT id,host_id,event_id,source,category,severity,unit,username,
-		remote_ip,message,occurred_at,received_at FROM host_events ORDER BY id DESC LIMIT ?`, limit)
+	query := `SELECT id,host_id,event_id,source,category,severity,unit,username,
+		remote_ip,message,occurred_at,received_at FROM host_events`
+	where := make([]string, 0, 2)
+	args := []any{}
+	if since != "" {
+		where = append(where, "occurred_at>=?")
+		args = append(args, since)
+	}
+	if severity != "" {
+		where = append(where, "severity=?")
+		args = append(args, severity)
+	}
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+	query += " ORDER BY id DESC LIMIT ?"
+	args = append(args, limit)
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -92,6 +118,117 @@ func (s *Store) ListHostEvents(limit int) ([]HostEvent, error) {
 		events = append(events, event)
 	}
 	return events, rows.Err()
+}
+
+// HostEventSummaryItem groups events by category or host.
+type HostEventSummaryItem struct {
+	Name     string `json:"name"`
+	Total    int    `json:"total"`
+	Critical int    `json:"critical"`
+	Warning  int    `json:"warning"`
+}
+
+// HostEventSummary powers the security dashboard. Counts cover the requested
+// time window, not just the bounded event list.
+type HostEventSummary struct {
+	Total          int                    `json:"total"`
+	Critical       int                    `json:"critical"`
+	Warning        int                    `json:"warning"`
+	Info           int                    `json:"info"`
+	Other          int                    `json:"other"`
+	LastOccurredAt string                 `json:"last_occurred_at"`
+	LastCritical   string                 `json:"last_critical"`
+	LastWarning    string                 `json:"last_warning"`
+	LastInfo       string                 `json:"last_info"`
+	Categories     []HostEventSummaryItem `json:"categories"`
+	Hosts          []HostEventSummaryItem `json:"hosts"`
+}
+
+// SummarizeHostEvents aggregates events for the security dashboard. An empty
+// since value covers every retained event.
+func (s *Store) SummarizeHostEvents(since string) (HostEventSummary, error) {
+	summary := HostEventSummary{
+		Categories: make([]HostEventSummaryItem, 0),
+		Hosts:      make([]HostEventSummaryItem, 0),
+	}
+	where := ""
+	args := []any{}
+	if since != "" {
+		where = " WHERE occurred_at>=?"
+		args = append(args, since)
+	}
+	rows, err := s.db.Query(`SELECT severity,COUNT(*),COALESCE(MAX(occurred_at),'')
+		FROM host_events`+where+` GROUP BY severity`, args...)
+	if err != nil {
+		return summary, err
+	}
+	for rows.Next() {
+		var severity, last string
+		var count int
+		if err := rows.Scan(&severity, &count, &last); err != nil {
+			_ = rows.Close()
+			return summary, err
+		}
+		summary.Total += count
+		switch severity {
+		case "critical":
+			summary.Critical = count
+			summary.LastCritical = last
+		case "warning":
+			summary.Warning = count
+			summary.LastWarning = last
+		case "info":
+			summary.Info = count
+			summary.LastInfo = last
+		default:
+			summary.Other += count
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return summary, err
+	}
+	if err := s.db.QueryRow(`SELECT COALESCE(MAX(occurred_at),'') FROM host_events`+where,
+		args...).Scan(&summary.LastOccurredAt); err != nil {
+		return summary, err
+	}
+	categoryRows, err := s.db.Query(`SELECT category,COUNT(*),
+		SUM(CASE WHEN severity='critical' THEN 1 ELSE 0 END),
+		SUM(CASE WHEN severity='warning' THEN 1 ELSE 0 END)
+		FROM host_events`+where+` GROUP BY category
+		ORDER BY SUM(CASE WHEN severity='critical' THEN 1 ELSE 0 END) DESC,
+		COUNT(*) DESC,category LIMIT 8`, args...)
+	if err != nil {
+		return summary, err
+	}
+	for categoryRows.Next() {
+		var item HostEventSummaryItem
+		if err := categoryRows.Scan(&item.Name, &item.Total, &item.Critical, &item.Warning); err != nil {
+			_ = categoryRows.Close()
+			return summary, err
+		}
+		summary.Categories = append(summary.Categories, item)
+	}
+	if err := categoryRows.Close(); err != nil {
+		return summary, err
+	}
+	hostRows, err := s.db.Query(`SELECT host_id,COUNT(*),
+		SUM(CASE WHEN severity='critical' THEN 1 ELSE 0 END),
+		SUM(CASE WHEN severity='warning' THEN 1 ELSE 0 END)
+		FROM host_events`+where+` GROUP BY host_id
+		ORDER BY SUM(CASE WHEN severity='critical' THEN 1 ELSE 0 END) DESC,
+		COUNT(*) DESC,host_id LIMIT 8`, args...)
+	if err != nil {
+		return summary, err
+	}
+	for hostRows.Next() {
+		var item HostEventSummaryItem
+		if err := hostRows.Scan(&item.Name, &item.Total, &item.Critical, &item.Warning); err != nil {
+			_ = hostRows.Close()
+			return summary, err
+		}
+		summary.Hosts = append(summary.Hosts, item)
+	}
+	return summary, hostRows.Close()
 }
 
 func (s *Store) CountHostEventsSince(hostID, category, since string) (int, error) {

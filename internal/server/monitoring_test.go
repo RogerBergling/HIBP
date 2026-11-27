@@ -850,6 +850,103 @@ func TestNetworkMonitorValidation(t *testing.T) {
 	}
 }
 
+func TestParseEventWindow(t *testing.T) {
+	tests := []struct {
+		raw    string
+		window string
+		hasCut bool
+	}{
+		{"", "all", false},
+		{"all", "all", false},
+		{"unknown", "all", false},
+		{"24h", "24h", true},
+		{"7d", "7d", true},
+	}
+	for _, test := range tests {
+		window, since := parseEventWindow(test.raw)
+		if window != test.window || (since != "") != test.hasCut {
+			t.Fatalf("%q: got %q/%q, want %q (cutoff=%t)", test.raw, window, since, test.window, test.hasCut)
+		}
+		if since != "" {
+			if _, err := time.Parse(time.RFC3339Nano, since); err != nil {
+				t.Fatalf("%q: invalid cutoff %q: %v", test.raw, since, err)
+			}
+		}
+	}
+}
+
+func TestEventsWindowSummaryAPI(t *testing.T) {
+	ts, db := testServer(t)
+	host, err := db.CreateHost(store.Host{
+		Name: "udm", Address: "192.168.4.1", AuthType: "network",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	recent := now.Add(-time.Hour).Format(time.RFC3339Nano)
+	old := now.Add(-48 * time.Hour).Format(time.RFC3339Nano)
+	if err := db.AddHostEvents(host.ID, []store.HostEvent{
+		{EventID: "window-1", Source: "syslog", Category: "network_wan", Severity: "critical", Message: "WAN down", OccurredAt: recent},
+		{EventID: "window-2", Source: "syslog", Category: "network_link", Severity: "warning", Message: "link down", OccurredAt: recent},
+		{EventID: "window-3", Source: "syslog", Category: "syslog", Severity: "info", Message: "informational", OccurredAt: old},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	type eventsResponse struct {
+		Events   []store.HostEvent      `json:"events"`
+		Summary  store.HostEventSummary `json:"summary"`
+		Window   string                 `json:"window"`
+		Severity string                 `json:"severity"`
+	}
+	resp := request(t, http.MethodGet, ts.URL+"/api/v1/events?window=24h", "test-token", "")
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		t.Fatalf("events request failed: %d %s", resp.StatusCode, raw)
+	}
+	var recentResponse eventsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&recentResponse); err != nil {
+		_ = resp.Body.Close()
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if recentResponse.Window != "24h" || len(recentResponse.Events) != 2 ||
+		recentResponse.Summary.Total != 2 || recentResponse.Summary.Critical != 1 ||
+		recentResponse.Summary.Warning != 1 {
+		t.Fatalf("unexpected 24h response: %+v", recentResponse)
+	}
+	resp = request(t, http.MethodGet, ts.URL+"/api/v1/events?window=24h&severity=critical", "test-token", "")
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		t.Fatalf("filtered events request failed: %d", resp.StatusCode)
+	}
+	var filteredResponse eventsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&filteredResponse); err != nil {
+		_ = resp.Body.Close()
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if filteredResponse.Severity != "critical" || len(filteredResponse.Events) != 1 ||
+		filteredResponse.Events[0].Severity != "critical" || filteredResponse.Summary.Total != 2 {
+		t.Fatalf("unexpected filtered response: %+v", filteredResponse)
+	}
+	resp = request(t, http.MethodGet, ts.URL+"/api/v1/events", "test-token", "")
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		t.Fatalf("default events request failed: %d", resp.StatusCode)
+	}
+	var allResponse eventsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&allResponse); err != nil {
+		_ = resp.Body.Close()
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if allResponse.Window != "all" || len(allResponse.Events) != 3 || allResponse.Summary.Total != 3 {
+		t.Fatalf("unexpected default response: %+v", allResponse)
+	}
+}
+
 func TestClearEventsAndAlertsAPI(t *testing.T) {
 	ts, db := testServer(t)
 	host, err := db.CreateHost(store.Host{

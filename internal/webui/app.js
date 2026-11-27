@@ -10,6 +10,10 @@ const state = {
   monitors: [],
   alerts: [],
   events: [],
+  eventSummary: null,
+  eventWindow: '24h',
+  eventSeverity: '',
+  eventRequest: 0,
   jobs: [],
   jobDetail: null,
   schedules: [],
@@ -517,7 +521,7 @@ function updateUserDisplay() {
 function setView(view) {
   state.view = view;
   const sections = ['dashboard', 'hosts', 'audit', 'monitoring', 'events', 'schedules'];
-  const labels = { dashboard: 'Overview', hosts: 'Hosts', audit: 'Audit log', monitoring: 'Monitoring', events: 'Security events', schedules: 'Schedules' };
+  const labels = { dashboard: 'Overview', hosts: 'Hosts', audit: 'Audit log', monitoring: 'Monitoring', events: 'Security dashboard', schedules: 'Schedules' };
   for (const section of sections) {
     const node = $('view-' + section);
     if (node) node.classList.toggle('hidden', section !== view);
@@ -527,7 +531,7 @@ function setView(view) {
   }
   $('crumb-view').textContent = labels[view] || 'Overview';
   if (view === 'monitoring') renderMonitoring();
-  if (view === 'events') renderMonitoring();
+  if (view === 'events') renderEventTable();
   if (view === 'schedules') renderSchedules();
 }
 
@@ -907,6 +911,7 @@ async function signOut() {
 async function loadAll(options = {}) {
   if (autoRefreshState.loading && !options.force) return;
   autoRefreshState.loading = true;
+  const eventRequest = ++state.eventRequest;
   try {
     const [status, hosts, audit, monitors, alerts, events, schedules, runs, jobs] = await Promise.all([
       api('/api/v1/status'),
@@ -914,7 +919,7 @@ async function loadAll(options = {}) {
       api('/api/v1/audit?limit=200'),
       api('/api/v1/monitors'),
       api('/api/v1/alerts?limit=200'),
-      api('/api/v1/events?limit=200'),
+      api(eventsQuery(200)),
       api('/api/v1/schedules'),
       api('/api/v1/runs?limit=100'),
       api('/api/v1/jobs?limit=40'),
@@ -924,7 +929,10 @@ async function loadAll(options = {}) {
     state.audit = audit.entries || [];
     state.monitors = monitors.monitors || [];
     state.alerts = alerts.alerts || [];
-    state.events = events.events || [];
+    if (eventRequest === state.eventRequest) {
+      state.events = events.events || [];
+      state.eventSummary = events.summary || null;
+    }
     state.jobs = jobs.jobs || [];
     state.schedules = schedules.schedules || [];
     state.runs = runs.runs || [];
@@ -1978,12 +1986,211 @@ function emptyTableRow(columns, message) {
   return row;
 }
 
+function eventWindowLabel() {
+  switch (state.eventWindow) {
+    case '24h': return 'last 24 hours';
+    case '7d': return 'last 7 days';
+    default: return 'all retained events';
+  }
+}
+
+function eventSummaryData() {
+  const events = state.events || [];
+  const source = state.eventSummary || {};
+  const summary = {
+    total: Number(source.total) || 0,
+    critical: Number(source.critical) || 0,
+    warning: Number(source.warning) || 0,
+    info: Number(source.info) || 0,
+    other: Number(source.other) || 0,
+    last_occurred_at: source.last_occurred_at || '',
+    last_critical: source.last_critical || '',
+    last_warning: source.last_warning || '',
+    last_info: source.last_info || '',
+    categories: Array.isArray(source.categories) ? source.categories : [],
+    hosts: Array.isArray(source.hosts) ? source.hosts : [],
+  };
+  if (state.eventSummary) return summary;
+
+  // Fallback for older API responses: summarize the bounded event list.
+  const categories = new Map();
+  const hosts = new Map();
+  const add = (map, name, severity) => {
+    const item = map.get(name) || { name, total: 0, critical: 0, warning: 0 };
+    item.total += 1;
+    if (severity === 'critical') item.critical += 1;
+    if (severity === 'warning') item.warning += 1;
+    map.set(name, item);
+  };
+  for (const record of events) {
+    const severity = String(record.severity || 'info');
+    summary.total += 1;
+    if (severity === 'critical') {
+      summary.critical += 1;
+      if (!summary.last_critical) summary.last_critical = record.occurred_at || '';
+    } else if (severity === 'warning') {
+      summary.warning += 1;
+      if (!summary.last_warning) summary.last_warning = record.occurred_at || '';
+    } else if (severity === 'info') {
+      summary.info += 1;
+      if (!summary.last_info) summary.last_info = record.occurred_at || '';
+    } else {
+      summary.other += 1;
+    }
+    if (!summary.last_occurred_at) summary.last_occurred_at = record.occurred_at || '';
+    add(categories, record.category || 'unknown', severity);
+    add(hosts, record.host_id || 'unknown', severity);
+  }
+  const sortItems = (items) => items.sort((a, b) => b.critical - a.critical || b.warning - a.warning || b.total - a.total).slice(0, 8);
+  summary.categories = sortItems([...categories.values()]);
+  summary.hosts = sortItems([...hosts.values()]);
+  return summary;
+}
+
+function renderSecurityCards() {
+  const container = $('security-cards');
+  if (!container) return;
+  const summary = eventSummaryData();
+  const severitySelect = $('event-severity-filter');
+  const active = severitySelect ? severitySelect.value : '';
+  const range = eventWindowLabel();
+  const cards = [
+    { severity: 'critical', label: 'Critical', count: summary.critical, last: summary.last_critical, hint: 'Needs immediate attention' },
+    { severity: 'warning', label: 'Warning', count: summary.warning, last: summary.last_warning, hint: 'Review when time permits' },
+    { severity: 'info', label: 'Info', count: summary.info, last: summary.last_info, hint: 'Normal operational events' },
+  ];
+  container.replaceChildren();
+  for (const card of cards) {
+    const button = el('button', 'security-card ' + card.severity + (card.count ? ' has-events' : ''));
+    button.type = 'button';
+    button.setAttribute('aria-pressed', String(active === card.severity));
+    button.title = 'Filter events to ' + card.label.toLowerCase();
+    const top = el('div', 'security-card-top');
+    top.append(el('span', 'security-dot ' + card.severity), el('span', '', card.label));
+    top.append(el('span', 'security-card-action', active === card.severity ? 'Filtering' : 'View events'));
+    const value = el('div', 'security-card-value', String(card.count));
+    value.append(el('small', '', card.count === 1 ? 'event' : 'events'));
+    const foot = el('div', 'security-card-foot',
+      card.count === 0 ? 'None in ' + range : (card.last ? 'Latest ' + relativeTime(card.last) : card.hint));
+    button.append(top, value, foot);
+    button.addEventListener('click', async () => {
+      const select = $('event-severity-filter');
+      if (!select) return;
+      const next = select.value === card.severity ? '' : card.severity;
+      select.value = next;
+      state.eventSeverity = next;
+      renderEventTable();
+      const table = $('events-table-card');
+      if (table) table.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      try {
+        await loadEvents();
+      } catch (error) {
+        toast(error.message, 'error');
+      }
+    });
+    container.append(button);
+  }
+}
+
+function renderEventBreakdowns() {
+  const summary = eventSummaryData();
+  const range = eventWindowLabel();
+  const categoriesRange = $('event-categories-range');
+  const hostsRange = $('event-hosts-range');
+  if (categoriesRange) categoriesRange.textContent = range;
+  if (hostsRange) hostsRange.textContent = range;
+  renderEventBreakdown('event-categories', summary.categories, 'category');
+  renderEventBreakdown('event-hosts', summary.hosts, 'host');
+}
+
+function renderEventBreakdown(containerID, items, kind) {
+  const container = $(containerID);
+  if (!container) return;
+  container.replaceChildren();
+  if (!items.length) {
+    container.append(el('div', 'security-breakdown-empty', 'No events in ' + eventWindowLabel() + '.'));
+    return;
+  }
+  const max = Math.max(1, ...items.map((item) => Number(item.total) || 0));
+  for (const item of items) {
+    const host = kind === 'host' ? (state.hosts || []).find((entry) => entry.id === item.name) : null;
+    const label = kind === 'host' ? (host ? host.name : String(item.name || 'unknown').slice(0, 12)) : (item.name || 'unknown');
+    const button = el('button', 'security-bar-row');
+    button.type = 'button';
+    button.title = 'Search the latest events for ' + label;
+    button.setAttribute('aria-label', 'Search the latest events for ' + label + ', ' + item.total + ' events in range');
+    const name = el('span', 'security-bar-label', label);
+    const track = el('span', 'security-bar-track');
+    const fillClass = item.critical ? 'critical' : item.warning ? 'warning' : 'info';
+    const fill = el('span', 'security-bar-fill ' + fillClass);
+    fill.style.width = Math.max(3, Math.round(((Number(item.total) || 0) / max) * 100)) + '%';
+    track.append(fill);
+    const count = el('span', 'security-bar-count', String(item.total));
+    if (item.critical) count.append(el('small', '', item.critical + ' critical'));
+    else if (item.warning) count.append(el('small', '', item.warning + ' warning'));
+    button.append(name, track, count);
+    button.addEventListener('click', async () => {
+      const search = $('event-search');
+      const severity = $('event-severity-filter');
+      const source = $('event-source-filter');
+      if (search) search.value = kind === 'host' ? label : item.name;
+      if (severity) severity.value = '';
+      if (source) source.value = '';
+      state.eventSeverity = '';
+      renderEventTable();
+      const table = $('events-table-card');
+      if (table) table.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      try {
+        await loadEvents();
+      } catch (error) {
+        toast(error.message, 'error');
+      }
+    });
+    container.append(button);
+  }
+}
+
+async function resetEventFilters() {
+  const severity = $('event-severity-filter');
+  const source = $('event-source-filter');
+  const search = $('event-search');
+  if (severity) severity.value = '';
+  if (source) source.value = '';
+  if (search) search.value = '';
+  state.eventSeverity = '';
+  renderEventTable();
+  try {
+    await loadEvents();
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
+function eventsQuery(limit = 200) {
+  let query = '/api/v1/events?limit=' + limit + '&window=' + encodeURIComponent(state.eventWindow || 'all');
+  if (state.eventSeverity) query += '&severity=' + encodeURIComponent(state.eventSeverity);
+  return query;
+}
+
+async function loadEvents() {
+  const request = ++state.eventRequest;
+  const response = await api(eventsQuery(200));
+  if (request !== state.eventRequest) return;
+  state.events = response.events || [];
+  state.eventSummary = response.summary || null;
+  renderEventTable();
+}
+
 function renderEventTable() {
   const eventBody = $('event-body');
   if (!eventBody) return;
   const events = state.events || [];
+  const summary = eventSummaryData();
+  renderSecurityCards();
+  renderEventBreakdowns();
   const sourceSelect = $('event-source-filter');
   const searchInput = $('event-search');
+  const severitySelect = $('event-severity-filter');
   const selectedSource = sourceSelect ? sourceSelect.value : '';
   if (sourceSelect) {
     const sources = [...new Set(events.map((record) => record.source).filter(Boolean))].sort();
@@ -1999,8 +2206,10 @@ function renderEventTable() {
     sourceSelect.value = sources.includes(selectedSource) ? selectedSource : '';
   }
   const sourceFilter = sourceSelect ? sourceSelect.value : '';
+  const severityFilter = severitySelect ? severitySelect.value : '';
   const query = searchInput ? searchInput.value.trim().toLowerCase() : '';
   const filtered = events.filter((record) => {
+    if (severityFilter && String(record.severity || 'info') !== severityFilter) return false;
     if (sourceFilter && record.source !== sourceFilter) return false;
     if (!query) return true;
     const host = (state.hosts || []).find((entry) => entry.id === record.host_id);
@@ -2012,7 +2221,7 @@ function renderEventTable() {
   });
   eventBody.replaceChildren();
   if (!events.length) {
-    eventBody.append(emptyTableRow(8, 'No security or service events collected yet.'));
+    eventBody.append(emptyTableRow(8, 'No events in ' + eventWindowLabel() + '.'));
   } else if (!filtered.length) {
     eventBody.append(emptyTableRow(8, 'No events match the current filter.'));
   }
@@ -2050,12 +2259,26 @@ function renderEventTable() {
     eventBody.append(row);
   }
   const count = $('nav-event-count');
-  if (count) count.textContent = String(events.length);
-  const summary = $('events-summary');
-  if (summary) {
-    summary.textContent = filtered.length === events.length
-      ? events.length + ' recent event' + (events.length === 1 ? '' : 's')
-      : filtered.length + ' of ' + events.length + ' events';
+  if (count) {
+    count.textContent = summary.critical > 999 ? '999+' : String(summary.critical);
+    count.classList.toggle('hidden', summary.critical === 0);
+    count.classList.toggle('critical', summary.critical > 0);
+    count.title = summary.critical + ' critical ' + (summary.critical === 1 ? 'event' : 'events') +
+      ' in ' + eventWindowLabel();
+  }
+  const pageSub = $('events-page-sub');
+  if (pageSub) {
+    pageSub.textContent = summary.critical + ' critical · ' + summary.warning + ' warning · ' +
+      summary.info + ' info · ' + eventWindowLabel();
+  }
+  const summaryNode = $('events-summary');
+  if (summaryNode) {
+    const filtersActive = Boolean(severityFilter || sourceFilter || query);
+    let text = filtersActive
+      ? filtered.length + ' shown · ' + summary.total + ' in ' + eventWindowLabel()
+      : summary.total + ' ' + (summary.total === 1 ? 'event' : 'events') + ' · ' + eventWindowLabel();
+    if (summary.total > events.length) text += ' · latest ' + events.length + ' listed';
+    summaryNode.textContent = text;
   }
 }
 
@@ -7088,8 +7311,22 @@ function bind() {
   $('events-refresh').addEventListener('click', () => loadAll({ force: true }));
   $('events-clear').addEventListener('click', clearSecurityEvents);
   $('alerts-clear').addEventListener('click', clearAlertEvents);
+  $('event-window').addEventListener('change', async (event) => {
+    state.eventWindow = event.target.value || '24h';
+    try {
+      await loadEvents();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  });
+  $('event-severity-filter').addEventListener('change', (event) => {
+    state.eventSeverity = event.target.value || '';
+    renderEventTable();
+    loadEvents().catch((error) => toast(error.message, 'error'));
+  });
   $('event-source-filter').addEventListener('change', renderEventTable);
   $('event-search').addEventListener('input', renderEventTable);
+  $('event-filters-reset').addEventListener('click', resetEventFilters);
   for (const button of document.querySelectorAll('.nav-item[data-view]')) {
     button.addEventListener('click', () => setView(button.dataset.view));
   }

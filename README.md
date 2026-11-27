@@ -1934,9 +1934,12 @@ read-only `auth_type=network` hosts. They have no SSH actions:
     count to warning/critical thresholds inside the configured syslog window.
   - `snmp.value` compares a numeric OID value to warning/critical thresholds.
   - `snmp.poll` alerts when the latest SNMP poll failed or is stale.
-- Syslog events are normalized into the **Security events** view in the left
-  sidebar (also reachable from the **Security events** button on the Monitoring
-  page), so `security.auth` can also count device authentication failures.
+- Syslog events are normalized into the **Security dashboard** in the left
+  sidebar (also reachable from the **Security dashboard** button on the
+  Monitoring page), so `security.auth` can also count device authentication
+  failures. The dashboard shows Critical, Warning, and Info totals for the
+  selected range (last 24 hours, last 7 days, or all retained), plus the top
+  categories and hosts. Click a severity card to filter the event table.
   Security/service events and alert history can be cleared with a typed `CLEAR`
   confirmation. The audit log is append-only and is not cleared; each clear
   action records an audit entry.

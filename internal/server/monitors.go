@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/RogerBergling/hibp/internal/mailer"
 	"github.com/RogerBergling/hibp/internal/store"
@@ -405,7 +406,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			limit = parsed
 		}
 	}
-	events, err := s.store.ListHostEvents(limit)
+	window, since := parseEventWindow(r.URL.Query().Get("window"))
+	severity := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("severity")))
+	switch severity {
+	case "critical", "warning", "info":
+	default:
+		severity = ""
+	}
+	events, err := s.store.ListHostEventsFiltered(limit, since, severity)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -413,5 +421,26 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if events == nil {
 		events = []store.HostEvent{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+	summary, err := s.store.SummarizeHostEvents(since)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"events": events, "summary": summary, "window": window, "severity": severity,
+	})
+}
+
+// parseEventWindow maps the dashboard range selector to a UTC cutoff. The
+// default is "all" so existing API callers keep seeing every retained event.
+func parseEventWindow(raw string) (string, string) {
+	now := time.Now().UTC()
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "24h":
+		return "24h", now.Add(-24 * time.Hour).Format(time.RFC3339Nano)
+	case "7d":
+		return "7d", now.Add(-7 * 24 * time.Hour).Format(time.RFC3339Nano)
+	default:
+		return "all", ""
+	}
 }
