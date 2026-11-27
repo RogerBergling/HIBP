@@ -491,7 +491,7 @@ func (s *Server) runHelper(ctx context.Context, host store.Host, action, sshPass
 func (s *Server) runHelperActionInput(ctx context.Context, host store.Host, action, sshPassword, sudoPassword, input string, timeout time.Duration, args ...string) (string, int, error) {
 	switch action {
 	case "facts", "preview", "check", "apply", "cleanup-check", "cleanup-apply", "reboot", "reboot-check", "system-info", "metrics", "events", "docker-list", "docker-check", "docker-apply", "docker-update-all",
-		"service-restart", "service-enable", "service-disable", "package-remove-preview", "package-remove-apply", "package-install-preview", "package-install-apply":
+		"service-restart", "service-enable", "service-disable", "package-remove-preview", "package-remove-apply", "package-install-preview", "package-install-apply", "checkmk-register":
 	default:
 		return "", 0, errors.New("invalid helper action")
 	}
@@ -521,7 +521,7 @@ func (s *Server) runHelperActionInput(ctx context.Context, host store.Host, acti
 	}
 	if s.demo != nil {
 		switch action {
-		case "service-restart", "service-enable", "service-disable", "package-remove-preview", "package-remove-apply", "package-install-preview", "package-install-apply":
+		case "service-restart", "service-enable", "service-disable", "package-remove-preview", "package-remove-apply", "package-install-preview", "package-install-apply", "checkmk-register":
 			return `{"action":"` + action + `","ok":true,"exit_code":0,"output":"demo: simulated ` + action + `"}`, 0, nil
 		}
 		// Demo hosts use safe-upgrade simulation; the demo fixture does not

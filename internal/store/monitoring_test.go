@@ -94,6 +94,97 @@ func TestMonitorAndServiceLifecycle(t *testing.T) {
 	}
 }
 
+func TestSyncServiceBaselineAddsNewRunningUnits(t *testing.T) {
+	s := openAuthTestStore(t)
+	host, err := s.CreateHost(Host{
+		Name: "web01", Address: "10.0.0.10", Port: 22, Username: "ubuntu",
+		AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SyncServiceBaseline(host.ID, []string{"ssh.service", "cron.service"}, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SyncServiceBaseline(host.ID, []string{"ssh.service", "nginx.service"}, true); err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := s.ListServiceBaseline(host.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	units := map[string]ServiceBaseline{}
+	for _, item := range baseline {
+		units[item.Unit] = item
+	}
+	for _, want := range []string{"ssh.service", "cron.service", "nginx.service"} {
+		if _, ok := units[want]; !ok {
+			t.Fatalf("expected %s in expanded baseline, got %+v", want, baseline)
+		}
+	}
+}
+
+func TestServiceBaselineExclusionsAndReset(t *testing.T) {
+	s := openAuthTestStore(t)
+	host, err := s.CreateHost(Host{
+		Name: "web01", Address: "10.0.0.10", Port: 22, Username: "ubuntu",
+		AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EnsureServiceBaseline(host.ID, []string{"ssh.service", "cron.service", "packagekit.service"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetServiceBaselineExcluded(host.ID, "packagekit.service", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetServiceBaselineExcluded(host.ID, "failed-only.service", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResetServiceBaseline(host.ID, []string{"ssh.service", "nginx.service"}); err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := s.ListServiceBaseline(host.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	units := map[string]ServiceBaseline{}
+	for _, item := range baseline {
+		units[item.Unit] = item
+	}
+	if _, ok := units["cron.service"]; ok {
+		t.Fatalf("non-excluded unit that disappeared survived reset: %+v", baseline)
+	}
+	for _, want := range []string{"ssh.service", "nginx.service"} {
+		item, ok := units[want]
+		if !ok || !item.Expected || item.Excluded {
+			t.Fatalf("expected running unit %s to be reset as expected: %+v", want, item)
+		}
+	}
+	for _, want := range []string{"packagekit.service", "failed-only.service"} {
+		item, ok := units[want]
+		if !ok || !item.Excluded {
+			t.Fatalf("expected exclusion for %s to survive reset: %+v", want, item)
+		}
+	}
+	if err := s.SetServiceBaselineExcluded(host.ID, "packagekit.service", false); err != nil {
+		t.Fatal(err)
+	}
+	baseline, err = s.ListServiceBaseline(host.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range baseline {
+		if item.Unit == "packagekit.service" && item.Excluded {
+			t.Fatalf("expected packagekit.service to be included again: %+v", item)
+		}
+	}
+	if err := s.SetServiceBaselineExcluded(host.ID, "not-tracked.service", false); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected missing baseline unit include to return ErrNoRows, got %v", err)
+	}
+}
+
 func TestServiceBaselineAndDefaultMonitors(t *testing.T) {
 	s := openAuthTestStore(t)
 	host, err := s.CreateHost(Host{

@@ -67,8 +67,8 @@ func (s *Server) validateMonitor(request monitorRequest, monitorID string) (stor
 			return store.Monitor{}, errors.New("docker.project requires a valid Compose project name")
 		}
 	case "docker.container":
-		if !monitorContainerPattern.MatchString(target) {
-			return store.Monitor{}, errors.New("docker.container requires a valid container name")
+		if target != "*" && !monitorContainerPattern.MatchString(target) {
+			return store.Monitor{}, errors.New("docker.container requires a valid container name or * for all containers")
 		}
 	case "service.systemd":
 		if !monitorServicePattern.MatchString(target) {
@@ -237,6 +237,12 @@ func (s *Server) handleUpdateMonitor(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.UpdateMonitor(monitor); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if !monitor.Enabled {
+		if err := s.store.DeleteMonitorStates(monitor.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	_ = s.store.AddAudit(s.auditActor(r), "monitor-update", "monitor", monitor.ID, monitor.Name)
 	monitor.Assignments, _ = s.store.ListMonitorAssignments(monitor.ID)

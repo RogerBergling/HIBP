@@ -226,6 +226,7 @@ func sudoersContent(username string) string {
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper package-remove-apply
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper package-install-preview
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper package-install-apply
+%s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper checkmk-register
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-list
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-check *
 %s ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-apply *

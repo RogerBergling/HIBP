@@ -122,6 +122,7 @@ func (s *Server) cleanupStagedPackages() {
 
 func (s *Server) runJob(ctx context.Context, job store.Job) {
 	defer s.clearJobSudoPassword(job.ID)
+	defer s.clearJobCheckmkPassword(job.ID)
 	payload := parseJobPayload(job.Payload)
 	targets, err := s.store.ListJobTargets(job.ID)
 	if err != nil {
@@ -254,6 +255,13 @@ func truncateJobResult(value string) string {
 	return value[:maxJobResultSize]
 }
 
+func redactJobSecret(value, secret string) string {
+	if secret == "" {
+		return value
+	}
+	return strings.ReplaceAll(value, secret, "[redacted]")
+}
+
 func (s *Server) jobTargetEligible(kind string, host store.Host) error {
 	if err := s.jobHostRunnable(host); err != nil {
 		return err
@@ -383,11 +391,34 @@ func (s *Server) runRunbookJob(ctx context.Context, job store.Job, payload jobPa
 	}
 	spec := *payload.Runbook
 	s.stage(job, host, spec.Action)
-	requestJSON, err := json.Marshal(helper.RunbookRequest{Unit: spec.Unit, Packages: spec.Packages})
+	request := helper.RunbookRequest{Unit: spec.Unit, Packages: spec.Packages}
+	timeout := 15 * time.Minute
+	if spec.Action == "checkmk-register" {
+		if spec.Checkmk == nil {
+			return jobTargetOutcome{Status: store.JobTargetFailed, Stage: "failed", Detail: "Checkmk settings are missing", Error: "checkmk settings are missing"}
+		}
+		password := s.jobCheckmkPassword(job.ID)
+		if password == "" {
+			return jobTargetOutcome{
+				Status: store.JobTargetFailed, Stage: "failed",
+				Detail: "Checkmk password is no longer available; queue a new registration",
+				Error:  "the transient Checkmk password was not retained across the job lifetime",
+			}
+		}
+		request.Checkmk = &helper.CheckmkRegisterRequest{
+			Hostname: spec.Checkmk.Hostname,
+			Server:   spec.Checkmk.Server,
+			Site:     spec.Checkmk.Site,
+			User:     spec.Checkmk.User,
+			Password: password,
+		}
+		timeout = 5 * time.Minute
+	}
+	requestJSON, err := json.Marshal(request)
 	if err != nil {
 		return jobTargetOutcome{Status: store.JobTargetFailed, Stage: "failed", Detail: "encode runbook", Error: err.Error()}
 	}
-	output, code, err := s.runHelperActionInput(ctx, host, spec.Action, "", s.jobSudoPassword(job.ID), string(requestJSON), 15*time.Minute)
+	output, code, err := s.runHelperActionInput(ctx, host, spec.Action, "", s.jobSudoPassword(job.ID), string(requestJSON), timeout)
 	if errors.Is(err, errSudoPasswordRequired) {
 		return jobTargetOutcome{Status: store.JobTargetSkipped, Stage: "skipped", Detail: "sudo -n is not available; provide a shared sudo password or use an interactive runbook", Error: err.Error()}
 	}
@@ -396,6 +427,11 @@ func (s *Server) runRunbookJob(ctx context.Context, job store.Job, payload jobPa
 	}
 	if err != nil {
 		return jobTargetOutcome{Status: store.JobTargetFailed, Stage: "failed", Detail: shortRunSummary(err.Error()), Error: err.Error()}
+	}
+	if request.Checkmk != nil {
+		// Defense in depth: the helper already redacts the password, but never
+		// let a helper regression write it into the durable job result.
+		output = redactJobSecret(output, request.Checkmk.Password)
 	}
 	var result helper.Result
 	if json.Unmarshal([]byte(output), &result) != nil {

@@ -203,7 +203,8 @@ func (s *Server) handleAgentSnapshot(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		if err := s.store.EnsureServiceBaseline(host.ID, request.Services.Running); err != nil {
+		if err := s.store.SyncServiceBaseline(host.ID, request.Services.Running,
+			s.store.ResolveSetting(host.ID, "monitor.service_baseline.auto_add", "1") != "0"); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}

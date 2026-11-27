@@ -153,6 +153,13 @@ cron-based patch schedules are implemented.
   deliberately omits environment variables, command lines, mounts, and secrets.
 - The collector never prompts for credentials. Scheduled collection requires
   the restricted NOPASSWD helper; password-auth hosts are collected manually.
+- Service baseline exclusions, per-host baseline disable, and baseline resets
+  are authenticated admin actions and are audited. Excluding a unit suppresses
+  failed and missing alerts for that host; review the host Services tab and
+  audit entries when alert coverage matters.
+- A `docker.container` monitor with target `*` intentionally treats stopped and
+  exited containers as critical. Use it only where every container must stay
+  running; one-shot jobs need a different monitor type or a named container.
 - Agent hosts use a per-host bearer token. Only a SHA-256 hash is stored; the
   token is shown once and can be rotated or revoked. Agent endpoints accept
   heartbeat, snapshot, and normalized event data for the bound host only; they
@@ -323,6 +330,16 @@ See [Public demo container](docs/demo.md) for deployment details.
   package's maintainer scripts still execute as root. Keep the helper and
   sudoers rule root-owned, restrict the SSH account, and deploy only packages
   from a trusted source. Do not treat this action as a low-risk file copy.
+- The Checkmk registration runbook invokes a fixed `cmk-agent-ctl register`
+  action as root and answers the certificate prompt with `y` on stdin. The
+  registration password is kept only in controller memory for the active job,
+  is never written to the persisted job payload, and is redacted from captured
+  output. It is still passed to `cmk-agent-ctl` as an argv value, so it is
+  briefly visible in the target process list. Use a dedicated Checkmk
+  automation user, restrict who can log in to the target, and review the
+  certificate details in the job output after registration. This action answers
+  the prompt rather than using `--trust-cert`, which keeps certificate changes
+  visible.
 - The reboot action is destructive. Per-host and selected-host reboots require
   explicit confirmation in the API and UI, and selected-host reboots require
   typing `REBOOT`. The controller is detected from its hostname, short hostname,

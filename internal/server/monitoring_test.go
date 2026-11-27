@@ -212,6 +212,20 @@ func TestMonitorCRUDAndValidation(t *testing.T) {
 	}
 	resp.Body.Close()
 
+	wildcard := `{"name":"All containers","type":"docker.container","target":"*","interval_seconds":60,"assignments":[{"scope":"fleet"}]}`
+	resp = request(t, http.MethodPost, base+"/api/v1/monitors", "test-token", wildcard)
+	wildcardBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("docker.container target * should be accepted, got %d %s", resp.StatusCode, wildcardBody)
+	}
+	var wildcardMonitor store.Monitor
+	if err := json.Unmarshal(wildcardBody, &wildcardMonitor); err != nil {
+		t.Fatal(err)
+	}
+	resp = request(t, http.MethodDelete, base+"/api/v1/monitors/"+wildcardMonitor.ID, "test-token", "")
+	resp.Body.Close()
+
 	payload := `{"name":"Web CPU","type":"host.cpu","warning":80,"critical":90,"interval_seconds":60,"repeat_minutes":60,"cooldown_minutes":15,"enabled":true,"assignments":[{"scope":"host","target":"` + host.ID + `"},{"scope":"group","target":"web"}]}`
 	resp = request(t, http.MethodPost, base+"/api/v1/monitors", "test-token", payload)
 	body, _ := io.ReadAll(resp.Body)
@@ -500,6 +514,47 @@ func TestRecordMonitorResultCooldownAndRecovery(t *testing.T) {
 	}
 }
 
+func TestDisablingMonitorClearsRecordedStates(t *testing.T) {
+	ts, db, app := testServerWithApp(t, true)
+	host, err := db.CreateHost(store.Host{
+		Name: "web01", Address: "10.0.0.10", Port: 22, Username: "ubuntu",
+		AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	monitor, err := db.CreateMonitor(store.Monitor{
+		Name: "CPU", Type: "host.cpu", Warning: 80, Critical: 90,
+		IntervalSeconds: 60, RepeatMinutes: 60, CooldownMinutes: 15, Enabled: true,
+		Assignments: []store.MonitorAssignment{{Scope: "host", Target: host.ID}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.recordMonitorResult(monitor, host.ID, host.Name, monitorResult{status: "critical", message: "95%"}, time.Now().UTC())
+	if _, err := db.GetMonitorState(monitor.ID, host.ID); err != nil {
+		t.Fatalf("expected a recorded monitor state: %v", err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"name": "CPU", "type": "host.cpu", "warning": 80, "critical": 90,
+		"interval_seconds": 60, "repeat_minutes": 60, "cooldown_minutes": 15,
+		"enabled": false, "assignments": []map[string]any{{"scope": "host", "target": host.ID}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := request(t, http.MethodPut, ts.URL+"/api/v1/monitors/"+monitor.ID, "test-token", string(payload))
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		t.Fatalf("disable monitor failed: %d %s", resp.StatusCode, raw)
+	}
+	_ = resp.Body.Close()
+	if _, err := db.GetMonitorState(monitor.ID, host.ID); err == nil {
+		t.Fatal("expected disabled monitor state to be cleared")
+	}
+}
+
 func TestMonitorCapabilitySkip(t *testing.T) {
 	app, db, host := newMonitorTestApp(t)
 	if err := db.SaveSystemInfo(host.ID, time.Now().UTC().Format(time.RFC3339Nano),
@@ -564,6 +619,112 @@ func TestServiceBaselineMonitor(t *testing.T) {
 	if result.status != "critical" || !strings.Contains(result.message, "cron.service") {
 		t.Fatalf("expected missing baseline service alert, got %+v", result)
 	}
+
+	if err := db.SetServiceBaselineExcluded(host.ID, "cron.service", true); err != nil {
+		t.Fatal(err)
+	}
+	result = app.evaluateServiceBaseline(host)
+	if result.status != "ok" {
+		t.Fatalf("expected excluded service to be ignored, got %+v", result)
+	}
+
+	if err := db.SetSetting("host:"+host.ID, "monitor.service_baseline.enabled", "0"); err != nil {
+		t.Fatal(err)
+	}
+	result = app.evaluateServiceBaseline(host)
+	if result.status != "ok" || !strings.Contains(result.message, "disabled") {
+		t.Fatalf("expected per-host baseline disable to suppress alerts, got %+v", result)
+	}
+}
+
+func TestDockerAllContainersMonitor(t *testing.T) {
+	app, db, host := newMonitorTestApp(t)
+	if err := db.SaveSystemInfo(host.ID, time.Now().UTC().Format(time.RFC3339Nano),
+		`{"docker":{"available":true}}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveDockerInventory(host.ID, nil, []store.DockerContainer{
+		{ContainerID: "c1", Name: "web-1", State: "running", Health: "healthy"},
+		{ContainerID: "c2", Name: "job-1", State: "exited"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result := app.evaluateDocker(store.Monitor{Type: "docker.container", Target: "*"}, host)
+	if result.status != "critical" || !strings.Contains(result.message, "job-1") {
+		t.Fatalf("expected all-container monitor to report stopped container, got %+v", result)
+	}
+	if err := db.SaveDockerInventory(host.ID, nil, []store.DockerContainer{
+		{ContainerID: "c1", Name: "web-1", State: "running", Health: "healthy"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result = app.evaluateDocker(store.Monitor{Type: "docker.container", Target: "*"}, host)
+	if result.status != "ok" || !strings.Contains(result.message, "1/1") {
+		t.Fatalf("expected all-container monitor to be healthy, got %+v", result)
+	}
+}
+
+func TestServiceBaselineAPI(t *testing.T) {
+	ts, db := testServer(t)
+	host, err := db.CreateHost(store.Host{
+		Name: "web01", Address: "10.0.0.11", Port: 22, Username: "ubuntu",
+		AuthType: "key", KeyPath: "/tmp/key",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveServiceState(host.ID, nil, []string{"ssh.service", "packagekit.service"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.EnsureServiceBaseline(host.ID, []string{"ssh.service", "packagekit.service"}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := request(t, http.MethodGet, ts.URL+"/api/v1/hosts/"+host.ID+"/service-baseline", "test-token", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected baseline GET, got %d", resp.StatusCode)
+	}
+	var view serviceBaselineView
+	if err := json.NewDecoder(resp.Body).Decode(&view); err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if len(view.Baseline) != 2 || len(view.Current) != 2 || !view.Enabled || !view.AutoAdd {
+		t.Fatalf("unexpected baseline view: %+v", view)
+	}
+
+	resp = request(t, http.MethodPut, ts.URL+"/api/v1/hosts/"+host.ID+"/service-baseline/packagekit.service",
+		"test-token", `{"excluded":true}`)
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		t.Fatalf("expected baseline exclude, got %d %s", resp.StatusCode, raw)
+	}
+	_ = resp.Body.Close()
+	baseline, err := db.ListServiceBaseline(host.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range baseline {
+		if item.Unit == "packagekit.service" && !item.Excluded {
+			t.Fatalf("expected packagekit.service to be excluded: %+v", item)
+		}
+	}
+
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/hosts/"+host.ID+"/service-baseline/reset", "test-token", `{}`)
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		t.Fatalf("expected baseline reset, got %d %s", resp.StatusCode, raw)
+	}
+	_ = resp.Body.Close()
+
+	resp = request(t, http.MethodPut, ts.URL+"/api/v1/hosts/"+host.ID+"/service-baseline/not-tracked.service",
+		"test-token", `{"excluded":false}`)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected missing baseline include to return 404, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
 }
 
 func TestDockerHealthMonitor(t *testing.T) {

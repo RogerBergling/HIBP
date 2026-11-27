@@ -1545,6 +1545,7 @@ function hostRow(host) {
   const actionsTd = el('td');
   const actions = el('div', 'actions');
   actions.append(actionButton('Edit', () => showAddHostModal(host)));
+  actions.append(actionButton('Services', () => showHostDetails(host, 'services')));
   if (host.auth_type === 'agent') {
     actions.append(actionButton('Agent token', () => showAgentTokenModal(host)));
   } else {
@@ -1635,13 +1636,13 @@ const MONITOR_TYPES = {
     note: 'Critical when no container in the Compose project is running or any container is unhealthy.',
   },
   'docker.container': {
-    label: 'Container', target: 'container', targetLabel: 'Container name',
-    placeholder: 'app-web-1', threshold: 'none',
-    note: 'Critical when the container is missing, stopped, or unhealthy.',
+    label: 'Container', target: 'container', targetLabel: 'Container name or *',
+    placeholder: 'app-web-1 or *', threshold: 'none',
+    note: 'A named container is critical when missing, stopped, or unhealthy. Use * to monitor every container on each assigned host, including stopped containers. The fleet Docker health monitor ignores cleanly stopped containers.',
   },
   'docker.health': {
     label: 'Docker health', target: 'none', threshold: 'none',
-    note: 'Fleet-wide Docker health. Critical when a container is unhealthy, restarting, or dead. Stopped containers are reported separately until a container baseline is added.',
+    note: 'Fleet-wide Docker health. Critical when a container is unhealthy, restarting, or dead. Cleanly stopped containers are ignored here; use a Container monitor with target * for a strict all-container check.',
   },
   'service.systemd': {
     label: 'systemd service', target: 'service', targetLabel: 'Unit name',
@@ -1650,7 +1651,7 @@ const MONITOR_TYPES = {
   },
   'service.baseline': {
     label: 'Service baseline', target: 'none', threshold: 'none',
-    note: 'Compares running systemd services with the first collected baseline for each host. Alerts on failed services and baseline units that are no longer running. Disable after reviewing the baseline if the default is too noisy.',
+    note: 'Compares running systemd services with the per-host baseline. Alerts on failed services and expected baseline units that are no longer running. Exclude units or disable monitoring per host from the host Services tab.',
   },
   'security.auth': {
     label: 'Failed authentication', target: 'none', threshold: 'number',
@@ -1714,9 +1715,12 @@ function formatMonitorInterval(seconds) {
 }
 
 function monitorAggregate(monitor) {
+  if (!monitor.enabled) {
+    return { status: 'unknown', summary: 'disabled', title: 'Monitor is disabled.', detail: '' };
+  }
   const states = monitor.states || [];
   if (!states.length) {
-    return { status: 'unknown', summary: 'not checked', title: 'No checks recorded yet.' };
+    return { status: 'unknown', summary: 'not checked', title: 'No checks recorded yet.', detail: '' };
   }
   const counts = { critical: 0, warning: 0, unknown: 0, ok: 0 };
   let worst = 'ok';
@@ -1733,12 +1737,66 @@ function monitorAggregate(monitor) {
   const title = states
     .map((entry) => monitorHostName(entry.host_id) + ': ' + entry.status + ' — ' + (entry.message || 'no detail'))
     .join('\n');
-  return { status: worst, summary: parts.join(' · '), title };
+  const worstState = states
+    .filter((entry) => entry.status !== 'ok' && MONITOR_STATUS_RANK[entry.status] === MONITOR_STATUS_RANK[worst])
+    .sort((left, right) => monitorHostName(left.host_id).localeCompare(monitorHostName(right.host_id)))[0];
+  const detail = worstState
+    ? monitorHostName(worstState.host_id) + ': ' + (worstState.message || worstState.status)
+    : '';
+  return { status: worst, summary: parts.join(' · '), title, detail };
 }
 
 function monitorStatusPill(status, label = '') {
   const cls = status === 'ok' ? 'reachable' : status === 'warning' ? 'review' : status === 'critical' ? 'unreachable' : 'unknown';
   return el('span', 'pill ' + cls, '● ' + (label || status));
+}
+
+function showMonitorDetails(monitor) {
+  const body = el('div', 'modal-body');
+  body.append(el('p', 'muted', 'Latest per-host results. The alert table keeps the full delivery history.'));
+  const states = (monitor.states || []).slice().sort((left, right) => {
+    const rank = (status) => (Object.prototype.hasOwnProperty.call(MONITOR_STATUS_RANK, status) ? MONITOR_STATUS_RANK[status] : 1);
+    return rank(right.status) - rank(left.status) ||
+      monitorHostName(left.host_id).localeCompare(monitorHostName(right.host_id));
+  });
+  if (!monitor.enabled) {
+    body.append(el('div', 'empty-state', 'This monitor is disabled. Enable it and run a check to produce results.'));
+  } else if (!states.length) {
+    body.append(el('div', 'empty-state', 'No checks recorded yet. Use Check on the monitor row to evaluate it now.'));
+  } else {
+    const wrap = el('div', 'scroll-list');
+    const table = el('table');
+    const head = el('tr');
+    for (const label of ['Host', 'Status', 'Detail', 'Checked', '']) head.append(el('th', '', label));
+    table.append(head);
+    for (const entry of states) {
+      const row = el('tr');
+      const statusTd = el('td');
+      statusTd.append(monitorStatusPill(entry.status));
+      const detailTd = el('td', 'alert-detail', entry.message || '—');
+      detailTd.title = entry.message || '';
+      const checkedTd = el('td');
+      const checked = el('span', 'nowrap', relativeTime(entry.checked_at));
+      if (entry.checked_at) checked.title = new Date(entry.checked_at).toLocaleString();
+      checkedTd.append(checked);
+      const actionTd = el('td');
+      const host = entry.host_id ? (state.hosts || []).find((candidate) => candidate.id === entry.host_id) : null;
+      if (host) {
+        actionTd.append(actionButton('Services', () => showHostDetails(host, 'services')));
+      }
+      row.append(el('td', '', monitorHostName(entry.host_id)), statusTd, detailTd, checkedTd, actionTd);
+      table.append(row);
+    }
+    wrap.append(table);
+    body.append(wrap);
+  }
+  const actions = el('div', 'modal-actions');
+  const close = el('button', 'btn primary', 'Close');
+  close.type = 'button';
+  actions.append(close);
+  body.append(actions);
+  const closeFn = openModal('Monitor details — ' + monitor.name, body, null, 'wide');
+  close.addEventListener('click', closeFn);
 }
 
 function monitorMapScopeKey(monitor) {
@@ -1821,7 +1879,7 @@ function monitorMapNode(monitor, aggregate) {
   node.append(meta);
 
   const foot = el('div', 'monitor-node-foot');
-  foot.append(el('span', 'monitor-node-status', aggregate.summary || status));
+  foot.append(el('span', 'monitor-node-status', aggregate.detail || aggregate.summary || status));
   foot.append(el('span', 'monitor-node-checked', monitor.enabled ? relativeTime(monitor.last_checked_at) : 'disabled'));
   node.append(foot);
   node.addEventListener('click', () => showMonitorModal(monitor));
@@ -1941,10 +1999,11 @@ function renderMonitoring() {
     const intervalTd = el('td', '', formatMonitorInterval(monitor.interval_seconds));
 
     const statusTd = el('td');
-    const statusPill = monitorStatusPill(aggregate.status);
+    const statusPill = monitorStatusPill(aggregate.status, aggregate.summary === 'disabled' ? 'disabled' : '');
     statusPill.title = aggregate.title;
     statusTd.append(statusPill);
-    const statusSummary = el('div', 'muted monitor-status-summary', aggregate.summary);
+    const statusText = aggregate.detail ? aggregate.summary + ' · ' + aggregate.detail : aggregate.summary;
+    const statusSummary = el('div', 'muted monitor-status-summary', statusText);
     statusSummary.title = aggregate.title;
     statusTd.append(statusSummary);
 
@@ -1956,6 +2015,7 @@ function renderMonitoring() {
     const actionsTd = el('td');
     const actions = el('div', 'actions');
     actions.append(actionButton('Edit', () => showMonitorModal(monitor)));
+    actions.append(actionButton('Details', () => showMonitorDetails(monitor)));
     const check = actionButton('Check', () => checkMonitorNow(monitor));
     check.disabled = !monitor.enabled;
     if (!monitor.enabled) check.title = 'Enable the monitor first';
@@ -3263,7 +3323,7 @@ async function showRunbookModal(hosts) {
     return;
   }
   const body = el('form', 'modal-body');
-  body.append(el('p', 'muted', 'Runbooks are typed, allowlisted actions. The controller validates parameters again before the helper executes them. Package actions have separate preview and apply steps.'));
+  body.append(el('p', 'muted', 'Runbooks are typed, allowlisted actions. The controller validates parameters again before the helper executes them. Package actions have separate preview and apply steps. Checkmk registration answers the certificate prompt with y.'));
   const action = selectField(body, 'Action', 'runbook_action', [
     ['service-restart', 'Restart service'],
     ['service-enable', 'Enable service'],
@@ -3272,12 +3332,30 @@ async function showRunbookModal(hosts) {
     ['package-remove-apply', 'Remove package'],
     ['package-install-preview', 'Preview repository package install'],
     ['package-install-apply', 'Install repository package'],
+    ['checkmk-register', 'Register with Checkmk (Linux)'],
   ]);
   const parameter = inputField(body, 'Service unit', 'runbook_parameter', 'nginx.service');
-  const note = el('p', 'field-note', 'Service actions require one systemd unit. Package actions accept comma-separated package names and use the target distribution package manager.');
+  const note = el('p', 'field-note', 'Service actions require one systemd unit. Package actions accept comma-separated package names. Checkmk registration runs cmk-agent-ctl as root and answers y to the certificate prompt; the hostname must match Checkmk Setup, and blank uses the target local hostname. The registration password is kept only in controller memory.');
   body.append(note);
+
+  const checkmkFields = el('div');
+  checkmkFields.style.display = 'none';
+  const checkmkRow = el('div', 'form-row');
+  const checkmkHostname = inputField(checkmkRow, 'Target hostname', 'checkmk_hostname', 'blank = target local hostname');
+  const checkmkServer = inputField(checkmkRow, 'Checkmk server', 'checkmk_server', 'checkmk:8000');
+  const checkmkRow2 = el('div', 'form-row three');
+  const checkmkSite = inputField(checkmkRow2, 'Site', 'checkmk_site', 'Bergling');
+  const checkmkUser = inputField(checkmkRow2, 'User', 'checkmk_user', 'cmkadmin');
+  const checkmkPassword = inputField(checkmkRow2, 'Password', 'checkmk_password', 'registration password', 'password');
+  checkmkFields.append(checkmkRow, checkmkRow2);
+  body.append(checkmkFields);
+
+  const parameterField = parameter.closest('label.field');
   const sync = () => {
+    const checkmk = action.value === 'checkmk-register';
     const pkg = action.value.startsWith('package-');
+    if (parameterField) parameterField.style.display = checkmk ? 'none' : '';
+    checkmkFields.style.display = checkmk ? '' : 'none';
     setFieldLabel(parameter, pkg ? 'Package names' : 'Service unit');
     parameter.placeholder = pkg ? 'checkmk-agent, checkmk-agent-plugins' : 'nginx.service';
   };
@@ -3294,22 +3372,46 @@ async function showRunbookModal(hosts) {
   cancel.addEventListener('click', close);
   body.addEventListener('submit', async (event) => {
     event.preventDefault();
-    const value = parameter.value.trim();
-    if (!value) {
-      toast('Enter a service unit or package name', 'error');
-      return;
-    }
-    const runbook = { action: action.value };
-    let confirm = 'run';
-    if (action.value.startsWith('service-')) {
-      runbook.unit = value;
-    } else {
-      runbook.packages = [...new Set(value.split(/[,\s]+/).map((item) => item.trim()).filter(Boolean))];
-      if (!runbook.packages.length) {
-        toast('Enter at least one package name', 'error');
+    let runbook;
+    let confirm;
+    if (action.value === 'checkmk-register') {
+      const server = checkmkServer.value.trim();
+      const site = checkmkSite.value.trim();
+      const user = checkmkUser.value.trim();
+      const password = checkmkPassword.value;
+      if (!server || !site || !user || !password) {
+        toast('Enter the Checkmk server, site, user, and password', 'error');
         return;
       }
-      confirm = action.value.endsWith('-preview') ? 'preview' : action.value.startsWith('package-remove') ? 'remove' : 'install';
+      runbook = {
+        action: 'checkmk-register',
+        checkmk: {
+          hostname: checkmkHostname.value.trim(),
+          server,
+          site,
+          user,
+          password,
+        },
+      };
+      confirm = 'register';
+    } else {
+      const value = parameter.value.trim();
+      if (!value) {
+        toast('Enter a service unit or package name', 'error');
+        return;
+      }
+      runbook = { action: action.value };
+      confirm = 'run';
+      if (action.value.startsWith('service-')) {
+        runbook.unit = value;
+      } else {
+        runbook.packages = [...new Set(value.split(/[,\s]+/).map((item) => item.trim()).filter(Boolean))];
+        if (!runbook.packages.length) {
+          toast('Enter at least one package name', 'error');
+          return;
+        }
+        confirm = action.value.endsWith('-preview') ? 'preview' : action.value.startsWith('package-remove') ? 'remove' : 'install';
+      }
     }
     const usernames = new Set(targets.map((host) => host.username));
     let sudoPassword = '';
@@ -3328,6 +3430,7 @@ async function showRunbookModal(hosts) {
         state.sharedSudoUsername = targets[0].username;
       }
     }
+    if (action.value === 'checkmk-register') checkmkPassword.value = '';
     close();
     await createJob('runbook', targets, { confirm, runbook, sudo_password: sudoPassword });
   });
@@ -4918,6 +5021,171 @@ function showDockerUpdateAllResult(result, title = 'Docker update all') {
   close.addEventListener('click', closeFn);
 }
 
+function renderServicesPanel(panel, data, host, reload) {
+  panel.replaceChildren();
+  const baseline = data.service_baseline || [];
+  const states = data.service_states || [];
+  const baselineByUnit = new Map(baseline.map((item) => [item.unit, item]));
+  const stateByUnit = new Map(states.map((item) => [item.unit, item]));
+  const units = [...new Set([...baselineByUnit.keys(), ...stateByUnit.keys()])]
+    .sort((left, right) => left.localeCompare(right));
+  const settings = data.settings || {};
+  const hostSettings = data.host_settings || {};
+  const inherited = data.inherited_settings || {};
+
+  const intro = el('div', 'detail-card');
+  intro.append(el('h3', '', 'Service baseline'));
+  intro.append(el('p', 'muted', 'HIBP records the systemd units observed running as the host baseline. The fleet Service baseline monitor alerts when an expected unit stops running or any current unit fails. Excluded units are ignored for both failed and missing alerts. Socket- or timer-activated units that exit by design can look missing; exclude them here.'));
+  const grid = el('div', 'settings-grid');
+  const enabled = selectField(grid, 'Baseline monitoring', 'baseline_enabled', [
+    ['', 'Inherit fleet default'], ['1', 'Enabled'], ['0', 'Disabled'],
+  ]);
+  enabled.value = Object.prototype.hasOwnProperty.call(hostSettings, 'monitor.service_baseline.enabled')
+    ? hostSettings['monitor.service_baseline.enabled'] : '';
+  const autoAdd = selectField(grid, 'Add newly running units', 'baseline_auto_add', [
+    ['', 'Inherit fleet default'], ['1', 'Enabled'], ['0', 'Disabled'],
+  ]);
+  autoAdd.value = Object.prototype.hasOwnProperty.call(hostSettings, 'monitor.service_baseline.auto_add')
+    ? hostSettings['monitor.service_baseline.auto_add'] : '';
+  intro.append(grid);
+  const effective = [
+    'baseline ' + (settings['monitor.service_baseline.enabled'] === '0' ? 'disabled' : 'enabled'),
+    'automatic expansion ' + (settings['monitor.service_baseline.auto_add'] === '0' ? 'disabled' : 'enabled'),
+  ];
+  intro.append(el('p', 'field-note', 'Effective now: ' + effective.join(' · ') + '. Fleet default for automatic expansion: ' + (inherited['monitor.service_baseline.auto_add'] === '0' ? 'disabled' : 'enabled') + '.'));
+  const save = el('button', 'btn primary', 'Save baseline settings');
+  save.type = 'button';
+  save.addEventListener('click', async () => {
+    try {
+      await api('/api/v1/settings', {
+        method: 'PUT',
+        body: JSON.stringify({
+          scope: 'host', host_id: host.id,
+          settings: {
+            'monitor.service_baseline.enabled': enabled.value,
+            'monitor.service_baseline.auto_add': autoAdd.value,
+          },
+        }),
+      });
+      toast('Baseline settings saved', 'ok');
+      await reload();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  });
+  intro.append(save);
+  panel.append(intro);
+
+  const counts = { expected: 0, excluded: 0, failed: 0, running: 0 };
+  for (const item of baseline) {
+    if (item.excluded) counts.excluded++;
+    else if (item.expected) counts.expected++;
+  }
+  for (const state of states) {
+    if (state.state === 'failed') counts.failed++;
+    else if (state.state === 'running') counts.running++;
+  }
+
+  const card = el('div', 'detail-card');
+  card.append(el('h3', '', 'Baseline units'));
+  card.append(el('p', 'muted', baseline.length
+    ? counts.expected + ' expected · ' + counts.excluded + ' excluded · ' + counts.running + ' running now · ' + counts.failed + ' failed now'
+    : 'No baseline has been collected yet. Collect metrics to seed it from the current running services.'));
+  if (baseline.length || states.length) {
+    const filter = inputField(card, 'Filter units', 'baseline_filter', 'packagekit, ssh, systemd-');
+    const wrap = el('div', 'scroll-list');
+    const table = el('table');
+    const head = el('tr');
+    for (const label of ['Unit', 'Current', 'Baseline', 'Last seen', '']) head.append(el('th', '', label));
+    table.append(head);
+    const tbody = el('tbody');
+    table.append(tbody);
+    wrap.append(table);
+    card.append(wrap);
+    const renderRows = () => {
+      const query = filter.value.trim().toLowerCase();
+      tbody.replaceChildren();
+      let shown = 0;
+      for (const unit of units) {
+        if (query && !unit.toLowerCase().includes(query)) continue;
+        shown++;
+        const item = baselineByUnit.get(unit);
+        const state = stateByUnit.get(unit);
+        const row = el('tr');
+        row.append(el('td', '', unit));
+
+        const currentTd = el('td');
+        const currentText = state ? state.state : 'not reported';
+        const currentClass = currentText === 'running' ? 'reachable'
+          : currentText === 'failed' ? 'unreachable' : 'unknown';
+        currentTd.append(el('span', 'pill ' + currentClass, currentText));
+        row.append(currentTd);
+
+        const baselineTd = el('td');
+        const baselineText = item ? (item.excluded ? 'excluded' : item.expected ? 'expected' : 'tracked') : 'not in baseline';
+        const baselineClass = item ? (item.excluded ? 'review' : 'reachable') : 'unknown';
+        baselineTd.append(el('span', 'pill ' + baselineClass, baselineText));
+        row.append(baselineTd);
+
+        const seenValue = (state && state.last_seen) || (item && item.last_seen);
+        const seenTd = el('td');
+        const seen = el('span', 'nowrap', seenValue ? relativeTime(seenValue) : '—');
+        if (seenValue) seen.title = new Date(seenValue).toLocaleString();
+        seenTd.append(seen);
+        row.append(seenTd);
+
+        const actionTd = el('td');
+        const excluded = Boolean(item && item.excluded);
+        const toggle = actionButton(excluded ? 'Include' : 'Exclude', async () => {
+          try {
+            await api('/api/v1/hosts/' + encodeURIComponent(host.id) + '/service-baseline/' + encodeURIComponent(unit), {
+              method: 'PUT',
+              body: JSON.stringify({ excluded: !excluded }),
+            });
+            toast(excluded ? 'Unit included in baseline monitoring' : 'Unit excluded from baseline monitoring', 'ok');
+            await reload();
+          } catch (error) {
+            toast(error.message, 'error');
+          }
+        });
+        toggle.title = excluded ? 'Restore failed and missing alerts for this unit' : 'Ignore failed and missing alerts for this unit';
+        actionTd.append(toggle);
+        row.append(actionTd);
+        tbody.append(row);
+      }
+      if (!shown) {
+        const row = el('tr');
+        const cell = el('td', 'empty-state', 'No matching units.');
+        cell.colSpan = 5;
+        row.append(cell);
+        tbody.append(row);
+      }
+    };
+    filter.addEventListener('input', renderRows);
+    renderRows();
+  }
+  const actions = el('div', 'modal-actions');
+  const reset = el('button', 'btn', 'Reset baseline to current running services');
+  reset.type = 'button';
+  reset.disabled = counts.running === 0;
+  reset.title = counts.running === 0
+    ? 'No fresh running services have been reported.'
+    : 'Expected units are rebuilt from the current running set; excluded units stay excluded.';
+  reset.addEventListener('click', async () => {
+    if (!confirm('Reset the service baseline for ' + host.name + ' to the current running services?\n\nExpected units that are no longer running are removed. Excluded units stay excluded.')) return;
+    try {
+      await api('/api/v1/hosts/' + encodeURIComponent(host.id) + '/service-baseline/reset', { method: 'POST', body: '{}' });
+      toast('Service baseline reset', 'ok');
+      await reload();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  });
+  actions.append(reset);
+  card.append(actions);
+  panel.append(card);
+}
+
 function renderContainersPanel(panel, data, host, reload) {
   panel.replaceChildren();
   const info = (data.system_info && data.system_info.docker) || {};
@@ -5070,9 +5338,9 @@ async function showHostDetails(host, initialTab = 'overview') {
   const panels = el('div');
   const buttons = new Map();
   const panelNodes = new Map();
-  let active = initialTab === 'containers' ? 'containers' : 'overview';
+  let active = ['overview', 'system', 'services', 'containers'].includes(initialTab) ? initialTab : 'overview';
   let metricsDays = 30;
-  for (const [id, label] of [['overview', 'Overview'], ['system', 'System'], ['containers', 'Containers']]) {
+  for (const [id, label] of [['overview', 'Overview'], ['system', 'System'], ['services', 'Services'], ['containers', 'Containers']]) {
     const button = el('button', 'tab', label);
     button.type = 'button';
     button.addEventListener('click', () => {
@@ -5097,6 +5365,7 @@ async function showHostDetails(host, initialTab = 'overview') {
       await reload();
     });
     renderContainersPanel(panelNodes.get('containers'), data, host, reload);
+    renderServicesPanel(panelNodes.get('services'), data, host, reload);
     for (const [key, node] of buttons) node.classList.toggle('active', key === active);
     for (const [key, node] of panelNodes) node.classList.toggle('hidden', key !== active);
   };
@@ -5110,7 +5379,7 @@ async function showHostDetails(host, initialTab = 'overview') {
 
 async function showSettingsModal() {
   const body = el('div', 'modal-body');
-  body.append(el('p', 'muted', 'Fleet defaults. Host-level overrides apply to collection settings only; backup settings are fleet-wide.'));
+  body.append(el('p', 'muted', 'Fleet defaults. Host-level overrides for collection and service-baseline settings are available from the host details view; backup settings are fleet-wide.'));
   const grid = el('div', 'settings-grid');
   const enabled = selectField(grid, 'Collector', 'collector_enabled', [['1', 'Enabled'], ['0', 'Disabled']]);
   const metricsInterval = inputField(grid, 'Metrics interval', 'metrics_interval', '5m');
@@ -5120,7 +5389,9 @@ async function showSettingsModal() {
   const eventsRetention = inputField(grid, 'Event retention (days)', 'events_retention_days', '30', 'number');
   const authWindow = inputField(grid, 'Auth-failure window (minutes)', 'auth_window_minutes', '10', 'number');
   const roots = inputField(grid, 'Docker scan roots', 'docker_roots', '/opt');
+  const baselineAutoAdd = selectField(grid, 'Add new running services to baseline', 'baseline_auto_add', [['1', 'Enabled'], ['0', 'Disabled']]);
   body.append(grid);
+  body.append(el('p', 'field-note', 'Service baseline monitoring, exclusions, and per-host overrides are managed from a host’s Services tab. This fleet setting only controls whether units newly observed running are added to each host baseline.'));
   body.append(el('p', 'muted', 'Backups are fleet-wide. Leave the directory blank to use the database directory. Only timestamped backups created by HIBP are pruned; lowering the count deletes older HIBP-created backups on the next backup.'));
   const backupGrid = el('div', 'settings-grid');
   const backupDir = inputField(backupGrid, 'Backup directory', 'backup_directory', '/var/lib/hibp/backups');
@@ -5145,6 +5416,7 @@ async function showSettingsModal() {
     eventsRetention.value = settings['events.retention_days'] || '30';
     authWindow.value = settings['events.auth_window_minutes'] || '10';
     roots.value = settings['docker.scan_roots'] || '/opt';
+    baselineAutoAdd.value = settings['monitor.service_baseline.auto_add'] || '1';
     backupDir.value = settings['backup.directory'] || '';
     backupRetention.value = settings['backup.retention_count'] || '3';
   } catch (error) {
@@ -5165,6 +5437,7 @@ async function showSettingsModal() {
             'events.retention_days': eventsRetention.value.trim(),
             'events.auth_window_minutes': authWindow.value.trim(),
             'docker.scan_roots': roots.value.trim(),
+            'monitor.service_baseline.auto_add': baselineAutoAdd.value,
             'backup.directory': backupDir.value.trim(),
             'backup.retention_count': backupRetention.value.trim(),
           },
@@ -5186,6 +5459,7 @@ async function showSettingsModal() {
             'collector.enabled': '', 'collector.metrics_interval': '', 'collector.facts_interval': '',
             'metrics.retention_days': '', 'events.enabled': '', 'events.retention_days': '',
             'events.auth_window_minutes': '', 'docker.scan_roots': '',
+            'monitor.service_baseline.auto_add': '',
             'backup.directory': '', 'backup.retention_count': '',
           },
         }),

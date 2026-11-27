@@ -2,7 +2,7 @@
 
 Status: **implemented MVP.** Service-baseline drift, Docker-health defaults, NTP
 sync/offset monitoring, severity-based email routing, journald/auth events with
-a failed-authentication monitor, typed service/package runbooks, and the
+a failed-authentication monitor, typed service/package/Checkmk runbooks, and the
 cross-platform monitoring agent MVP are implemented. Custom log-file rules,
 external agent adapters, mTLS/signed agent policy, and Windows performance/
 Docker parity remain proposed.
@@ -70,13 +70,17 @@ These decisions came from the monitoring design review:
 
 Implemented in the current tree:
 
-- `host_service_baseline` stores the first running-unit snapshot per host.
+- `host_service_baseline` stores the per-host running-unit baseline.
 - The collector records that baseline after the first successful metrics
-  collection.
+  collection and, by default, adds units observed running later.
 - `service.baseline` is a fleet-assigned default monitor for failed units and
-  baseline drift.
+  baseline drift. Per-host settings can disable it, disable automatic expansion,
+  or exclude individual units; reset preserves exclusions.
 - `docker.health` is a fleet-assigned default monitor for unhealthy,
-  restarting, or dead containers.
+  restarting, or dead containers. A `docker.container` monitor with target `*`
+  provides strict all-container monitoring, including stopped containers.
+- The Monitoring view shows per-host monitor detail inline and through a
+  per-monitor **Details** view.
 - Migration 016 creates both default monitors for existing and new databases.
 - Migration 017 adds NTP source, offset, stratum, and last-sync fields plus the
   fleet-assigned default `host.ntp` monitor.
@@ -180,7 +184,10 @@ Add a fleet-level Docker health monitor over the existing cached inventory:
 - optional per-container monitors remain available
 
 Use the existing `docker_containers` inventory and avoid a new SSH connection
-per container.
+per container. The fleet `docker.health` monitor covers unhealthy, restarting,
+and dead containers. A `docker.container` monitor with target `*` is the strict
+all-container check: any stopped or exited container is critical. An automatic
+stopped-container baseline for `docker.health` remains a future improvement.
 
 ### Notifications
 
@@ -206,6 +213,8 @@ Implement configurable typed actions, not free-form shell:
 - install package from distribution repositories, with package-name
   validation and dry-run preview
 - install an uploaded package: reuse the existing uploaded-package job
+- register a Linux host with Checkmk: run `cmk-agent-ctl register` as root and
+  answer the certificate prompt with a typed confirmation
 
 Each action:
 
@@ -215,6 +224,8 @@ Each action:
 - creates a durable job with per-host state, bounded output, and audit entries
 - supports canary hosts, explicit confirmation, and optional approval
 - refuses unsafe package names, unit names, or arguments
+- keeps transient secrets such as the Checkmk registration password in
+  controller memory only and redacts them from captured output
 
 A future approved-playbook feature may add reviewed scripts, but it is separate
 from typed runbooks and requires signature/version/approval controls.
@@ -358,15 +369,20 @@ fixture, and include retention/index decisions.
 ### Phase 1 - Fleet monitoring defaults
 
 - **Implemented:** service baseline and failed-unit evaluation.
+- **Implemented:** per-host baseline settings, unit exclusions, automatic
+  expansion of newly running units, and baseline reset.
 - **Implemented:** Docker health default for unhealthy, restarting, and dead
   containers.
+- **Implemented:** strict all-container monitoring with `docker.container`
+  target `*`.
 - **Implemented:** default monitors created by migration for existing and new
   databases.
 - **Implemented:** NTP synchronization, source, stratum, and offset checks with
   a fleet-assigned default monitor.
 - **Implemented:** global email default plus warning, critical, and recovery
   recipient routing. Per-monitor recipients still override the global policy.
-- Pending: fleet settings preview/opt-out.
+- Pending: richer fleet-policy preview/opt-out beyond the per-host Service
+  baseline controls.
 
 ### Phase 2 - Security and log events
 
@@ -379,13 +395,16 @@ fixture, and include retention/index decisions.
 - Pending: `/var/log/auth.log` and syslog fallback is present but journald is
   the primary path.
 - Pending: custom log paths and rules remain gated.
-- Pending: stopped-container baseline.
+- Pending: automatic stopped-container baseline for `docker.health`; the strict
+  `docker.container` target `*` mode is implemented.
 
 ### Phase 3 - Typed runbooks
 
 - **Implemented:** restart, enable, and disable systemd services.
 - **Implemented:** preview/apply package removal.
 - **Implemented:** preview/apply repository package installation.
+- **Implemented:** Checkmk agent registration with a typed certificate
+  confirmation, transient registration password, and redacted output.
 - **Implemented:** existing uploaded-package installation remains available.
 - **Implemented:** typed parameters, controller/target validation, JSON over
   stdin, durable jobs, audit entries, and optional shared sudo password for the

@@ -31,6 +31,7 @@ hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper package-remove-pre
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper package-remove-apply
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper package-install-preview
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper package-install-apply
+hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper checkmk-register
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-list
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-check *
 hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-apply *

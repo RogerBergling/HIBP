@@ -766,12 +766,15 @@ Helper actions are intentionally fixed: `facts`, `facts-full`, `preview`,
 `docker-apply <project>`, `docker-update-all`, `install-package`,
 `service-restart`, `service-enable`, `service-disable`,
 `package-remove-preview`, `package-remove-apply`, `package-install-preview`,
-and `package-install-apply`. The `*-full` actions are the explicit APT
-`full-upgrade` policy variants. `install-package` and the typed runbook actions
-read one validated JSON request from stdin and never accept package names, unit
-names, or shell fragments as command-line arguments. The other actions do not
-accept package names, host names, or shell
-fragments from the controller.
+`package-install-apply`, and `checkmk-register`. The `*-full` actions are the
+explicit APT `full-upgrade` policy variants. `install-package` and the typed
+runbook actions read one validated JSON request from stdin and never accept
+package names, unit names, or shell fragments as command-line arguments.
+`checkmk-register` runs `cmk-agent-ctl register` as root and supplies `y` on
+stdin for the certificate confirmation; its registration password is kept in
+controller memory only and is redacted from the captured output. The other
+actions do not accept package names, host names, or shell fragments from the
+controller.
 
 Important constraints:
 
@@ -1783,20 +1786,32 @@ Implemented check types:
   critical threshold; both are editable.
 - `docker.project` and `docker.container` — missing, stopped, or unhealthy
   workloads. The collector refreshes Docker inventory on each metrics tick.
+  `docker.container` accepts a container name or `*`; `*` monitors every
+  container on each assigned host, including containers that are stopped or
+  exited.
 - `docker.health` — fleet-wide Docker health: critical when a container is
-  unhealthy, restarting, or dead.
+  unhealthy, restarting, or dead. Cleanly stopped containers are ignored here;
+  use a `docker.container` monitor with target `*` for a strict all-container
+  check.
 - `service.systemd` — unit state from the systemd snapshot collected with
   metrics. Missing or failed units are critical; stale snapshots are unknown.
-- `service.baseline` — fleet-wide baseline drift: critical when any systemd unit
-  is failed or a unit captured in the first running-service baseline is no
-  longer running. The default monitor is created by migration and can be
-  disabled, retargeted, or deleted after review.
+- `service.baseline` — per-host running-service baseline drift. The first
+  successful service collection seeds the baseline; by default, units observed
+  running later are added automatically. Critical when any unit is failed or an
+  expected baseline unit is no longer running. Use the host **Services** tab to
+  exclude individual units, disable baseline monitoring for one host, disable
+  automatic expansion, or reset the baseline to the current running set. The
+  fleet monitor itself can also be disabled, retargeted, or deleted.
 - `security.auth` — fleet-wide failed-authentication count from normalized
   journald/auth events. Warning and critical thresholds are counts inside a
   configurable window; the default is 5 warning / 10 critical in 10 minutes.
 - `http` — HTTP/HTTPS status (2xx/3xx healthy) and optional latency thresholds.
 - `tcp` — TCP connect and optional latency thresholds.
 - `ssl` — TLS handshake plus certificate expiry in days.
+
+The monitor table shows the first non-OK per-host detail inline. **Details** on
+a monitor row opens the complete per-host status and message list; the alert
+table keeps delivery history even when email is disabled.
 
 Freshness thresholds scale with the configured collection intervals: metric,
 Docker, and service data use the host's metrics interval, while disk/system
@@ -1825,6 +1840,29 @@ A **Monitor map** above the table groups monitors by status, type, scope, or
 enabled state. Each node shows the monitor name, current worst status, type,
 target or scope, and last check; click a node to edit that monitor. Use the
 **Group by** selector to change the map layout.
+
+#### Service baseline
+
+A service baseline is a per-host set of systemd units that HIBP expects to keep
+running. It is not one monitor per service. The first successful service
+collection records every running unit; by default, units observed running later
+are added as well. The fleet `service.baseline` monitor then alerts for:
+
+- any current unit in the `failed` state
+- any expected unit that is no longer running
+
+Units that are socket- or timer-activated and exit by design (for example
+`packagekit.service` or `systemd-timedated.service`) often appear in the
+baseline and later look missing. Open the host and choose **Services** to
+exclude them, disable baseline monitoring for that host, disable automatic
+expansion, or reset the baseline to the current running set. Excluded units do
+not produce failed or missing alerts. Resetting keeps existing exclusions.
+
+Docker uses two different checks. The fleet `docker.health` monitor watches all
+containers for unhealthy, restarting, or dead states and ignores cleanly stopped
+containers. A `Container` monitor with target `*` is stricter: every container
+on each assigned host must be running, so stopped or exited containers are
+critical.
 
 ### HIBP monitoring agent
 
@@ -1857,9 +1895,9 @@ Update patching and Windows runbooks are not implemented.
 
 The planned enterprise monitoring workstream is documented separately in
 [Enterprise monitoring design](docs/enterprise-monitoring.md). Service-baseline
-drift and fleet-wide Docker health defaults are implemented; NTP offset checks,
-authentication-event collection, severity routing, typed bulk runbooks, and the
-optional persistent agent are still proposed.
+drift, fleet-wide Docker health defaults, NTP offset checks, authentication-event
+collection, severity routing, typed bulk runbooks, and the cross-platform
+monitoring agent MVP are implemented.
 
 Email settings are global; each monitor may override recipients. The global
 configuration can define separate warning, critical, and recovery recipient
@@ -3058,7 +3096,7 @@ That authority must be narrow and auditable.
   `docker-check <project>`, `docker-apply <project>`, `docker-update-all`,
   `install-package`, `service-restart`, `service-enable`, `service-disable`,
   `package-remove-preview`, `package-remove-apply`, `package-install-preview`,
-  `package-install-apply`) and validates its arguments.
+  `package-install-apply`, `checkmk-register`) and validates its arguments.
 - Example sudoers shape (illustrative, not a complete hardening guide):
 
   ```sudoers
@@ -3081,6 +3119,7 @@ That authority must be narrow and auditable.
   hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-apply *
   hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper docker-update-all
   hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper install-package
+  hibp ALL=(root) NOPASSWD: /usr/local/libexec/hibp/hibp-helper checkmk-register
   ```
 
 - Do not recommend `ALL=(ALL) NOPASSWD: ALL`. If an operator insists, warn
@@ -3108,11 +3147,37 @@ in v1.**
 
 Typed runbooks are implemented for a small allowlisted set of operational
 actions: restart, enable, or disable a systemd service; preview and apply
-package removal; and preview and apply a repository package installation.
-Parameters are validated on the controller and again by the helper, passed as
-JSON over stdin, and never interpolated into a shell. Typed runbooks run as
-durable jobs with per-host audit entries. Arbitrary shell and unapproved custom
-scripts remain unsupported.
+package removal; preview and apply a repository package installation; and
+register a Linux host with Checkmk. Parameters are validated on the controller
+and again by the helper, passed as JSON over stdin, and never interpolated into
+a shell. Typed runbooks run as durable jobs with per-host audit entries.
+Arbitrary shell and unapproved custom scripts remain unsupported.
+
+Checkmk registration is the one runbook that answers an interactive prompt. It
+runs the fixed equivalent of:
+
+```text
+cmk-agent-ctl register \
+  --hostname <target-hostname> \
+  --server <checkmk-host[:port]> \
+  --site <site> \
+  --user <user> \
+  --password <password>
+```
+
+and supplies `y` on stdin when `cmk-agent-ctl` asks
+`Do you want to establish this connection? [Y/n]`. Leave the hostname blank to
+use the target's local hostname. The registration password is held only in
+controller memory for the life of the job, is not written to the persisted job
+payload, and is redacted from captured output. It is still visible in the
+target process list while `cmk-agent-ctl` runs, so use a dedicated Checkmk
+automation user and restrict access to the target. If the controller restarts
+before the job runs, the password is gone and the affected targets fail with a
+clear message; queue a new registration. Review the certificate
+details in the job output after registration. The runbook answers the prompt
+instead of passing `--trust-cert`, so unexpected certificate changes remain
+visible to the operator. Existing targets must run **Setup / Update helpers**
+once after upgrading so the new helper action and sudoers rule are installed.
 
 - Built-in actions cover normal patching: facts, preview, check, apply, cleanup-check,
   cleanup-apply, reboot, and reboot-check.
@@ -3221,11 +3286,14 @@ Current status:
 ### Implemented in current main
 
 - Fleet-wide service baseline drift monitoring. The first collected running-unit
-  snapshot per host becomes the baseline; `service.baseline` alerts on failed
-  units and baseline units that are no longer running. Migration 016 creates the
-  default fleet monitor for existing and new databases.
+  snapshot per host seeds the baseline; newly running units are added by default.
+  `service.baseline` alerts on failed units and expected baseline units that are
+  no longer running. Host **Services** controls exclusions, per-host disable,
+  automatic expansion, and reset. Migration 016 creates the default fleet monitor
+  for existing and new databases.
 - Fleet-wide `docker.health` monitor for unhealthy, restarting, or dead
-  containers. Migration 016 creates the default fleet monitor.
+  containers, plus strict all-container monitoring with a `docker.container`
+  target of `*`. Migration 016 creates the default fleet monitor.
 - Fleet-wide `host.ntp` monitor backed by timedatectl/chrony synchronization and
   offset telemetry. Migration 017 adds the facts fields and default monitor.
 - Global email severity routing: warning, critical, and recovery recipient
@@ -3235,9 +3303,11 @@ Current status:
   bounded `host_events` storage with retention, and a fleet-wide
   `security.auth` default monitor for failed-authentication counts.
 - Typed runbooks for restarting/enabling/disabling services, previewing and
-  applying package removal, and previewing/applying repository package
-  installation. Runbooks use typed JSON over stdin, durable jobs, audit entries,
-  and the existing uploaded-package install path.
+  applying package removal, previewing/applying repository package installation,
+  and registering Linux hosts with Checkmk. Runbooks use typed JSON over stdin,
+  durable jobs, audit entries, and the existing uploaded-package install path.
+  Checkmk registration answers the certificate prompt with `y` and keeps the
+  registration password out of the persisted job payload.
 - Cross-platform `hibp-agent` MVP for Linux and Windows monitoring: token
   authentication, heartbeat, snapshot, normalized events, agent-only host
   records, and `make agent-build`. Windows support is monitoring-only.
@@ -3361,7 +3431,7 @@ Current status:
   `docker-list`, `docker-check`, `docker-apply`, `docker-update-all`,
   `service-restart`, `service-enable`, `service-disable`,
   `package-remove-preview`, `package-remove-apply`, `package-install-preview`,
-  `package-install-apply`) with
+  `package-install-apply`, `checkmk-register`) with
   absolute binary paths, a sanitized environment, no shell, and output limits.
 - Project-level Docker Compose pull/apply plus a bulk **Update all Compose
   projects** action that pulls every project and recreates only projects whose
@@ -3636,7 +3706,7 @@ UTC ISO 8601, and durations are stored in seconds.
 | `monitor_state` | Last status per monitor/host. | `monitor_id`, `host_id`, `status`, `message`, `checked_at`, `changed_at`, `last_notified` |
 | `alert_events` | Alert history independent of email delivery. | `id`, `monitor_id`, `host_id`, `status`, `subject`, `detail`, `created_at`, `emailed`, `error` |
 | `host_services` | systemd unit snapshot from metrics. | `host_id`, `unit`, `state`, `last_seen` |
-| `host_service_baseline` | First running-unit baseline per host for service drift monitoring. | `host_id`, `unit`, `state`, `expected`, `excluded`, `first_seen`, `last_seen` |
+| `host_service_baseline` | Per-host running-unit baseline and exclusions for service drift monitoring. | `host_id`, `unit`, `state`, `expected`, `excluded`, `first_seen`, `last_seen` |
 | `host_events` | Normalized security/service events with retention. | `id`, `host_id`, `event_id`, `source`, `category`, `severity`, `unit`, `username`, `remote_ip`, `message`, `occurred_at`, `received_at` |
 | `agents` | Cross-platform monitoring agent identity and heartbeat. | `id`, `host_id`, `name`, `token_hash`, `platform`, `version`, `last_seen`, `created_at`, `revoked_at` |
 | `credentials` | Encrypted credential metadata and secrets. | `id`, `name`, `auth_type`, `username`, `key_path`, `secret_ref`, `wrapped_dek`, `encrypted_secret`, `sudo_mode`, `created_at`, `rotated_at` |
@@ -4237,17 +4307,18 @@ Still missing:
 ### M8 - Enterprise monitoring (design)
 
 - Fleet-wide monitoring defaults applied to existing and new hosts, with
-  preview and opt-out.
+  per-host baseline disable, unit exclusions, and automatic baseline expansion.
 - Baseline-drift service monitoring instead of one monitor per running unit.
 - NTP synchronization and offset checks.
 - Structured journald and authentication-event collection with bounded,
   normalized storage.
-- Docker health defaults for unhealthy, restarting, and newly stopped
-  containers.
+- Docker health defaults for unhealthy, restarting, and dead containers, plus
+  strict all-container checks with `docker.container` target `*`.
 - Global email recipients with severity routing.
 - Typed, configurable runbooks for restarting services, removing packages,
   enabling/disabling services, repository-name package installs with preview,
-  and the existing uploaded-package install job.
+  Checkmk agent registration with certificate confirmation, and the existing
+  uploaded-package install job.
 - Cross-platform `hibp-agent` MVP for Linux and Windows monitoring, plus
   pending adapters for existing Checkmk/Wazuh/Zabbix installations. Agentless
   helper collection remains the first path. Windows Update patching and Windows

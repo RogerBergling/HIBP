@@ -71,7 +71,14 @@ type Result struct {
 // Runner executes a fixed command.
 type Runner func(ctx context.Context, name string, args ...string) ([]byte, int, error)
 
-var commandRunner Runner = defaultRunner
+// InputRunner executes a fixed command with bounded stdin. It is used only by
+// actions that must answer an interactive confirmation from the program.
+type InputRunner func(ctx context.Context, name, input string, args ...string) ([]byte, int, error)
+
+var (
+	commandRunner      Runner      = defaultRunner
+	commandInputRunner InputRunner = defaultInputRunner
+)
 
 // lookPath resolves a fixed binary name to an absolute path. The helper runs
 // as root through sudo, so it must not depend on an inherited PATH.
@@ -90,6 +97,7 @@ var lookPath = func(name string) (string, error) {
 		"shutdown":         {"/usr/sbin/shutdown", "/sbin/shutdown", "/usr/bin/shutdown", "/bin/shutdown"},
 		"docker":           {"/usr/bin/docker", "/usr/local/bin/docker", "/bin/docker"},
 		"ss":               {"/usr/bin/ss", "/bin/ss", "/usr/sbin/ss", "/sbin/ss"},
+		"cmk-agent-ctl":    {"/usr/bin/cmk-agent-ctl", "/usr/local/bin/cmk-agent-ctl", "/bin/cmk-agent-ctl"},
 	}
 	for _, path := range candidates[name] {
 		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
@@ -104,6 +112,14 @@ func SetRunnerForTest(r Runner) func() {
 	old := commandRunner
 	commandRunner = r
 	return func() { commandRunner = old }
+}
+
+// SetInputRunnerForTest replaces the command-with-input runner and returns a
+// restore function.
+func SetInputRunnerForTest(r InputRunner) func() {
+	old := commandInputRunner
+	commandInputRunner = r
+	return func() { commandInputRunner = old }
 }
 
 // SetLookPathForTest replaces LookPath and returns a restore function.
@@ -186,6 +202,9 @@ func Run(ctx context.Context, action string, out io.Writer, args ...string) erro
 		return writeRunbookResult(out, result, err)
 	case "package-install-apply":
 		result, err := packageRunbook(ctx, "install", "apply")
+		return writeRunbookResult(out, result, err)
+	case "checkmk-register":
+		result, err := checkmkRegisterRunbook(ctx)
 		return writeRunbookResult(out, result, err)
 	case "docker-list":
 		inventory, err := collectDockerInventory(ctx)
@@ -1091,6 +1110,10 @@ func compareKernelVersions(a, b string) int {
 }
 
 func defaultRunner(ctx context.Context, name string, args ...string) ([]byte, int, error) {
+	return defaultInputRunner(ctx, name, "", args...)
+}
+
+func defaultInputRunner(ctx context.Context, name, input string, args ...string) ([]byte, int, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = "/"
 	cmd.Env = []string{
@@ -1101,6 +1124,9 @@ func defaultRunner(ctx context.Context, name string, args ...string) ([]byte, in
 		"DEBIAN_FRONTEND=noninteractive",
 		"APT_LISTCHANGES_FRONTEND=none",
 		"NEEDRESTART_MODE=l",
+	}
+	if input != "" {
+		cmd.Stdin = strings.NewReader(input)
 	}
 	var output limitedBuffer
 	cmd.Stdout = &output

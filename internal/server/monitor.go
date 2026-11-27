@@ -345,29 +345,12 @@ func (s *Server) evaluateNTP(monitor store.Monitor, host store.Host) monitorResu
 }
 
 func (s *Server) evaluateDocker(monitor store.Monitor, host store.Host) monitorResult {
-	if snapshot, err := s.store.GetSystemInfo(host.ID); err == nil {
-		var info helper.SystemInfo
-		if json.Unmarshal([]byte(snapshot.PayloadJSON), &info) == nil && !info.Docker.Available {
-			return monitorResult{status: "unknown", message: "Docker is not installed", skip: true}
-		}
+	projects, containers, unavailable := s.dockerInventoryForMonitor(host)
+	if unavailable != nil {
+		return *unavailable
 	}
-	projects, containers, err := s.store.GetDockerInventory(host.ID)
-	if err != nil || (len(projects) == 0 && len(containers) == 0) {
-		return monitorResult{status: "unknown", message: "no Docker inventory collected"}
-	}
-	latest := ""
-	for _, container := range containers {
-		if container.LastSeen > latest {
-			latest = container.LastSeen
-		}
-	}
-	for _, project := range projects {
-		if project.LastSeen > latest {
-			latest = project.LastSeen
-		}
-	}
-	if seen, err := time.Parse(time.RFC3339Nano, latest); err != nil || time.Since(seen) > s.metricsFreshness(host.ID) {
-		return monitorResult{status: "unknown", message: "Docker inventory is stale"}
+	if monitor.Type == "docker.container" && monitor.Target == "*" {
+		return evaluateAllContainers(containers)
 	}
 	if monitor.Type == "docker.project" {
 		found := false
@@ -425,29 +408,9 @@ func (s *Server) evaluateDocker(monitor store.Monitor, host store.Host) monitorR
 }
 
 func (s *Server) evaluateDockerHealth(host store.Host) monitorResult {
-	if snapshot, err := s.store.GetSystemInfo(host.ID); err == nil {
-		var info helper.SystemInfo
-		if json.Unmarshal([]byte(snapshot.PayloadJSON), &info) == nil && !info.Docker.Available {
-			return monitorResult{status: "unknown", message: "Docker is not installed", skip: true}
-		}
-	}
-	projects, containers, err := s.store.GetDockerInventory(host.ID)
-	if err != nil || (len(projects) == 0 && len(containers) == 0) {
-		return monitorResult{status: "unknown", message: "no Docker inventory collected"}
-	}
-	latest := ""
-	for _, container := range containers {
-		if container.LastSeen > latest {
-			latest = container.LastSeen
-		}
-	}
-	for _, project := range projects {
-		if project.LastSeen > latest {
-			latest = project.LastSeen
-		}
-	}
-	if seen, err := time.Parse(time.RFC3339Nano, latest); err != nil || time.Since(seen) > s.metricsFreshness(host.ID) {
-		return monitorResult{status: "unknown", message: "Docker inventory is stale"}
+	_, containers, unavailable := s.dockerInventoryForMonitor(host)
+	if unavailable != nil {
+		return *unavailable
 	}
 	running := 0
 	var problems []string
@@ -470,7 +433,71 @@ func (s *Server) evaluateDockerHealth(host store.Host) monitorResult {
 	return monitorResult{status: "ok", message: fmt.Sprintf("%d/%d containers running", running, len(containers))}
 }
 
+// dockerInventoryForMonitor returns cached Docker inventory and a short-circuit
+// result when Docker is unavailable, absent, or stale.
+func (s *Server) dockerInventoryForMonitor(host store.Host) ([]store.DockerProject, []store.DockerContainer, *monitorResult) {
+	if snapshot, err := s.store.GetSystemInfo(host.ID); err == nil {
+		var info helper.SystemInfo
+		if json.Unmarshal([]byte(snapshot.PayloadJSON), &info) == nil && !info.Docker.Available {
+			result := monitorResult{status: "unknown", message: "Docker is not installed", skip: true}
+			return nil, nil, &result
+		}
+	}
+	projects, containers, err := s.store.GetDockerInventory(host.ID)
+	if err != nil || (len(projects) == 0 && len(containers) == 0) {
+		result := monitorResult{status: "unknown", message: "no Docker inventory collected"}
+		return nil, nil, &result
+	}
+	latest := ""
+	for _, container := range containers {
+		if container.LastSeen > latest {
+			latest = container.LastSeen
+		}
+	}
+	for _, project := range projects {
+		if project.LastSeen > latest {
+			latest = project.LastSeen
+		}
+	}
+	if seen, err := time.Parse(time.RFC3339Nano, latest); err != nil || time.Since(seen) > s.metricsFreshness(host.ID) {
+		result := monitorResult{status: "unknown", message: "Docker inventory is stale"}
+		return nil, nil, &result
+	}
+	return projects, containers, nil
+}
+
+// evaluateAllContainers is the strict docker.container target "*" mode: every
+// known container must be running, and unhealthy/restarting/dead states are
+// reported explicitly. It is intentionally stricter than the fleet
+// docker.health monitor, which ignores cleanly stopped containers.
+func evaluateAllContainers(containers []store.DockerContainer) monitorResult {
+	running := 0
+	var problems []string
+	for _, container := range containers {
+		if container.State == "running" {
+			running++
+		}
+		switch {
+		case strings.EqualFold(container.Health, "unhealthy"):
+			problems = append(problems, container.Name+" unhealthy")
+		case strings.EqualFold(container.State, "restarting"):
+			problems = append(problems, container.Name+" restarting")
+		case strings.EqualFold(container.State, "dead"):
+			problems = append(problems, container.Name+" dead")
+		case container.State != "" && !strings.EqualFold(container.State, "running"):
+			problems = append(problems, container.Name+" "+container.State)
+		}
+	}
+	if len(problems) > 0 {
+		return monitorResult{status: "critical", message: "container state: " + monitorListSummary(problems)}
+	}
+	return monitorResult{status: "ok", message: fmt.Sprintf("%d/%d containers running", running, len(containers))}
+}
+
 func (s *Server) evaluateServiceBaseline(host store.Host) monitorResult {
+	if s.store.ResolveSetting(host.ID, "monitor.service_baseline.enabled", "1") == "0" {
+		return monitorResult{status: "ok", message: "service baseline monitoring is disabled for this host"}
+	}
 	if snapshot, err := s.store.GetSystemInfo(host.ID); err == nil {
 		var info helper.SystemInfo
 		if json.Unmarshal([]byte(snapshot.PayloadJSON), &info) == nil && !info.Systemd.UnitsCollected {
@@ -518,10 +545,12 @@ func (s *Server) evaluateServiceBaseline(host store.Host) monitorResult {
 		return monitorResult{status: "unknown", message: "no service baseline collected yet"}
 	}
 	var missing []string
+	expected := 0
 	for _, item := range baseline {
 		if item.Excluded || !item.Expected {
 			continue
 		}
+		expected++
 		if state, ok := current[item.Unit]; !ok || (state != "running" && state != "failed") {
 			missing = append(missing, item.Unit)
 		}
@@ -536,7 +565,10 @@ func (s *Server) evaluateServiceBaseline(host store.Host) monitorResult {
 		}
 		return monitorResult{status: "critical", message: strings.Join(parts, "; ")}
 	}
-	return monitorResult{status: "ok", message: fmt.Sprintf("%d baseline services running", len(baseline))}
+	if expected == 0 {
+		return monitorResult{status: "ok", message: "no expected baseline services"}
+	}
+	return monitorResult{status: "ok", message: fmt.Sprintf("%d baseline services running", expected)}
 }
 
 func (s *Server) evaluateAuthFailures(monitor store.Monitor, host store.Host) monitorResult {

@@ -362,4 +362,47 @@ func TestRunbookJobAcceptsTypedActionsAndSudoPassword(t *testing.T) {
 		t.Fatalf("expected invalid package rejection, got %d", resp.StatusCode)
 	}
 	_ = resp.Body.Close()
+
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/jobs", "test-token",
+		`{"kind":"runbook","host_ids":["`+host.ID+`"],"confirm":"register","runbook":{"action":"checkmk-register","checkmk":{"server":"checkmk:8000","site":"Bergling","user":"cmkadmin","password":"checkmk-secret"}}}`)
+	if resp.StatusCode != http.StatusCreated {
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		t.Fatalf("expected created Checkmk runbook job, got %d %s", resp.StatusCode, raw)
+	}
+	var checkmkCreated struct {
+		Job jobView `json:"job"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&checkmkCreated); err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if got := app.jobCheckmkPassword(checkmkCreated.Job.ID); got != "checkmk-secret" {
+		t.Fatalf("expected in-memory Checkmk password, got %q", got)
+	}
+	stored, err := db.GetJob(checkmkCreated.Job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stored.Payload, "checkmk-secret") {
+		t.Fatalf("Checkmk password leaked into the persisted job payload: %s", stored.Payload)
+	}
+	if !strings.Contains(stored.Payload, `"server":"checkmk:8000"`) || !strings.Contains(stored.Payload, `"site":"Bergling"`) {
+		t.Fatalf("Checkmk settings missing from the persisted job payload: %s", stored.Payload)
+	}
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/jobs/"+checkmkCreated.Job.ID+"/cancel", "test-token", `{}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected queued Checkmk cancel, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+	if got := app.jobCheckmkPassword(checkmkCreated.Job.ID); got != "" {
+		t.Fatalf("expected Checkmk password clear, got %q", got)
+	}
+
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/jobs", "test-token",
+		`{"kind":"runbook","host_ids":["`+host.ID+`"],"confirm":"register","runbook":{"action":"checkmk-register","checkmk":{"server":"bad server","site":"Bergling","user":"cmkadmin","password":"checkmk-secret"}}}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected invalid Checkmk server rejection, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
 }

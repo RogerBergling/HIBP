@@ -279,6 +279,14 @@ func (s *Store) ListMonitorStates(monitorID string) ([]MonitorState, error) {
 	return states, rows.Err()
 }
 
+// DeleteMonitorStates clears recorded per-host results for a monitor. It is
+// used when a monitor is disabled so stale critical states do not remain
+// visible after the operator turns the monitor off.
+func (s *Store) DeleteMonitorStates(monitorID string) error {
+	_, err := s.db.Exec("DELETE FROM monitor_state WHERE monitor_id=?", monitorID)
+	return err
+}
+
 func (s *Store) AddAlertEvent(event AlertEvent) error {
 	emailed := 0
 	if event.Emailed {
@@ -373,22 +381,98 @@ func (s *Store) ListServiceStates(hostID string) ([]ServiceState, error) {
 }
 
 // EnsureServiceBaseline records the first running-unit snapshot for a host. It
-// deliberately does not add newly observed units on later collections: a new
-// service is informational, not a new expected baseline entry. Operators can
-// disable the monitor or update the baseline explicitly.
+// deliberately does not add newly observed units on later collections. Use
+// SyncServiceBaseline when automatic baseline expansion is enabled.
 func (s *Store) EnsureServiceBaseline(hostID string, running []string) error {
+	return s.syncServiceBaseline(hostID, running, false)
+}
+
+// SyncServiceBaseline records running units. With addNew it also adds units
+// observed running for the first time, without changing existing exclusions or
+// removing units that stopped running.
+func (s *Store) SyncServiceBaseline(hostID string, running []string, addNew bool) error {
+	return s.syncServiceBaseline(hostID, running, addNew)
+}
+
+func (s *Store) syncServiceBaseline(hostID string, running []string, addNew bool) error {
 	if hostID == "" {
 		return errors.New("host id is required")
 	}
-	var count int
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM host_service_baseline WHERE host_id=?", hostID).Scan(&count); err != nil {
-		return err
-	}
-	if count > 0 {
-		return nil
+	if !addNew {
+		var count int
+		if err := s.db.QueryRow("SELECT COUNT(*) FROM host_service_baseline WHERE host_id=?", hostID).Scan(&count); err != nil {
+			return err
+		}
+		if count > 0 {
+			return nil
+		}
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
+		return err
+	}
+	now := crypto.Now()
+	seen := make(map[string]bool, len(running))
+	for _, unit := range running {
+		unit = strings.TrimSpace(unit)
+		if unit == "" || seen[unit] {
+			continue
+		}
+		seen[unit] = true
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO host_service_baseline
+			(host_id,unit,state,expected,excluded,first_seen,last_seen) VALUES(?,?,?,?,?,?,?)`,
+			hostID, unit, "running", 1, 0, now, now); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// SetServiceBaselineExcluded hides or restores a unit in the host baseline. A
+// unit that is not yet tracked is inserted as expected so it can be restored
+// later; excluding a failing unit must not require it to be in the original
+// first snapshot.
+func (s *Store) SetServiceBaselineExcluded(hostID, unit string, excluded bool) error {
+	hostID = strings.TrimSpace(hostID)
+	unit = strings.TrimSpace(unit)
+	if hostID == "" || unit == "" {
+		return errors.New("host id and unit are required")
+	}
+	flag := 0
+	if excluded {
+		flag = 1
+	}
+	result, err := s.db.Exec(`UPDATE host_service_baseline SET excluded=? WHERE host_id=? AND unit=?`, flag, hostID, unit)
+	if err != nil {
+		return err
+	}
+	if rows, _ := result.RowsAffected(); rows > 0 {
+		return nil
+	}
+	if !excluded {
+		return sql.ErrNoRows
+	}
+	now := crypto.Now()
+	_, err = s.db.Exec(`INSERT INTO host_service_baseline
+		(host_id,unit,state,expected,excluded,first_seen,last_seen) VALUES(?,?,?,?,?,?,?)`,
+		hostID, unit, "excluded", 1, 1, now, now)
+	return err
+}
+
+// ResetServiceBaseline rebuilds the expected set from the currently running
+// units while preserving explicit exclusions. Units that disappeared are
+// removed; excluded rows remain so an exclusion survives a reset.
+func (s *Store) ResetServiceBaseline(hostID string, running []string) error {
+	if strings.TrimSpace(hostID) == "" {
+		return errors.New("host id is required")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM host_service_baseline WHERE host_id=? AND excluded=0`, hostID); err != nil {
+		_ = tx.Rollback()
 		return err
 	}
 	now := crypto.Now()

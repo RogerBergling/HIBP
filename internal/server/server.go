@@ -54,42 +54,44 @@ type Config struct {
 
 // Server is the HIBP HTTP server.
 type Server struct {
-	store             *store.Store
-	build             buildinfo.Info
-	keyDirs           []string
-	sshConfigPath     string
-	dummyPasswordHash string
-	loginIPLimiter    *attemptLimiter
-	loginUserLimiter  *attemptLimiter
-	mfaLimiter        *attemptLimiter
-	ceremonies        *ceremonyStore
-	setupMu           sync.Mutex
-	collectorMu       sync.Mutex
-	collectorState    map[string]*collectorHostState
-	mailMu            sync.Mutex
-	monitorMu         sync.Mutex
-	monitorRunning    bool
-	monitorWake       chan struct{}
-	jobWake           chan struct{}
-	jobSudoMu         sync.Mutex
-	jobSudoPasswords  map[string]string
-	schedulerMu       sync.Mutex
-	schedulerScanning bool
-	schedulerRunning  map[string]bool
-	schedulerCtx      context.Context
-	schedulerWake     chan struct{}
-	schedulerSlots    chan struct{}
-	hostLocksMu       sync.Mutex
-	hostLocks         map[string]bool
-	allowedHosts      map[string]bool
-	webAuthnRPID      string
-	webAuthnOrigin    string
-	sessionCookie     string
-	appTheme          string
-	trustProxy        bool
-	trustedProxyNets  []*net.IPNet
-	demo              demoHooks
-	mux               *http.ServeMux
+	store               *store.Store
+	build               buildinfo.Info
+	keyDirs             []string
+	sshConfigPath       string
+	dummyPasswordHash   string
+	loginIPLimiter      *attemptLimiter
+	loginUserLimiter    *attemptLimiter
+	mfaLimiter          *attemptLimiter
+	ceremonies          *ceremonyStore
+	setupMu             sync.Mutex
+	collectorMu         sync.Mutex
+	collectorState      map[string]*collectorHostState
+	mailMu              sync.Mutex
+	monitorMu           sync.Mutex
+	monitorRunning      bool
+	monitorWake         chan struct{}
+	jobWake             chan struct{}
+	jobSudoMu           sync.Mutex
+	jobSudoPasswords    map[string]string
+	jobCheckmkMu        sync.Mutex
+	jobCheckmkPasswords map[string]string
+	schedulerMu         sync.Mutex
+	schedulerScanning   bool
+	schedulerRunning    map[string]bool
+	schedulerCtx        context.Context
+	schedulerWake       chan struct{}
+	schedulerSlots      chan struct{}
+	hostLocksMu         sync.Mutex
+	hostLocks           map[string]bool
+	allowedHosts        map[string]bool
+	webAuthnRPID        string
+	webAuthnOrigin      string
+	sessionCookie       string
+	appTheme            string
+	trustProxy          bool
+	trustedProxyNets    []*net.IPNet
+	demo                demoHooks
+	mux                 *http.ServeMux
 }
 
 // New creates a server.
@@ -167,31 +169,32 @@ func New(cfg Config) (*Server, error) {
 		sessionCookie = "hibp_demo_session"
 	}
 	s := &Server{
-		store:             cfg.Store,
-		build:             build,
-		appTheme:          themeDefault(),
-		keyDirs:           keyDirs,
-		sshConfigPath:     sshConfigPath,
-		dummyPasswordHash: dummyPasswordHash,
-		loginIPLimiter:    newAttemptLimiter(10, 15*time.Minute),
-		loginUserLimiter:  newAttemptLimiter(5, 15*time.Minute),
-		mfaLimiter:        newAttemptLimiter(10, 15*time.Minute),
-		ceremonies:        newCeremonyStore(),
-		collectorState:    make(map[string]*collectorHostState),
-		monitorWake:       make(chan struct{}, 1),
-		jobWake:           make(chan struct{}, 1),
-		jobSudoPasswords:  make(map[string]string),
-		schedulerRunning:  make(map[string]bool),
-		schedulerWake:     make(chan struct{}, 1),
-		schedulerSlots:    make(chan struct{}, 20),
-		hostLocks:         make(map[string]bool),
-		allowedHosts:      allowedHosts,
-		webAuthnRPID:      webAuthnRPID,
-		webAuthnOrigin:    webAuthnOrigin,
-		sessionCookie:     sessionCookie,
-		trustProxy:        cfg.TrustProxy,
-		trustedProxyNets:  trustedProxyNets,
-		mux:               http.NewServeMux(),
+		store:               cfg.Store,
+		build:               build,
+		appTheme:            themeDefault(),
+		keyDirs:             keyDirs,
+		sshConfigPath:       sshConfigPath,
+		dummyPasswordHash:   dummyPasswordHash,
+		loginIPLimiter:      newAttemptLimiter(10, 15*time.Minute),
+		loginUserLimiter:    newAttemptLimiter(5, 15*time.Minute),
+		mfaLimiter:          newAttemptLimiter(10, 15*time.Minute),
+		ceremonies:          newCeremonyStore(),
+		collectorState:      make(map[string]*collectorHostState),
+		monitorWake:         make(chan struct{}, 1),
+		jobWake:             make(chan struct{}, 1),
+		jobSudoPasswords:    make(map[string]string),
+		jobCheckmkPasswords: make(map[string]string),
+		schedulerRunning:    make(map[string]bool),
+		schedulerWake:       make(chan struct{}, 1),
+		schedulerSlots:      make(chan struct{}, 20),
+		hostLocks:           make(map[string]bool),
+		allowedHosts:        allowedHosts,
+		webAuthnRPID:        webAuthnRPID,
+		webAuthnOrigin:      webAuthnOrigin,
+		sessionCookie:       sessionCookie,
+		trustProxy:          cfg.TrustProxy,
+		trustedProxyNets:    trustedProxyNets,
+		mux:                 http.NewServeMux(),
 	}
 	if cfg.Demo {
 		s.demo = newDemoHooks(cfg.Store)
@@ -293,6 +296,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/docker/update-all", s.auth(s.handleDockerUpdateAll))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/docker/update-selected", s.auth(s.handleDockerUpdateSelected))
 	s.mux.HandleFunc("GET /api/v1/hosts/{id}/details", s.auth(s.handleHostDetails))
+	s.mux.HandleFunc("GET /api/v1/hosts/{id}/service-baseline", s.auth(s.handleGetServiceBaseline))
+	s.mux.HandleFunc("PUT /api/v1/hosts/{id}/service-baseline/{unit}", s.auth(s.handleUpdateServiceBaseline))
+	s.mux.HandleFunc("POST /api/v1/hosts/{id}/service-baseline/reset", s.auth(s.handleResetServiceBaseline))
 	s.mux.HandleFunc("GET /api/v1/settings", s.auth(s.handleGetSettings))
 	s.mux.HandleFunc("PUT /api/v1/settings", s.auth(s.handlePutSettings))
 	s.mux.HandleFunc("GET /api/v1/notifications/smtp", s.auth(s.handleGetSMTP))

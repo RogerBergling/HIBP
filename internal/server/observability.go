@@ -20,16 +20,18 @@ import (
 var dockerProjectPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 
 var settingDefaults = map[string]string{
-	"collector.enabled":          "1",
-	"collector.facts_interval":   "12h",
-	"collector.metrics_interval": "5m",
-	"metrics.retention_days":     "30",
-	"events.enabled":             "1",
-	"events.retention_days":      "30",
-	"events.auth_window_minutes": "10",
-	"docker.scan_roots":          "/opt",
-	"backup.directory":           "",
-	"backup.retention_count":     "3",
+	"collector.enabled":                 "1",
+	"collector.facts_interval":          "12h",
+	"collector.metrics_interval":        "5m",
+	"metrics.retention_days":            "30",
+	"events.enabled":                    "1",
+	"events.retention_days":             "30",
+	"events.auth_window_minutes":        "10",
+	"docker.scan_roots":                 "/opt",
+	"monitor.service_baseline.enabled":  "1",
+	"monitor.service_baseline.auto_add": "1",
+	"backup.directory":                  "",
+	"backup.retention_count":            "3",
 }
 
 func (s *Server) resolveSettings(hostID string) map[string]string {
@@ -723,6 +725,8 @@ func (s *Server) handleHostDetails(w http.ResponseWriter, r *http.Request) {
 	metrics, _ := s.store.ListMetricsSince(host.ID, since, 100000)
 	projects, containers, _ := s.store.GetDockerInventory(host.ID)
 	checks, _ := s.store.ListDockerProjectChecks(host.ID)
+	serviceBaseline, _ := s.store.ListServiceBaseline(host.ID)
+	serviceStates, _ := s.store.ListServiceStates(host.ID)
 	settings := s.resolveSettings(host.ID)
 	hostSettings, _ := s.store.ListSettings("host:" + host.ID)
 	fleetSettings, _ := s.store.ListSettings("fleet")
@@ -734,6 +738,8 @@ func (s *Server) handleHostDetails(w http.ResponseWriter, r *http.Request) {
 		"docker_projects":    projects,
 		"docker_containers":  containers,
 		"docker_checks":      checks,
+		"service_baseline":   serviceBaseline,
+		"service_states":     serviceStates,
 		"settings":           settings,
 		"host_settings":      hostSettings,
 		"fleet_settings":     fleetSettings,
@@ -793,10 +799,14 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updates := make(map[string]string, len(request.Settings))
+	baselineChanged := false
 	for key, value := range request.Settings {
 		if _, ok := settingDefaults[key]; !ok {
 			writeError(w, http.StatusBadRequest, "unknown setting: "+key)
 			return
+		}
+		if strings.HasPrefix(key, "monitor.service_baseline.") {
+			baselineChanged = true
 		}
 		if scope != "fleet" && (key == "backup.directory" || key == "backup.retention_count") {
 			writeError(w, http.StatusBadRequest, key+" is a fleet-level backup setting")
@@ -822,6 +832,9 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if baselineChanged {
+		s.markBaselineMonitorsDue()
+	}
 	_ = s.store.AddAudit(s.auditActor(r), "settings-update", "settings", scope, "updated")
 	s.handleGetSettings(w, r)
 }
@@ -845,6 +858,10 @@ func validateSetting(key, value string) error {
 	case "events.enabled":
 		if value != "0" && value != "1" {
 			return errors.New("events.enabled must be 0 or 1")
+		}
+	case "monitor.service_baseline.enabled", "monitor.service_baseline.auto_add":
+		if value != "0" && value != "1" {
+			return errors.New(key + " must be 0 or 1")
 		}
 	case "events.retention_days":
 		days, err := strconv.Atoi(value)

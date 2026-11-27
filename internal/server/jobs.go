@@ -18,6 +18,11 @@ import (
 const maxJobHosts = 500
 
 var runbookPackagePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9+._:-]{0,127}$`)
+var (
+	runbookCheckmkHostPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$`)
+	runbookCheckmkSitePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
+	runbookCheckmkUserPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.@-]{0,127}$`)
+)
 
 type jobKindMeta struct {
 	label     string
@@ -49,10 +54,19 @@ type jobPackageSpec struct {
 	Env    map[string]string `json:"env,omitempty"`
 }
 
+type jobCheckmkSpec struct {
+	Hostname string `json:"hostname,omitempty"`
+	Server   string `json:"server"`
+	Site     string `json:"site"`
+	User     string `json:"user"`
+	Password string `json:"password,omitempty"`
+}
+
 type jobRunbookSpec struct {
-	Action   string   `json:"action"`
-	Unit     string   `json:"unit,omitempty"`
-	Packages []string `json:"packages,omitempty"`
+	Action   string          `json:"action"`
+	Unit     string          `json:"unit,omitempty"`
+	Packages []string        `json:"packages,omitempty"`
+	Checkmk  *jobCheckmkSpec `json:"checkmk,omitempty"`
 }
 
 type jobPayload struct {
@@ -232,6 +246,69 @@ func (s *Server) clearJobSudoPassword(jobID string) {
 	s.jobSudoMu.Unlock()
 }
 
+func (s *Server) setJobCheckmkPassword(jobID, password string) {
+	if jobID == "" || password == "" {
+		return
+	}
+	s.jobCheckmkMu.Lock()
+	if s.jobCheckmkPasswords == nil {
+		s.jobCheckmkPasswords = make(map[string]string)
+	}
+	s.jobCheckmkPasswords[jobID] = password
+	s.jobCheckmkMu.Unlock()
+}
+
+func (s *Server) jobCheckmkPassword(jobID string) string {
+	s.jobCheckmkMu.Lock()
+	defer s.jobCheckmkMu.Unlock()
+	return s.jobCheckmkPasswords[jobID]
+}
+
+func (s *Server) clearJobCheckmkPassword(jobID string) {
+	s.jobCheckmkMu.Lock()
+	delete(s.jobCheckmkPasswords, jobID)
+	s.jobCheckmkMu.Unlock()
+}
+
+func validateCheckmkRunbook(spec *jobCheckmkSpec) error {
+	if spec == nil {
+		return errors.New("checkmk settings are required")
+	}
+	spec.Hostname = strings.TrimSpace(spec.Hostname)
+	spec.Server = strings.TrimSpace(spec.Server)
+	spec.Site = strings.TrimSpace(spec.Site)
+	spec.User = strings.TrimSpace(spec.User)
+	if spec.Hostname != "" && spec.Hostname != "%HOSTNAME" {
+		if !runbookCheckmkHostPattern.MatchString(strings.TrimSuffix(spec.Hostname, ".")) {
+			return errors.New("a valid Checkmk hostname is required")
+		}
+	}
+	host, port, hasPort := strings.Cut(spec.Server, ":")
+	if !runbookCheckmkHostPattern.MatchString(host) || strings.Contains(port, ":") {
+		return errors.New("a valid Checkmk server is required")
+	}
+	if hasPort {
+		if number, err := strconv.Atoi(port); err != nil || number < 1 || number > 65535 {
+			return errors.New("a valid Checkmk server port is required")
+		}
+	}
+	if !runbookCheckmkSitePattern.MatchString(spec.Site) {
+		return errors.New("a valid Checkmk site is required")
+	}
+	if !runbookCheckmkUserPattern.MatchString(spec.User) {
+		return errors.New("a valid Checkmk user is required")
+	}
+	if spec.Password == "" || len(spec.Password) > 256 {
+		return errors.New("the Checkmk password is required (maximum 256 characters)")
+	}
+	for _, char := range spec.Password {
+		if char < 0x20 || char == 0x7f {
+			return errors.New("the Checkmk password contains unsupported control characters")
+		}
+	}
+	return nil
+}
+
 func (s *Server) validateJobRequest(request jobCreateRequest) (string, []string, jobPayload, error) {
 	kind := strings.TrimSpace(request.Kind)
 	if _, ok := jobKinds[kind]; !ok {
@@ -351,8 +428,20 @@ func (s *Server) validateJobRequest(request jobCreateRequest) (string, []string,
 			if len(payload.Runbook.Packages) == 0 {
 				return "", nil, jobPayload{}, errors.New("at least one package is required")
 			}
+		case "checkmk-register":
+			if payload.Confirm != "register" {
+				return "", nil, jobPayload{}, errors.New("confirm must be \"register\" for Checkmk registration")
+			}
+			if err := validateCheckmkRunbook(payload.Runbook.Checkmk); err != nil {
+				return "", nil, jobPayload{}, err
+			}
+			payload.Runbook.Unit = ""
+			payload.Runbook.Packages = nil
 		default:
 			return "", nil, jobPayload{}, errors.New("unsupported runbook action")
+		}
+		if payload.Runbook.Action != "checkmk-register" {
+			payload.Runbook.Checkmk = nil
 		}
 		cleaned := make([]string, 0, len(payload.Runbook.Packages))
 		for _, pkg := range payload.Runbook.Packages {
@@ -384,6 +473,13 @@ func (s *Server) createJob(actor string, request jobCreateRequest, pkg *jobPacka
 		}
 	}
 	payload.Package = pkg
+	checkmkPassword := ""
+	if payload.Runbook != nil && payload.Runbook.Checkmk != nil {
+		// Keep the registration password in controller memory only. The job
+		// payload is persisted and must never contain it.
+		checkmkPassword = payload.Runbook.Checkmk.Password
+		payload.Runbook.Checkmk.Password = ""
+	}
 	rawPayload, err := json.Marshal(payload)
 	if err != nil {
 		return store.Job{}, err
@@ -403,12 +499,16 @@ func (s *Server) createJob(actor string, request jobCreateRequest, pkg *jobPacka
 	if (kind == "helper-setup" || kind == "runbook") && request.SudoPassword != "" {
 		s.setJobSudoPassword(jobID, request.SudoPassword)
 	}
+	if checkmkPassword != "" {
+		s.setJobCheckmkPassword(jobID, checkmkPassword)
+	}
 	job, err := s.store.CreateJob(store.Job{
 		ID: jobID, Kind: kind, Status: store.JobQueued, Actor: actor, Title: title,
 		Detail: "Queued", Payload: string(rawPayload),
 	}, targets)
 	if err != nil {
 		s.clearJobSudoPassword(jobID)
+		s.clearJobCheckmkPassword(jobID)
 		return store.Job{}, err
 	}
 	_ = s.store.AddAudit(actor, "job-create", "job", job.ID, title)
@@ -518,6 +618,7 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = s.store.AddAudit(s.auditActor(r), "job-cancel", "job", job.ID, "cancelled before start")
 		s.clearJobSudoPassword(job.ID)
+		s.clearJobCheckmkPassword(job.ID)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
@@ -568,6 +669,7 @@ func (s *Server) handleDeleteJob(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.store.AddAudit(s.auditActor(r), "job-delete", "job", job.ID, job.Title)
 	s.clearJobSudoPassword(job.ID)
+	s.clearJobCheckmkPassword(job.ID)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
 }
 

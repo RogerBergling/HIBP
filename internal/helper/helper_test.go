@@ -147,6 +147,110 @@ func TestUnknownActionRejected(t *testing.T) {
 	}
 }
 
+func TestReadCheckmkRunbookRequestValidatesFields(t *testing.T) {
+	request, err := readRunbookRequestFrom(strings.NewReader(`{"checkmk":{"hostname":"web01","server":"checkmk:8000","site":"Bergling","user":"cmkadmin","password":"password1"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Checkmk == nil || request.Checkmk.Hostname != "web01" || request.Checkmk.Server != "checkmk:8000" {
+		t.Fatalf("unexpected Checkmk request: %+v", request.Checkmk)
+	}
+
+	request, err = readRunbookRequestFrom(strings.NewReader(`{"checkmk":{"server":"checkmk","site":"Bergling","user":"cmkadmin","password":"password1"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Checkmk == nil || request.Checkmk.Hostname == "" {
+		t.Fatal("expected an empty hostname to resolve to the target hostname")
+	}
+
+	invalid := []string{
+		`{"checkmk":{"hostname":"bad host","server":"checkmk","site":"Bergling","user":"cmkadmin","password":"password1"}}`,
+		`{"checkmk":{"server":"checkmk:bad","site":"Bergling","user":"cmkadmin","password":"password1"}}`,
+		`{"checkmk":{"server":"checkmk:70000","site":"Bergling","user":"cmkadmin","password":"password1"}}`,
+		`{"checkmk":{"server":"checkmk","site":"bad site","user":"cmkadmin","password":"password1"}}`,
+		`{"checkmk":{"server":"checkmk","site":"Bergling","user":"bad user","password":"password1"}}`,
+		`{"checkmk":{"server":"checkmk","site":"Bergling","user":"cmkadmin","password":""}}`,
+		`{"checkmk":{"server":"checkmk","site":"Bergling","user":"cmkadmin","password":"line\nbreak"}}`,
+		`{"checkmk":{"server":"checkmk","site":"Bergling","user":"cmkadmin","password":"password1","extra":"x"}}`,
+	}
+	for _, payload := range invalid {
+		if _, err := readRunbookRequestFrom(strings.NewReader(payload)); err == nil {
+			t.Fatalf("expected invalid Checkmk request to be rejected: %s", payload)
+		}
+	}
+}
+
+func TestCheckmkRegisterRunsFixedCommandAndAnswersPrompt(t *testing.T) {
+	restoreLook := SetLookPathForTest(func(name string) (string, error) {
+		if name == "cmk-agent-ctl" {
+			return "/usr/bin/cmk-agent-ctl", nil
+		}
+		return "", errors.New("not found")
+	})
+	defer restoreLook()
+	var gotName, gotInput string
+	var gotArgs []string
+	restoreRun := SetInputRunnerForTest(func(_ context.Context, name, input string, args ...string) ([]byte, int, error) {
+		gotName = name
+		gotInput = input
+		gotArgs = append([]string(nil), args...)
+		return []byte("Registered web01. password1 accepted.\n"), 0, nil
+	})
+	defer restoreRun()
+
+	result := runCheckmkRegister(context.Background(), CheckmkRegisterRequest{
+		Hostname: "web01", Server: "checkmk:8000", Site: "Bergling",
+		User: "cmkadmin", Password: "password1",
+	})
+	if !result.OK || result.ExitCode != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if gotName != "/usr/bin/cmk-agent-ctl" {
+		t.Fatalf("unexpected binary: %s", gotName)
+	}
+	wantArgs := "register --hostname web01 --server checkmk:8000 --site Bergling --user cmkadmin --password password1"
+	if strings.Join(gotArgs, " ") != wantArgs {
+		t.Fatalf("unexpected arguments: %v", gotArgs)
+	}
+	if gotInput != "y\n" {
+		t.Fatalf("expected certificate confirmation on stdin, got %q", gotInput)
+	}
+	if strings.Contains(result.Output, "password1") || !strings.Contains(result.Output, "[redacted]") {
+		t.Fatalf("password was not redacted from output: %q", result.Output)
+	}
+}
+
+func TestCheckmkRegisterReportsMissingBinaryAndFailure(t *testing.T) {
+	restoreLook := SetLookPathForTest(func(string) (string, error) {
+		return "", errors.New("not found")
+	})
+	result := runCheckmkRegister(context.Background(), CheckmkRegisterRequest{
+		Hostname: "web01", Server: "checkmk", Site: "Bergling",
+		User: "cmkadmin", Password: "password1",
+	})
+	restoreLook()
+	if result.OK || result.ExitCode != 127 || !strings.Contains(result.Error, "not installed") {
+		t.Fatalf("unexpected missing-binary result: %+v", result)
+	}
+
+	restoreLook = SetLookPathForTest(func(string) (string, error) {
+		return "/usr/bin/cmk-agent-ctl", nil
+	})
+	defer restoreLook()
+	restoreRun := SetInputRunnerForTest(func(context.Context, string, string, ...string) ([]byte, int, error) {
+		return []byte("certificate rejected\n"), 1, nil
+	})
+	defer restoreRun()
+	result = runCheckmkRegister(context.Background(), CheckmkRegisterRequest{
+		Hostname: "web01", Server: "checkmk", Site: "Bergling",
+		User: "cmkadmin", Password: "password1",
+	})
+	if result.OK || result.ExitCode != 1 || !strings.Contains(result.Error, "exited with code 1") {
+		t.Fatalf("unexpected failure result: %+v", result)
+	}
+}
+
 func writeTestFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o600)
 }
