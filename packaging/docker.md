@@ -92,7 +92,7 @@ The short version:
 4. Put the same passphrase in `secrets/db.passphrase`.
 5. Copy the required keys to `secrets/ssh` and update each host's `key_path` to
    `/etc/hibp/ssh/...`.
-6. Start with `HIBP_TAG=edge` (schema 20) and **without** `--create`.
+6. Start with `HIBP_TAG=edge` (schema 21) and **without** `--create`.
 7. Verify login, audit, schedules, and one host connection before removing the
    local copy.
 

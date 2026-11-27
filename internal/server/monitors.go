@@ -17,6 +17,7 @@ var monitorTypes = map[string]bool{
 	"host.cpu": true, "host.memory": true, "host.disk": true, "host.load": true, "host.ntp": true,
 	"docker.project": true, "docker.container": true, "docker.health": true,
 	"service.systemd": true, "service.baseline": true, "security.auth": true,
+	"syslog.event": true, "snmp.value": true, "snmp.poll": true,
 	"http": true, "tcp": true, "ssl": true,
 }
 
@@ -55,6 +56,19 @@ func (s *Server) validateMonitor(request monitorRequest, monitorID string) (stor
 	case "docker.health", "service.baseline", "security.auth":
 		if target != "" {
 			return store.Monitor{}, errors.New("this monitor type does not take a target")
+		}
+	case "snmp.poll":
+		if target != "" {
+			return store.Monitor{}, errors.New("snmp.poll does not take a target")
+		}
+	case "snmp.value":
+		target = normalizeOID(target)
+		if !snmpOIDPattern.MatchString(target) {
+			return store.Monitor{}, errors.New("snmp.value requires a valid numeric OID")
+		}
+	case "syslog.event":
+		if target != "" && len(target) > 128 {
+			return store.Monitor{}, errors.New("syslog.event target must be at most 128 characters")
 		}
 	case "host.disk":
 		if target == "" {
@@ -109,6 +123,14 @@ func (s *Server) validateMonitor(request monitorRequest, monitorID string) (stor
 	case "security.auth":
 		if request.Warning <= 0 || request.Critical <= request.Warning {
 			return store.Monitor{}, errors.New("authentication thresholds require 0 < warning count < critical count")
+		}
+	case "syslog.event":
+		if request.Warning <= 0 || request.Critical < request.Warning {
+			return store.Monitor{}, errors.New("syslog thresholds require 0 < warning <= critical")
+		}
+	case "snmp.value":
+		if request.Critical <= request.Warning {
+			return store.Monitor{}, errors.New("SNMP value thresholds require critical > warning")
 		}
 	case "ssl":
 		if request.Warning <= 0 || request.Critical <= 0 || request.Critical >= request.Warning {

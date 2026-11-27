@@ -246,6 +246,10 @@ func (s *Server) handleTestHost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "host not found")
 		return
 	}
+	if host.AuthType == "network" {
+		writeError(w, http.StatusBadRequest, "SSH actions are not available for network devices")
+		return
+	}
 	key, err := s.store.GetHostKey(host.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -501,6 +505,9 @@ func (s *Server) runHelperActionInput(ctx context.Context, host store.Host, acti
 		}
 	} else if len(args) != 0 {
 		return "", 0, errors.New("unexpected helper arguments")
+	}
+	if host.AuthType == "network" {
+		return "", 0, errors.New("SSH actions are not available for network devices")
 	}
 	key, err := s.store.GetHostKey(host.ID)
 	if err != nil {
@@ -1193,6 +1200,10 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	host, err := s.store.GetHost(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "host not found")
+		return
+	}
+	if host.AuthType == "network" {
+		writeError(w, http.StatusBadRequest, "SSH actions are not available for network devices")
 		return
 	}
 	var request passwordRequest

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"path/filepath"
 	"regexp"
@@ -33,6 +34,17 @@ var settingDefaults = map[string]string{
 	"monitor.service_baseline.auto_add": "1",
 	"monitor.service_baseline.exclude":  "",
 	"monitor.docker.enabled":            "1",
+	"syslog.enabled":                    "0",
+	"syslog.listen":                     "0.0.0.0:5514",
+	"syslog.protocol":                   "udp",
+	"syslog.window_minutes":             "10",
+	"snmp.enabled":                      "0",
+	"snmp.version":                      "2c",
+	"snmp.port":                         "",
+	"snmp.community":                    "",
+	"snmp.interval":                     "60s",
+	"snmp.oids":                         ".1.3.6.1.2.1.1.3.0,.1.3.6.1.2.1.1.5.0",
+	"syslog.sources":                    "",
 	"backup.directory":                  "",
 	"backup.retention_count":            "3",
 }
@@ -733,6 +745,8 @@ func (s *Server) handleHostDetails(w http.ResponseWriter, r *http.Request) {
 	}
 	serviceBaseline, _ := s.store.ListServiceBaseline(host.ID)
 	serviceStates, _ := s.store.ListServiceStates(host.ID)
+	snmpValues, _ := s.store.ListSNMPValues(host.ID)
+	snmpState, _ := s.store.GetSNMPPollState(host.ID)
 	settings := s.resolveSettings(host.ID)
 	hostSettings, _ := s.store.ListSettings("host:" + host.ID)
 	fleetSettings, _ := s.store.ListSettings("fleet")
@@ -746,11 +760,13 @@ func (s *Server) handleHostDetails(w http.ResponseWriter, r *http.Request) {
 		"docker_checks":      checks,
 		"service_baseline":   serviceBaseline,
 		"service_states":     serviceStates,
-		"settings":           settings,
-		"host_settings":      hostSettings,
-		"fleet_settings":     fleetSettings,
-		"inherited_settings": s.resolveSettings(""),
-		"settings_defaults":  settingDefaults,
+		"snmp_values":        snmpValues,
+		"snmp_state":         snmpState,
+		"settings":           maskSettings(settings),
+		"host_settings":      maskSettings(hostSettings),
+		"fleet_settings":     maskSettings(fleetSettings),
+		"inherited_settings": maskSettings(s.resolveSettings("")),
+		"settings_defaults":  maskSettings(settingDefaults),
 	})
 }
 
@@ -776,10 +792,10 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"fleet":    fleet,
-		"host":     hostSettings,
-		"resolved": s.resolveSettings(hostID),
-		"defaults": settingDefaults,
+		"fleet":    maskSettings(fleet),
+		"host":     maskSettings(hostSettings),
+		"resolved": maskSettings(s.resolveSettings(hostID)),
+		"defaults": maskSettings(settingDefaults),
 	})
 }
 
@@ -811,6 +827,9 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		if _, ok := settingDefaults[key]; !ok {
 			writeError(w, http.StatusBadRequest, "unknown setting: "+key)
 			return
+		}
+		if key == "snmp.community" && value == "********" {
+			continue
 		}
 		if strings.HasPrefix(key, "monitor.service_baseline.") {
 			baselineChanged = true
@@ -853,6 +872,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 var settingUnitSeparator = regexp.MustCompile(`[\s,]+`)
+var snmpOIDPattern = regexp.MustCompile(`^\.?[0-9]+(\.[0-9]+)+$`)
 
 // parseUnitList accepts a comma- or whitespace-separated systemd unit list and
 // returns unique validated names. Empty input is valid and clears the list.
@@ -886,6 +906,59 @@ func unitSet(value string) map[string]bool {
 		set[unit] = true
 	}
 	return set
+}
+
+// parseOIDList accepts comma- or whitespace-separated numeric SNMP OIDs.
+func parseOIDList(value string) ([]string, error) {
+	parts := settingUnitSeparator.Split(strings.TrimSpace(value), -1)
+	oids := make([]string, 0, len(parts))
+	seen := make(map[string]bool, len(parts))
+	for _, oid := range parts {
+		oid = strings.TrimSpace(oid)
+		if oid == "" || seen[oid] {
+			continue
+		}
+		if !snmpOIDPattern.MatchString(oid) {
+			return nil, fmt.Errorf("invalid SNMP OID %q", oid)
+		}
+		seen[oid] = true
+		oids = append(oids, oid)
+	}
+	return oids, nil
+}
+
+func parseIPList(value string) ([]string, error) {
+	parts := settingUnitSeparator.Split(strings.TrimSpace(value), -1)
+	ips := make([]string, 0, len(parts))
+	seen := make(map[string]bool, len(parts))
+	for _, ip := range parts {
+		ip = strings.TrimSpace(ip)
+		if ip == "" || seen[ip] {
+			continue
+		}
+		if net.ParseIP(ip) == nil {
+			return nil, fmt.Errorf("invalid IP address %q", ip)
+		}
+		seen[ip] = true
+		ips = append(ips, ip)
+	}
+	return ips, nil
+}
+
+// maskSettings keeps SNMP community strings out of API responses while still
+// telling the UI that a value is configured.
+func maskSettings(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	masked := make(map[string]string, len(values))
+	for key, value := range values {
+		if key == "snmp.community" && value != "" {
+			value = "********"
+		}
+		masked[key] = value
+	}
+	return masked
 }
 
 // unitExcluded matches exact unit names and trailing-* prefix patterns such as
@@ -931,6 +1004,59 @@ func validateSetting(key, value string) error {
 		}
 	case "monitor.service_baseline.exclude":
 		if _, err := parseUnitList(value); err != nil {
+			return err
+		}
+	case "syslog.enabled", "snmp.enabled":
+		if value != "0" && value != "1" {
+			return errors.New(key + " must be 0 or 1")
+		}
+	case "syslog.listen":
+		_, port, err := net.SplitHostPort(value)
+		if err != nil {
+			return errors.New("syslog.listen must be host:port")
+		}
+		number, err := strconv.Atoi(port)
+		if err != nil || number < 1 || number > 65535 {
+			return errors.New("syslog.listen port must be between 1 and 65535")
+		}
+	case "syslog.protocol":
+		if value != "udp" && value != "tcp" {
+			return errors.New("syslog.protocol must be udp or tcp")
+		}
+	case "syslog.window_minutes":
+		minutes, err := strconv.Atoi(value)
+		if err != nil || minutes < 1 || minutes > 1440 {
+			return errors.New("syslog.window_minutes must be between 1 and 1440")
+		}
+	case "snmp.version":
+		if value != "1" && value != "2c" {
+			return errors.New("snmp.version must be 1 or 2c")
+		}
+	case "snmp.port":
+		port, err := strconv.Atoi(value)
+		if err != nil || port < 1 || port > 65535 {
+			return errors.New("snmp.port must be between 1 and 65535")
+		}
+	case "snmp.community":
+		if len(value) > 128 {
+			return errors.New("snmp.community must be at most 128 characters")
+		}
+		for _, char := range value {
+			if char < 0x20 || char == 0x7f {
+				return errors.New("snmp.community contains unsupported control characters")
+			}
+		}
+	case "snmp.interval":
+		duration, err := time.ParseDuration(value)
+		if err != nil || duration < 10*time.Second || duration > time.Hour {
+			return errors.New("snmp.interval must be a duration between 10s and 1h")
+		}
+	case "snmp.oids":
+		if _, err := parseOIDList(value); err != nil {
+			return err
+		}
+	case "syslog.sources":
+		if _, err := parseIPList(value); err != nil {
 			return err
 		}
 	case "events.retention_days":

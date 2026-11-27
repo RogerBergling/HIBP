@@ -2,10 +2,10 @@
 
 Status: **implemented MVP.** Service-baseline drift, Docker-health defaults, NTP
 sync/offset monitoring, severity-based email routing, journald/auth events with
-a failed-authentication monitor, typed service/package/Checkmk runbooks, and the
-cross-platform monitoring agent MVP are implemented. Custom log-file rules,
-external agent adapters, mTLS/signed agent policy, and Windows performance/
-Docker parity remain proposed.
+a failed-authentication monitor, typed service/package/Checkmk runbooks, the
+cross-platform monitoring agent MVP, and network-device syslog/SNMP monitoring
+are implemented. Custom log-file rules, external agent adapters, mTLS/signed
+agent policy, and Windows performance/Docker parity remain proposed.
 
 ## Goals
 
@@ -237,6 +237,21 @@ Each action:
 
 A future approved-playbook feature may add reviewed scripts, but it is separate
 from typed runbooks and requires signature/version/approval controls.
+
+### Network devices
+
+UDM, gateway, switch, and access-point monitoring is read-only:
+
+- `auth_type=network` hosts have no SSH actions.
+- Syslog is pushed by the device into a configurable UDP/TCP receiver and mapped
+  to a network host by source IP. Messages are normalized into `host_events`.
+- SNMP values are polled by the controller with configurable v1/v2c community,
+  port, interval, and scalar OID list. Values and the last poll error are stored
+  per host.
+- `syslog.event`, `snmp.value`, and `snmp.poll` monitors reuse the existing
+  assignment, repeat/cooldown, and email severity routing.
+- Community strings are masked in API responses. Syslog source allowlisting and
+  network isolation are required because syslog is unauthenticated.
 
 ### Agent strategy
 

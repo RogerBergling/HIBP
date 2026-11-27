@@ -307,6 +307,8 @@ func runServer(args []string) error {
 	go app.RunMonitor(ctx)
 	go app.RunJobs(ctx)
 	go app.RunScheduler(ctx)
+	go app.RunSyslog(ctx)
+	go app.RunSNMP(ctx)
 	errCh := make(chan error, 1)
 	if listenConfig.TLS {
 		go func() { errCh <- httpServer.ServeTLS(listener, *tlsCert, *tlsKey) }()

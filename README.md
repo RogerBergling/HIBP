@@ -394,7 +394,7 @@ HIBP_SSH_DIR=./secrets/ssh
 HIBP_PASSPHRASE_FILE=./secrets/db.passphrase
 ```
 
-`:edge` contains schema 20 and can migrate older local databases forward. It is
+`:edge` contains schema 21 and can migrate older local databases forward. It is
 an unreleased build; after validating the migration, switch to a pinned release
 or image digest.
 
@@ -1236,10 +1236,10 @@ and all sessions.
 
 - Scheduled collection runs only for hosts with `auth_type=key` and a trusted
   host key. Manual password SSH is supported, but no password is stored.
-- Only `key` and `password` are accepted for `auth_type`. `ssh-agent` and SSH
-  certificate authentication are rejected by host create, update, CSV import,
-  and CMDB import; the current transport implements only an unencrypted key file
-  or a manual password.
+- Only `key`, `password`, `agent`, and `network` are accepted for `auth_type`.
+  `ssh-agent` and SSH certificate authentication are rejected by host create,
+  update, CSV import, and CMDB import. `network` hosts are read-only SNMP/syslog
+  devices and expose no SSH actions.
 - Verify the host fingerprint through an independent channel before clicking
   **Trust**. Do not trust a first-use prompt blindly.
 - Install the helper on one canary host first, verify the generated
@@ -1806,6 +1806,13 @@ Implemented check types:
 - `security.auth` — fleet-wide failed-authentication count from normalized
   journald/auth events. Warning and critical thresholds are counts inside a
   configurable window; the default is 5 warning / 10 critical in 10 minutes.
+- `syslog.event` — counts network-device syslog messages whose text contains the
+  monitor target during `syslog.window_minutes`. Warning and critical thresholds
+  are counts; a blank target matches every syslog event.
+- `snmp.value` — numeric scalar OID value from the network host’s SNMP poll,
+  compared with warning/critical thresholds.
+- `snmp.poll` — critical when the latest SNMP poll failed; unknown when no poll
+  has succeeded or the poll is stale.
 - `http` — HTTP/HTTPS status (2xx/3xx healthy) and optional latency thresholds.
   HTTP monitors can opt into skipping TLS certificate verification for trusted
   internal endpoints with self-signed or name-mismatched certificates.
@@ -1910,11 +1917,51 @@ tokens are stored as hashes and can be revoked or rotated. Windows support is
 monitoring-only: services, W32Time, and Security/System Event Log events. Windows
 Update patching and Windows runbooks are not implemented.
 
+### Network devices: syslog and SNMP
+
+Gateway and switch devices such as a UniFi Dream Machine can be added as
+read-only `auth_type=network` hosts. They have no SSH actions:
+
+- **Syslog is pushed by the device.** Enable the receiver under
+  **Settings → Syslog receiver**, set the listen address and UDP/TCP protocol,
+  then point the device at that address. Only source IPs matching a network
+  host’s address or its **Extra syslog source IPs** are accepted.
+- **SNMP is polled by HIBP.** Open the host’s **Network** action to set the SNMP
+  version (`v1` or `v2c`), community string, port, poll interval, and scalar OID
+  list. The community is masked in API responses and stored encrypted at rest.
+- **Monitors:**
+  - `syslog.event` counts events whose message contains a text and compares the
+    count to warning/critical thresholds inside the configured syslog window.
+  - `snmp.value` compares a numeric OID value to warning/critical thresholds.
+  - `snmp.poll` alerts when the latest SNMP poll failed or is stale.
+- Syslog events are normalized into the existing security/service event table,
+  so `security.auth` can also count device authentication failures.
+
+The SNMP MVP polls scalar OIDs with `Get`; it does not walk interface tables.
+Use `snmpwalk` on the device to identify the exact scalar OIDs for CPU, memory,
+temperature, or interface status. Syslog is unauthenticated, so bind the
+receiver to the LAN and firewall it to the device/network CIDR.
+
+Example UDM setup:
+
+1. Add a host named `udm` with `auth_type=network`, the UDM LAN management IP,
+   and port `161`.
+2. Open the host **Network** action. Enable SNMP, choose `v2c`, enter the
+   community string, set the poll interval, and add the scalar OIDs you want.
+   Add any extra syslog source IPs the UDM uses.
+3. In **Settings**, enable the syslog receiver, bind it to the HIBP LAN address
+   and port `5514` (or `514` through a relay), and choose UDP or TCP.
+4. Point the UDM remote syslog at that HIBP address/port. Restrict UDM SNMP
+   access to the HIBP controller IP.
+5. Add monitors assigned to the `udm` host:
+   `snmp.poll`, `snmp.value` for each useful OID, and `syslog.event` for
+   messages such as `WAN down` or `authentication failure`.
+
 The planned enterprise monitoring workstream is documented separately in
 [Enterprise monitoring design](docs/enterprise-monitoring.md). Service-baseline
 drift, fleet-wide Docker health defaults, NTP offset checks, authentication-event
-collection, severity routing, typed bulk runbooks, and the cross-platform
-monitoring agent MVP are implemented.
+collection, severity routing, typed bulk runbooks, the cross-platform monitoring
+agent MVP, and network-device syslog/SNMP monitoring are implemented.
 
 Email settings are global; each monitor may override recipients. The global
 configuration can define separate warning, critical, and recovery recipient
@@ -3314,6 +3361,10 @@ Current status:
 - Fleet-wide `docker.health` monitor for unhealthy, restarting, or dead
   containers, plus strict all-container monitoring with a `docker.container`
   target of `*`. Migration 016 creates the default fleet monitor.
+- Read-only network-device monitoring: `auth_type=network`, a configurable
+  syslog UDP/TCP receiver, SNMP v1/v2c scalar polling with configurable
+  community/port/interval/OIDs, and `syslog.event`, `snmp.value`, and
+  `snmp.poll` monitors. Migration 021 adds `snmp_values` and `snmp_poll_state`.
 - Fleet-wide `host.ntp` monitor backed by timedatectl/chrony synchronization and
   offset telemetry. Migration 017 adds the facts fields and default monitor.
 - Global email severity routing: warning, critical, and recovery recipient
@@ -3693,7 +3744,7 @@ Current status:
 ## Data model
 
 The current schema is implemented in `internal/store/migrations/001_init.sql`
-through `020_monitor_insecure_skip_verify.sql`. Domain objects use UUIDs, timestamps are
+through `021_network_monitoring.sql`. Domain objects use UUIDs, timestamps are
 UTC ISO 8601, and durations are stored in seconds.
 
 > **Implemented:** `schema_migrations`, `app_meta`, `hosts`, `host_facts`,
@@ -3701,8 +3752,9 @@ UTC ISO 8601, and durations are stored in seconds.
 > `audit_log`, `host_system_info`, `host_metrics`, `docker_projects`,
 > `docker_containers`, `settings`, `monitors`, `monitor_assignments`,
 > `monitor_state`, `alert_events`, `host_services`, `host_service_baseline`,
-> `host_events`, `agents`, `schedules`, `schedule_assignments`, `jobs`, and
-> `job_targets`. The remaining tables below are planned design targets.
+> `host_events`, `agents`, `snmp_values`, `snmp_poll_state`, `schedules`,
+> `schedule_assignments`, `jobs`, and `job_targets`. The remaining tables below
+> are planned design targets.
 >
 > Migration 014 drops the removed integration tables and settings. Historical
 > audit entries from the old integration feature remain because the audit chain
@@ -3729,6 +3781,8 @@ UTC ISO 8601, and durations are stored in seconds.
 | `host_service_baseline` | Per-host running-unit baseline and exclusions for service drift monitoring. | `host_id`, `unit`, `state`, `expected`, `excluded`, `first_seen`, `last_seen` |
 | `host_events` | Normalized security/service events with retention. | `id`, `host_id`, `event_id`, `source`, `category`, `severity`, `unit`, `username`, `remote_ip`, `message`, `occurred_at`, `received_at` |
 | `agents` | Cross-platform monitoring agent identity and heartbeat. | `id`, `host_id`, `name`, `token_hash`, `platform`, `version`, `last_seen`, `created_at`, `revoked_at` |
+| `snmp_values` | Latest scalar OID values for network-device hosts. | `host_id`, `oid`, `value`, `value_type`, `collected_at` |
+| `snmp_poll_state` | Last SNMP poll time and bounded failure reason per host. | `host_id`, `last_poll`, `last_error` |
 | `credentials` | Encrypted credential metadata and secrets. | `id`, `name`, `auth_type`, `username`, `key_path`, `secret_ref`, `wrapped_dek`, `encrypted_secret`, `sudo_mode`, `created_at`, `rotated_at` |
 | `host_credentials` | Credential assignment and precedence. | `host_id`, `credential_id`, `priority` |
 | `host_keys` | Known host keys. | `host_id`, `key_type`, `fingerprint`, `first_seen`, `last_seen`, `trusted`, `revoked_at` |
@@ -3836,10 +3890,11 @@ Rules:
   string; it is not syntax-validated beyond being non-empty. Typos become
   connection or scheduled-run failures.
 - `port` defaults to 22 and must be in the valid range.
-- `auth_type` is one of `key` or `password`. `ssh-agent` and SSH certificate
-  authentication are not implemented and are rejected by host create, update,
-  CSV import, and CMDB import. Password is a manual-run fallback and is not
-  usable by the scheduler.
+- `auth_type` is one of `key`, `password`, `agent`, or `network`. `ssh-agent`
+  and SSH certificate authentication are not implemented and are rejected by
+  host create, update, CSV import, and CMDB import. Password is a manual-run
+  fallback and is not usable by the scheduler. `network` is a read-only
+  SNMP/syslog device type and must use an address, usually on port 161.
 - `key_path` is a reference, not key material. It must be absolute; the import
   does not verify that the file exists or is `0600`. Never import a private key
   through CSV.
@@ -3981,7 +4036,7 @@ not accept passwords, private keys, or scripts.
 
 ### Schema migrations
 
-- Current schema version: **20** (`020_monitor_insecure_skip_verify.sql`). The `v0.6.9`
+- Current schema version: **21** (`021_network_monitoring.sql`). The `v0.6.9`
   release used schema 9; `v0.6.6` used schema 8; `v0.6.2` used schema 7;
   `v0.5.1` used schema 6; `v0.5.0` and earlier used their respective earlier
   migrations.

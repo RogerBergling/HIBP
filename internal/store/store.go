@@ -625,26 +625,33 @@ func validateHost(host Host) error {
 	if strings.TrimSpace(host.Address) == "" {
 		return errors.New("address is required")
 	}
-	if host.Port == 0 {
-		host.Port = 22
-	}
-	if host.Port < 1 || host.Port > 65535 {
-		return errors.New("port must be between 1 and 65535")
-	}
-	if strings.TrimSpace(host.Username) == "" {
-		return errors.New("username is required")
-	}
 	authType := strings.TrimSpace(host.AuthType)
 	if authType == "" {
 		authType = "key"
 	}
+	if host.Port == 0 {
+		if authType == "network" {
+			host.Port = 161
+		} else {
+			host.Port = 22
+		}
+	}
+	if host.Port < 1 || host.Port > 65535 {
+		return errors.New("port must be between 1 and 65535")
+	}
 	switch authType {
-	case "key", "password", "agent":
+	case "key", "password", "agent", "network":
 	default:
-		return errors.New("auth_type must be key, password, or agent; ssh-agent and SSH certificate authentication are not supported")
+		return errors.New("auth_type must be key, password, agent, or network; ssh-agent and SSH certificate authentication are not supported")
+	}
+	if authType != "network" && strings.TrimSpace(host.Username) == "" {
+		return errors.New("username is required")
 	}
 	if authType == "key" && strings.TrimSpace(host.KeyPath) == "" {
 		return errors.New("key_path is required for key authentication")
+	}
+	if authType == "network" && host.ProxyJump != nil {
+		return errors.New("proxy_jump is not supported for network devices")
 	}
 	if host.ProxyJump != nil {
 		jump := host.ProxyJump
@@ -677,7 +684,11 @@ func (s *Store) CreateHostAs(actor string, host Host) (Host, error) {
 		return Host{}, err
 	}
 	if host.Port == 0 {
-		host.Port = 22
+		if host.AuthType == "network" {
+			host.Port = 161
+		} else {
+			host.Port = 22
+		}
 	}
 	if host.AuthType == "" {
 		host.AuthType = "key"
@@ -738,7 +749,11 @@ func (s *Store) UpdateHostAs(actor string, host Host) (Host, error) {
 		return Host{}, err
 	}
 	if host.Port == 0 {
-		host.Port = 22
+		if host.AuthType == "network" {
+			host.Port = 161
+		} else {
+			host.Port = 22
+		}
 	}
 	if host.AuthType == "" {
 		host.AuthType = "key"

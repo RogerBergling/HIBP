@@ -66,9 +66,9 @@ Out of scope:
   sudo; they never receive a prompted password. `ssh-agent`, hardware-backed
   keys, SSH certificates, and passphrase-protected key files are not
   implemented. Host create, update, CSV import, and CMDB import accept
-  `auth_type=agent` for monitoring-only hosts and reject `certificate`;
-  scheduled SSH collection and background jobs only process `auth_type=key`
-  hosts. Agent hosts use a per-host bearer token and cannot run SSH actions.
+  `auth_type=agent` and `auth_type=network` for monitoring-only hosts and
+  reject `certificate`; scheduled SSH collection and background jobs only
+  process `auth_type=key` hosts. `network` hosts use SNMP/syslog only. Agent hosts use a per-host bearer token and cannot run SSH actions.
 - `ProxyJump` is single-hop only. Multi-hop chains, interactive bastion
   authentication, SSH agent forwarding, and a jump host behind another jump are
   not supported.
@@ -167,6 +167,18 @@ cron-based patch schedules are implemented.
   over HTTPS and restrict the endpoint with a private network/firewall policy.
 - Windows agent support is monitoring-only. It does not perform Windows Update
   patching, arbitrary commands, or Windows runbooks.
+- Network-device hosts use `auth_type=network` and are read-only. They have no
+  SSH actions. SNMP polling uses v1/v2c in the current MVP; the community string
+  is stored in the encrypted database and masked in API responses. SNMPv2c
+  sends the community in clear text, so restrict UDP 161 to the controller.
+- The syslog receiver is disabled by default. When enabled it binds the
+  configured address and accepts events only from source IPs mapped to a
+  `network` host (the host address plus its configured extra source IPs).
+  Syslog is unauthenticated and spoofable; bind it to the LAN, firewall it to
+  the device/network CIDR, and never expose it publicly.
+- `snmp.value` monitors compare numeric scalar OID values. `snmp.poll` alerts on
+  failed or stale polls. `syslog.event` counts matching messages in a bounded
+  window. None of these actions can change the network device.
 - HTTP, TCP, and TLS monitors are controller-originated network probes. They do
   not use SSH, the helper, or a host assignment, so a standalone monitor works
   when the target host is offline or unreachable. The target is therefore a

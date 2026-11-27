@@ -1549,6 +1549,8 @@ function hostRow(host) {
   actions.append(actionButton('Services', () => showHostDetails(host, 'services')));
   if (host.auth_type === 'agent') {
     actions.append(actionButton('Agent token', () => showAgentTokenModal(host)));
+  } else if (host.auth_type === 'network') {
+    actions.append(actionButton('Network', () => showNetworkHostModal(host)));
   } else {
     actions.append(actionButton('Test', () => testHost(host)));
     actions.append(actionButton('Setup', () => bootstrapHost(host)));
@@ -1658,6 +1660,22 @@ const MONITOR_TYPES = {
     label: 'Failed authentication', target: 'none', threshold: 'number',
     warningLabel: 'Warning count', criticalLabel: 'Critical count', warning: 5, critical: 10,
     note: 'Counts normalized authentication-failure events collected from journald or auth logs in the configured window. The window is a fleet setting (events.auth_window_minutes, default 10).',
+  },
+  'syslog.event': {
+    label: 'Syslog event', target: 'text', targetLabel: 'Message contains',
+    placeholder: 'WAN down', threshold: 'number',
+    warningLabel: 'Warning count', criticalLabel: 'Critical count', warning: 1, critical: 5,
+    note: 'Counts syslog events whose message contains this text during syslog.window_minutes. Blank matches every syslog event.',
+  },
+  'snmp.value': {
+    label: 'SNMP value', target: 'oid', targetLabel: 'OID',
+    placeholder: '.1.3.6.1.2.1.1.3.0', threshold: 'number',
+    warningLabel: 'Warning value', criticalLabel: 'Critical value', warning: 0, critical: 1,
+    note: 'Numeric value from the host SNMP poll. Thresholds compare the raw OID value; TimeTicks are in 1/100s.',
+  },
+  'snmp.poll': {
+    label: 'SNMP poll', target: 'none', threshold: 'none',
+    note: 'Critical when the last SNMP poll failed; unknown when no poll has succeeded or the poll is stale.',
   },
   'http': {
     label: 'HTTP endpoint', target: 'url', targetLabel: 'URL',
@@ -5528,6 +5546,22 @@ async function showSettingsModal() {
   baselineExcludeWrap.append(baselineExclude);
   body.append(baselineExcludeWrap);
   body.append(el('p', 'field-note', 'Comma- or whitespace-separated systemd units or trailing-* prefixes ignored by the Service baseline monitor on every host. Use check-mk-agent@* for volatile Checkmk agent connection units. Per-host exclusions and the built-in transient-unit defaults still apply. Automatic expansion controls whether newly observed running units are added to each host baseline.'));
+  body.append(el('p', 'muted', 'Network devices: syslog is pushed by the device; SNMP values are polled from hosts with SNMP enabled. Per-host credentials, OIDs, and syslog source IPs are configured from the host Network action.'));
+  const networkGrid = el('div', 'settings-grid');
+  const syslogEnabled = selectField(networkGrid, 'Syslog receiver', 'syslog_enabled', [['1', 'Enabled'], ['0', 'Disabled']]);
+  const syslogListen = inputField(networkGrid, 'Syslog listen address', 'syslog_listen', '0.0.0.0:5514');
+  const syslogProtocol = selectField(networkGrid, 'Syslog protocol', 'syslog_protocol', [['udp', 'UDP'], ['tcp', 'TCP']]);
+  const syslogWindow = inputField(networkGrid, 'Syslog event window (minutes)', 'syslog_window', '10', 'number');
+  const snmpInterval = inputField(networkGrid, 'SNMP poll interval', 'snmp_interval', '60s');
+  body.append(networkGrid);
+  const snmpOidsWrap = el('label', 'field', 'Default SNMP OIDs');
+  const snmpOids = el('textarea');
+  snmpOids.rows = 3;
+  snmpOids.spellcheck = false;
+  snmpOids.placeholder = '.1.3.6.1.2.1.1.3.0\n.1.3.6.1.2.1.1.5.0';
+  snmpOidsWrap.append(snmpOids);
+  body.append(snmpOidsWrap);
+  body.append(el('p', 'field-note', 'The syslog receiver binds the configured address; restrict it to the device/network CIDR with a firewall. SNMP community strings are configured per host and are never returned by the API.'));
   body.append(el('p', 'muted', 'Backups are fleet-wide. Leave the directory blank to use the database directory. Only timestamped backups created by HIBP are pruned; lowering the count deletes older HIBP-created backups on the next backup.'));
   const backupGrid = el('div', 'settings-grid');
   const backupDir = inputField(backupGrid, 'Backup directory', 'backup_directory', '/var/lib/hibp/backups');
@@ -5554,6 +5588,12 @@ async function showSettingsModal() {
     roots.value = settings['docker.scan_roots'] || '/opt';
     baselineAutoAdd.value = settings['monitor.service_baseline.auto_add'] || '1';
     baselineExclude.value = settings['monitor.service_baseline.exclude'] || '';
+    syslogEnabled.value = settings['syslog.enabled'] || '0';
+    syslogListen.value = settings['syslog.listen'] || '0.0.0.0:5514';
+    syslogProtocol.value = settings['syslog.protocol'] || 'udp';
+    syslogWindow.value = settings['syslog.window_minutes'] || '10';
+    snmpInterval.value = settings['snmp.interval'] || '60s';
+    snmpOids.value = settings['snmp.oids'] || '';
     backupDir.value = settings['backup.directory'] || '';
     backupRetention.value = settings['backup.retention_count'] || '3';
   } catch (error) {
@@ -5576,6 +5616,12 @@ async function showSettingsModal() {
             'docker.scan_roots': roots.value.trim(),
             'monitor.service_baseline.auto_add': baselineAutoAdd.value,
             'monitor.service_baseline.exclude': baselineExclude.value.trim(),
+            'syslog.enabled': syslogEnabled.value,
+            'syslog.listen': syslogListen.value.trim(),
+            'syslog.protocol': syslogProtocol.value,
+            'syslog.window_minutes': syslogWindow.value.trim(),
+            'snmp.interval': snmpInterval.value.trim(),
+            'snmp.oids': snmpOids.value.trim(),
             'backup.directory': backupDir.value.trim(),
             'backup.retention_count': backupRetention.value.trim(),
           },
@@ -5598,6 +5644,8 @@ async function showSettingsModal() {
             'metrics.retention_days': '', 'events.enabled': '', 'events.retention_days': '',
             'events.auth_window_minutes': '', 'docker.scan_roots': '',
             'monitor.service_baseline.auto_add': '', 'monitor.service_baseline.exclude': '',
+            'syslog.enabled': '', 'syslog.listen': '', 'syslog.protocol': '',
+            'syslog.window_minutes': '', 'snmp.interval': '', 'snmp.oids': '',
             'backup.directory': '', 'backup.retention_count': '',
           },
         }),
@@ -5683,6 +5731,140 @@ async function showAgentTokenModal(host) {
   }
 }
 
+async function showNetworkHostModal(host) {
+  let data;
+  try {
+    data = await api('/api/v1/hosts/' + encodeURIComponent(host.id) + '/details');
+  } catch (error) {
+    toast(error.message, 'error');
+    return;
+  }
+  const settings = data.settings || {};
+  const form = el('form', 'modal-body');
+  form.append(el('p', 'muted', 'Read-only SNMP polling and syslog reception for this network device. No SSH actions are used.'));
+  const grid = el('div', 'settings-grid');
+  const snmpEnabled = selectField(grid, 'SNMP polling', 'snmp_enabled', [['1', 'Enabled'], ['0', 'Disabled']]);
+  snmpEnabled.value = settings['snmp.enabled'] === '1' ? '1' : '0';
+  const version = selectField(grid, 'SNMP version', 'snmp_version', [['2c', 'v2c'], ['1', 'v1']]);
+  version.value = settings['snmp.version'] || '2c';
+  const port = inputField(grid, 'SNMP port', 'snmp_port', '161', 'number');
+  port.value = settings['snmp.port'] || String(host.port || 161);
+  const interval = inputField(grid, 'Poll interval', 'snmp_interval', '60s');
+  interval.value = settings['snmp.interval'] || '60s';
+  form.append(grid);
+  const community = inputField(form, 'SNMP community', 'snmp_community',
+    settings['snmp.community'] === '********' ? 'configured — leave blank to keep' : 'community string', 'password');
+  community.autocomplete = 'new-password';
+  const clearWrap = el('label', 'field checkbox-field');
+  const clearCommunity = el('input');
+  clearCommunity.type = 'checkbox';
+  clearWrap.append(clearCommunity, document.createTextNode('Clear the stored community string'));
+  form.append(clearWrap);
+  const oidWrap = el('label', 'field', 'OIDs to poll');
+  const oids = el('textarea');
+  oids.rows = 4;
+  oids.spellcheck = false;
+  oids.placeholder = '.1.3.6.1.2.1.1.3.0\n.1.3.6.1.2.1.1.5.0';
+  oidWrap.append(oids);
+  form.append(oidWrap);
+  oids.value = settings['snmp.oids'] || '';
+  const sources = inputField(form, 'Extra syslog source IPs', 'syslog_sources', 'The host address is always accepted');
+  sources.value = settings['syslog.sources'] || '';
+  form.append(el('p', 'field-note', 'Comma- or whitespace-separated OIDs and IPs. The SNMP community is stored encrypted at rest, never returned by the API, and only used by the controller poller.'));
+
+  const valuesCard = el('div', 'detail-card');
+  valuesCard.append(el('h3', '', 'Latest SNMP values'));
+  const pollState = data.snmp_state || {};
+  const pollText = pollState.last_poll
+    ? 'Last poll: ' + relativeTime(pollState.last_poll) + (pollState.last_error ? ' · error: ' + pollState.last_error : '')
+    : 'Not polled yet.';
+  valuesCard.append(el('p', 'muted', pollText));
+  const values = data.snmp_values || [];
+  if (values.length) {
+    const wrap = el('div', 'scroll-list');
+    const table = el('table');
+    const head = el('tr');
+    for (const label of ['OID', 'Value', 'Type', 'Collected']) head.append(el('th', '', label));
+    table.append(head);
+    for (const value of values) {
+      const row = el('tr');
+      row.append(
+        el('td', '', value.oid),
+        el('td', '', value.value),
+        el('td', '', value.value_type || '—'),
+        el('td', '', relativeTime(value.collected_at)),
+      );
+      table.append(row);
+    }
+    wrap.append(table);
+    valuesCard.append(wrap);
+  } else {
+    valuesCard.append(el('p', 'muted', 'No SNMP values collected yet. Enable polling and save, then wait for the next poll.'));
+  }
+  form.append(valuesCard);
+
+  const actions = el('div', 'modal-actions');
+  const reset = el('button', 'btn', 'Use fleet defaults');
+  reset.type = 'button';
+  const save = el('button', 'btn primary', 'Save network settings');
+  save.type = 'submit';
+  actions.append(reset, save);
+  form.append(actions);
+  const close = openModal('Network — ' + host.name, form, null, 'wide');
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    let communityValue = community.value;
+    if (communityValue === '') {
+      if (clearCommunity.checked) communityValue = '';
+      else if ((settings['snmp.community'] || '') === '********') communityValue = '********';
+    }
+    try {
+      await api('/api/v1/settings', {
+        method: 'PUT',
+        body: JSON.stringify({
+          scope: 'host', host_id: host.id,
+          settings: {
+            'snmp.enabled': snmpEnabled.value,
+            'snmp.version': version.value,
+            'snmp.port': port.value.trim(),
+            'snmp.interval': interval.value.trim(),
+            'snmp.oids': oids.value.trim(),
+            'snmp.community': communityValue,
+            'syslog.sources': sources.value.trim(),
+          },
+        }),
+      });
+      toast('Network settings saved', 'ok');
+      close();
+      await loadAll({ silent: true });
+      await showNetworkHostModal(host);
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  });
+  reset.addEventListener('click', async () => {
+    try {
+      await api('/api/v1/settings', {
+        method: 'PUT',
+        body: JSON.stringify({
+          scope: 'host', host_id: host.id,
+          settings: {
+            'snmp.enabled': '', 'snmp.version': '', 'snmp.port': '', 'snmp.interval': '',
+            'snmp.oids': '', 'snmp.community': '', 'syslog.sources': '',
+          },
+        }),
+      });
+      toast('Network settings now inherit fleet defaults', 'ok');
+      close();
+      await loadAll({ silent: true });
+      await showNetworkHostModal(host);
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  });
+}
+
 function showAddHostModal(host = null, prefill = null) {
   // A click listener must never leak its Event into the edit path.
   if (host && !host.id) host = null;
@@ -5696,16 +5878,19 @@ function showAddHostModal(host = null, prefill = null) {
   const username = inputField(row, 'Username', 'username', 'ubuntu');
   form.append(row);
   const authRow = el('div', 'form-row');
-  const authType = selectField(authRow, 'Auth type', 'auth_type', [['key', 'SSH key file'], ['password', 'Password (manual fallback)'], ['agent', 'HIBP agent (monitoring only)']]);
+  const authType = selectField(authRow, 'Auth type', 'auth_type', [['key', 'SSH key file'], ['password', 'Password (manual fallback)'], ['agent', 'HIBP agent (monitoring only)'], ['network', 'Network device (SNMP/syslog)']]);
   const keyPath = keyPathField(authRow, source.key_path || '', source.identity_files || []);
   form.append(authRow);
+  const networkNote = el('p', 'field-note hidden', 'Network devices use read-only SNMP polling and syslog. Add the host first, then configure SNMP credentials, OIDs, and syslog source IPs from the Network action.');
+  form.append(networkNote);
   const aptRow = el('div', 'form-row');
   const aptMode = selectField(aptRow, 'APT upgrade mode', 'apt_upgrade_mode', [
     ['safe', 'Safe upgrade — keeps held-back packages'],
     ['full', 'Full upgrade — may install/remove dependencies'],
   ]);
   form.append(aptRow);
-  form.append(el('p', 'field-note', 'APT hosts only. Full upgrade uses apt-get full-upgrade and can install or remove packages. Review the patch preview before applying. Full mode requires an updated helper and sudoers rule on the target.'));
+  const aptNote = el('p', 'field-note', 'APT hosts only. Full upgrade uses apt-get full-upgrade and can install or remove packages. Review the patch preview before applying. Full mode requires an updated helper and sudoers rule on the target.');
+  form.append(aptNote);
   const jump = source.proxy_jump || {};
   const jumpRow = el('div', 'form-row');
   const jumpAddress = inputField(jumpRow, 'Proxy jump host (optional)', 'proxy_jump_address', 'jump.example.com');
@@ -5719,7 +5904,8 @@ function showAddHostModal(host = null, prefill = null) {
     placeholder: 'Defaults to the host key',
   });
   form.append(jumpRow2);
-  form.append(el('p', 'field-note', 'Optional single SSH jump hop. The jump host key is trusted separately. HIBP uses the jump key path when set; otherwise it uses the host key or the manual password.'));
+  const jumpNote = el('p', 'field-note', 'Optional single SSH jump hop. The jump host key is trusted separately. HIBP uses the jump key path when set; otherwise it uses the host key or the manual password.');
+  form.append(jumpNote);
   const groupRow = el('div', 'form-row');
   const group = inputField(groupRow, 'Group', 'group_name', 'web-prod');
   const tags = inputField(groupRow, 'Tags', 'tags', 'web,prod');
@@ -5739,6 +5925,30 @@ function showAddHostModal(host = null, prefill = null) {
   group.value = source.group_name || '';
   tags.value = source.tags || (prefill ? 'ssh-config' : '');
   cmdb.value = source.cmdb_ci_id || '';
+
+  const syncAuthType = () => {
+    const network = authType.value === 'network';
+    const usernameField = username.closest('label.field');
+    if (usernameField) usernameField.classList.toggle('hidden', network);
+    const keyField = keyPath.closest('label.field');
+    if (keyField) keyField.classList.toggle('hidden', network);
+    aptRow.classList.toggle('hidden', network);
+    aptNote.classList.toggle('hidden', network);
+    jumpRow.classList.toggle('hidden', network);
+    jumpRow2.classList.toggle('hidden', network);
+    jumpNote.classList.toggle('hidden', network);
+    networkNote.classList.toggle('hidden', !network);
+    if (network) {
+      jumpAddress.value = '';
+      jumpPort.value = '';
+      jumpUsername.value = '';
+      jumpKeyPath.value = '';
+    }
+    if (network && port.value === '22') port.value = '161';
+    if (!network && port.value === '161') port.value = '22';
+  };
+  authType.addEventListener('change', syncAuthType);
+  syncAuthType();
 
   const actions = el('div', 'modal-actions');
   const cancel = el('button', 'btn', 'Cancel');

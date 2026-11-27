@@ -1486,6 +1486,50 @@ func TestSettingsEndpoints(t *testing.T) {
 	}
 }
 
+func TestSNMPCommunityMaskedAndPreserved(t *testing.T) {
+	ts, db := testServer(t)
+	resp := request(t, http.MethodPut, ts.URL+"/api/v1/settings", "test-token",
+		`{"scope":"fleet","settings":{"snmp.community":"secret-community"}}`)
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		t.Fatalf("save SNMP community failed: %d %s", resp.StatusCode, raw)
+	}
+	_ = resp.Body.Close()
+	if value, err := db.GetSetting("fleet", "snmp.community"); err != nil || value != "secret-community" {
+		t.Fatalf("stored community: %q %v", value, err)
+	}
+	resp = request(t, http.MethodGet, ts.URL+"/api/v1/settings", "test-token", "")
+	raw, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if strings.Contains(string(raw), "secret-community") {
+		t.Fatalf("SNMP community leaked through settings API: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"snmp.community":"********"`) {
+		t.Fatalf("masked SNMP community missing from settings API: %s", raw)
+	}
+	resp = request(t, http.MethodPut, ts.URL+"/api/v1/settings", "test-token",
+		`{"scope":"fleet","settings":{"snmp.community":"********"}}`)
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		t.Fatalf("masked update failed: %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+	if value, err := db.GetSetting("fleet", "snmp.community"); err != nil || value != "secret-community" {
+		t.Fatalf("masked update changed community: %q %v", value, err)
+	}
+	resp = request(t, http.MethodPut, ts.URL+"/api/v1/settings", "test-token",
+		`{"scope":"fleet","settings":{"snmp.community":""}}`)
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		t.Fatalf("clear community failed: %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+	if _, err := db.GetSetting("fleet", "snmp.community"); err == nil {
+		t.Fatal("expected SNMP community to be cleared")
+	}
+}
+
 func TestHostTargetProxyJump(t *testing.T) {
 	_, _, app := testServerWithApp(t, true)
 	host := store.Host{

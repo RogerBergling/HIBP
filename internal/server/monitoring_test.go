@@ -798,6 +798,37 @@ func TestParseUnitListPatterns(t *testing.T) {
 	}
 }
 
+func TestNetworkMonitorValidation(t *testing.T) {
+	ts, _ := testServer(t)
+	valid := []string{
+		`{"name":"WAN events","type":"syslog.event","target":"WAN down","warning":1,"critical":5,"interval_seconds":60,"assignments":[{"scope":"fleet"}]}`,
+		`{"name":"SNMP poll","type":"snmp.poll","interval_seconds":60,"assignments":[{"scope":"fleet"}]}`,
+		`{"name":"Uptime","type":"snmp.value","target":".1.3.6.1.2.1.1.3.0","warning":100,"critical":200,"interval_seconds":60,"assignments":[{"scope":"fleet"}]}`,
+	}
+	for _, payload := range valid {
+		resp := request(t, http.MethodPost, ts.URL+"/api/v1/monitors", "test-token", payload)
+		if resp.StatusCode != http.StatusCreated {
+			raw, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			t.Fatalf("expected monitor creation for %s, got %d %s", payload, resp.StatusCode, raw)
+		}
+		_ = resp.Body.Close()
+	}
+	invalid := []string{
+		`{"name":"Bad SNMP","type":"snmp.value","target":"not an oid","warning":1,"critical":2,"interval_seconds":60,"assignments":[{"scope":"fleet"}]}`,
+		`{"name":"SNMP poll","type":"snmp.poll","target":"x","interval_seconds":60,"assignments":[{"scope":"fleet"}]}`,
+		`{"name":"Bad syslog","type":"syslog.event","warning":0,"critical":5,"interval_seconds":60,"assignments":[{"scope":"fleet"}]}`,
+	}
+	for _, payload := range invalid {
+		resp := request(t, http.MethodPost, ts.URL+"/api/v1/monitors", "test-token", payload)
+		if resp.StatusCode != http.StatusBadRequest {
+			_ = resp.Body.Close()
+			t.Fatalf("expected monitor rejection for %s, got %d", payload, resp.StatusCode)
+		}
+		_ = resp.Body.Close()
+	}
+}
+
 func TestHTTPMonitorInsecureSkipVerify(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

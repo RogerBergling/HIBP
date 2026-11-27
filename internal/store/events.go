@@ -101,6 +101,25 @@ func (s *Store) CountHostEventsSince(hostID, category, since string) (int, error
 	return count, err
 }
 
+// CountHostEventsMatching counts events from a source whose message contains
+// the supplied text. An empty contains value matches every event from the
+// source.
+func (s *Store) CountHostEventsMatching(hostID, source, contains, since string) (int, error) {
+	query := `SELECT COUNT(*) FROM host_events WHERE host_id=? AND occurred_at>=?`
+	args := []any{hostID, since}
+	if source != "" {
+		query += " AND source LIKE ?"
+		args = append(args, source+"%")
+	}
+	if contains != "" {
+		query += " AND instr(lower(message), lower(?)) > 0"
+		args = append(args, contains)
+	}
+	var count int
+	err := s.db.QueryRow(query, args...).Scan(&count)
+	return count, err
+}
+
 func (s *Store) DeleteHostEventsBefore(cutoff string) error {
 	_, err := s.db.Exec("DELETE FROM host_events WHERE received_at < ?", cutoff)
 	return err

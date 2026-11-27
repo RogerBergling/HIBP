@@ -11,6 +11,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -210,6 +211,12 @@ func (s *Server) evaluateMonitor(ctx context.Context, monitor store.Monitor, hos
 		return s.evaluateServiceBaseline(host)
 	case "security.auth":
 		return s.evaluateAuthFailures(monitor, host)
+	case "syslog.event":
+		return s.evaluateSyslogEvent(monitor, host)
+	case "snmp.value":
+		return s.evaluateSNMPValue(monitor, host)
+	case "snmp.poll":
+		return s.evaluateSNMPPoll(host)
 	case "http":
 		if s.demo != nil {
 			status, message := s.demo.EvaluateNetworkMonitor(ctx, monitor)
@@ -598,6 +605,76 @@ func (s *Server) evaluateAuthFailures(monitor store.Monitor, host store.Host) mo
 		return monitorResult{status: "warning", message: fmt.Sprintf("%d failed authentication events in %dm (warning %.0f)", count, window, monitor.Warning)}
 	}
 	return monitorResult{status: "ok", message: fmt.Sprintf("%d failed authentication events in %dm", count, window)}
+}
+
+func (s *Server) evaluateSyslogEvent(monitor store.Monitor, host store.Host) monitorResult {
+	window := intSetting(s.store.ResolveSetting(host.ID, "syslog.window_minutes", "10"), 10)
+	since := time.Now().UTC().Add(-time.Duration(window) * time.Minute).Format(time.RFC3339Nano)
+	count, err := s.store.CountHostEventsMatching(host.ID, "syslog", strings.TrimSpace(monitor.Target), since)
+	if err != nil {
+		return monitorResult{status: "unknown", message: "syslog events are not available"}
+	}
+	if monitor.Critical > 0 && float64(count) >= monitor.Critical {
+		return monitorResult{status: "critical", message: fmt.Sprintf("%d matching syslog events in %dm (critical %.0f)", count, window, monitor.Critical)}
+	}
+	if monitor.Warning > 0 && float64(count) >= monitor.Warning {
+		return monitorResult{status: "warning", message: fmt.Sprintf("%d matching syslog events in %dm (warning %.0f)", count, window, monitor.Warning)}
+	}
+	return monitorResult{status: "ok", message: fmt.Sprintf("%d matching syslog events in %dm", count, window)}
+}
+
+func (s *Server) evaluateSNMPValue(monitor store.Monitor, host store.Host) monitorResult {
+	if s.store.ResolveSetting(host.ID, "snmp.enabled", "0") != "1" {
+		return monitorResult{status: "ok", message: "SNMP polling is disabled for this host"}
+	}
+	oid := normalizeOID(monitor.Target)
+	value, err := s.store.GetSNMPValue(host.ID, oid)
+	if err != nil {
+		return monitorResult{status: "unknown", message: "SNMP OID has not been collected yet"}
+	}
+	parsed, err := strconv.ParseFloat(value.Value, 64)
+	if err != nil {
+		return monitorResult{status: "unknown", message: "SNMP value is not numeric"}
+	}
+	interval := durationSetting(s.store.ResolveSetting(host.ID, "snmp.interval", "60s"), defaultSNMPInterval)
+	if interval < 10*time.Second {
+		interval = 10 * time.Second
+	}
+	if collected, err := time.Parse(time.RFC3339Nano, value.CollectedAt); err != nil || time.Since(collected) > interval*3 {
+		return monitorResult{status: "unknown", message: "SNMP value is stale"}
+	}
+	status := "ok"
+	if monitor.Critical > monitor.Warning && parsed >= monitor.Critical {
+		status = "critical"
+	} else if parsed >= monitor.Warning {
+		status = "warning"
+	}
+	return monitorResult{
+		status: status,
+		message: fmt.Sprintf("OID %s = %s (warning %.2f, critical %.2f)",
+			oid, value.Value, monitor.Warning, monitor.Critical),
+	}
+}
+
+func (s *Server) evaluateSNMPPoll(host store.Host) monitorResult {
+	if s.store.ResolveSetting(host.ID, "snmp.enabled", "0") != "1" {
+		return monitorResult{status: "ok", message: "SNMP polling is disabled for this host"}
+	}
+	state, err := s.store.GetSNMPPollState(host.ID)
+	if err != nil || state.LastPoll == "" {
+		return monitorResult{status: "unknown", message: "SNMP has not been polled yet"}
+	}
+	if state.LastError != "" {
+		return monitorResult{status: "critical", message: "SNMP poll failed: " + state.LastError}
+	}
+	interval := durationSetting(s.store.ResolveSetting(host.ID, "snmp.interval", "60s"), defaultSNMPInterval)
+	if interval < 10*time.Second {
+		interval = 10 * time.Second
+	}
+	if last, err := time.Parse(time.RFC3339Nano, state.LastPoll); err != nil || time.Since(last) > interval*3 {
+		return monitorResult{status: "unknown", message: "SNMP poll is stale"}
+	}
+	return monitorResult{status: "ok", message: "SNMP poll succeeded at " + state.LastPoll}
 }
 
 func monitorListSummary(items []string) string {
