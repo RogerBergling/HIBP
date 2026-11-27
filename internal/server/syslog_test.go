@@ -54,6 +54,30 @@ func TestParseSyslogWithoutPriority(t *testing.T) {
 	}
 }
 
+func TestParseCEFWithRFC3164Priority(t *testing.T) {
+	line := `<134>Nov 27 23:57:03 UDM CEF:0|Ubiquiti|UniFi Network|9.3.33|401|WiFi Client Disconnected|2|UNIFIcategory=Monitoring UNIFIsubCategory=WiFi UNIFIclientAlias=Kamera-Framsida UNIFIclientMac=aa:bb:cc:dd:ee:ff UNIFIwifiName=TV msg=Kamera-Framsida disconnected from TV. Time Connected: 2d 11h.`
+	msg, err := parseSyslogMessage(line, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.CEF == nil {
+		t.Fatalf("expected CEF fields: %+v", msg)
+	}
+	if msg.CEF.Name != "WiFi Client Disconnected" || msg.CEF.Severity != 2 {
+		t.Fatalf("unexpected CEF header: %+v", msg.CEF)
+	}
+	if msg.CEF.Extensions["unificlientalias"] != "Kamera-Framsida" ||
+		msg.CEF.Extensions["unifiwifiname"] != "TV" {
+		t.Fatalf("unexpected CEF extensions: %+v", msg.CEF.Extensions)
+	}
+	if !strings.HasPrefix(msg.Message, "CEF:0|Ubiquiti|") {
+		t.Fatalf("expected complete CEF payload, got %q", msg.Message)
+	}
+	if category, severity := syslogEventClass(msg); category != "network_wifi" || severity != "info" {
+		t.Fatalf("unexpected CEF classification: %s/%s", category, severity)
+	}
+}
+
 func TestParseCEFMessage(t *testing.T) {
 	line := `Nov 27 23:13:54 UDM CEF:0|Ubiquiti|UniFi Network|6.0.19|EVT_GW_WANTransition|WAN Transition|8|cat=network dvc=192.168.4.1 suser=admin src=192.168.4.50 msg=WAN 1 transitioned to down`
 	msg, err := parseSyslogMessage(line, time.Now())

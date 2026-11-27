@@ -344,7 +344,22 @@ func parseSyslogMessage(line string, now time.Time) (syslogMessage, error) {
 	} else {
 		parseRFC3164(rest, &msg, now)
 	}
-	msg.CEF = parseCEF(msg.Message)
+	// Appliances may prefix CEF with an RFC3164 tag, which would otherwise
+	// turn "CEF:0|..." into app "CEF" and message "0|...". Parse from the raw
+	// line as a fallback and keep the complete CEF payload in the message.
+	cef := parseCEF(msg.Message)
+	if cef == nil {
+		cef = parseCEF(line)
+	}
+	if cef != nil {
+		msg.CEF = cef
+		if index := strings.Index(line, "CEF:"); index >= 0 {
+			msg.Message = strings.TrimSpace(line[index:])
+			if strings.EqualFold(msg.AppName, "CEF") {
+				msg.AppName = ""
+			}
+		}
+	}
 	return msg, nil
 }
 

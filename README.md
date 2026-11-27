@@ -1982,7 +1982,11 @@ Example UDM setup:
 3. In **Settings**, enable the syslog receiver, bind it to the HIBP LAN address
    and port `5514` (or `514` through a relay), and choose UDP or TCP.
 4. Point the UDM remote syslog at that HIBP address/port. Restrict UDM SNMP
-   access to the HIBP controller IP.
+   access to the HIBP controller IP. For UniFi client/Wi-Fi monitoring events,
+   enable **Settings → Integrations → System Logging / SIEM**, select the
+   **Monitoring** category (plus Security, Internet, System, or Power as
+   needed), and send CEF to the same HIBP syslog receiver. Classic remote
+   logging may not export client connect/disconnect events.
 5. Add monitors assigned to the `udm` host:
    `snmp.poll`, `snmp.value` for each useful OID, and `syslog.event` for
    messages such as `WAN down` or `authentication failure`.
