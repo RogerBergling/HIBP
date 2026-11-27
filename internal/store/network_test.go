@@ -63,4 +63,11 @@ func TestNetworkHostRequiresAddress(t *testing.T) {
 	if _, err := s.CreateHost(Host{Name: "web", Address: "10.0.0.10", AuthType: "key", KeyPath: "/tmp/key"}); err == nil {
 		t.Fatal("expected key host without username to be rejected")
 	}
+	agent, err := s.CreateHost(Host{Name: "win11", Address: "10.0.0.20", AuthType: "agent"})
+	if err != nil {
+		t.Fatalf("agent host should not require a username: %v", err)
+	}
+	if agent.Username != "" {
+		t.Fatalf("unexpected agent username: %q", agent.Username)
+	}
 }

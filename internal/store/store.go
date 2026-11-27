@@ -644,8 +644,8 @@ func validateHost(host Host) error {
 	default:
 		return errors.New("auth_type must be key, password, agent, or network; ssh-agent and SSH certificate authentication are not supported")
 	}
-	if authType != "network" && strings.TrimSpace(host.Username) == "" {
-		return errors.New("username is required")
+	if (authType == "key" || authType == "password") && strings.TrimSpace(host.Username) == "" {
+		return errors.New("username is required for SSH key or password authentication")
 	}
 	if authType == "key" && strings.TrimSpace(host.KeyPath) == "" {
 		return errors.New("key_path is required for key authentication")

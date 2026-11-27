@@ -3902,7 +3902,11 @@ Rules:
 - `name` and `address` are required. The address is stored as a hostname or IP
   string; it is not syntax-validated beyond being non-empty. Typos become
   connection or scheduled-run failures.
-- `port` defaults to 22 and must be in the valid range.
+- `port` defaults to 22 for SSH and agent hosts, and 161 for network devices;
+  it must be in the valid range.
+- `username` is required for `key` and `password` authentication because it is
+  the SSH login account. It is optional and unused for `agent` and `network`
+  hosts.
 - `auth_type` is one of `key`, `password`, `agent`, or `network`. `ssh-agent`
   and SSH certificate authentication are not implemented and are rejected by
   host create, update, CSV import, and CMDB import. Password is a manual-run

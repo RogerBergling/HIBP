@@ -5883,6 +5883,8 @@ function showAddHostModal(host = null, prefill = null) {
   form.append(authRow);
   const networkNote = el('p', 'field-note hidden', 'Network devices use read-only SNMP polling and syslog. Add the host first, then configure SNMP credentials, OIDs, and syslog source IPs from the Network action.');
   form.append(networkNote);
+  const agentNote = el('p', 'field-note hidden', 'Agent hosts use a one-time token. After saving, use Agent token on the host row and install hibp-agent. No SSH username, key, or jump host is required.');
+  form.append(agentNote);
   const aptRow = el('div', 'form-row');
   const aptMode = selectField(aptRow, 'APT upgrade mode', 'apt_upgrade_mode', [
     ['safe', 'Safe upgrade — keeps held-back packages'],
@@ -5928,17 +5930,20 @@ function showAddHostModal(host = null, prefill = null) {
 
   const syncAuthType = () => {
     const network = authType.value === 'network';
+    const agent = authType.value === 'agent';
+    const noSSH = network || agent;
     const usernameField = username.closest('label.field');
-    if (usernameField) usernameField.classList.toggle('hidden', network);
+    if (usernameField) usernameField.classList.toggle('hidden', noSSH);
     const keyField = keyPath.closest('label.field');
-    if (keyField) keyField.classList.toggle('hidden', network);
-    aptRow.classList.toggle('hidden', network);
-    aptNote.classList.toggle('hidden', network);
-    jumpRow.classList.toggle('hidden', network);
-    jumpRow2.classList.toggle('hidden', network);
-    jumpNote.classList.toggle('hidden', network);
+    if (keyField) keyField.classList.toggle('hidden', noSSH);
+    aptRow.classList.toggle('hidden', noSSH);
+    aptNote.classList.toggle('hidden', noSSH);
+    jumpRow.classList.toggle('hidden', noSSH);
+    jumpRow2.classList.toggle('hidden', noSSH);
+    jumpNote.classList.toggle('hidden', noSSH);
     networkNote.classList.toggle('hidden', !network);
-    if (network) {
+    agentNote.classList.toggle('hidden', !agent);
+    if (noSSH) {
       jumpAddress.value = '';
       jumpPort.value = '';
       jumpUsername.value = '';
