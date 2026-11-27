@@ -1546,7 +1546,9 @@ function hostRow(host) {
   const actionsTd = el('td');
   const actions = el('div', 'actions');
   actions.append(actionButton('Edit', () => showAddHostModal(host)));
-  actions.append(actionButton('Services', () => showHostDetails(host, 'services')));
+  if (host.auth_type !== 'network') {
+    actions.append(actionButton('Services', () => showHostDetails(host, 'services')));
+  }
   if (host.auth_type === 'agent') {
     actions.append(actionButton('Agent token', () => showAgentTokenModal(host)));
   } else if (host.auth_type === 'network') {
@@ -4580,6 +4582,36 @@ function metricCard(label, samples, key, color) {
 
 function renderOverviewPanel(panel, data, host) {
   panel.replaceChildren();
+  if (host.auth_type === 'network') {
+    const settings = data.settings || {};
+    const state = data.snmp_state || {};
+    const grid = el('div', 'detail-grid');
+    grid.append(
+      detailCard('Network device', [
+        ['Address', host.address + ':' + host.port],
+        ['Auth', host.auth_type],
+        ['Status', host.status || 'unknown'],
+        ['Group', host.group_name],
+        ['Tags', host.tags],
+        ['CMDB CI ID', host.cmdb_ci_id],
+      ]),
+      detailCard('SNMP and syslog', [
+        ['SNMP polling', settings['snmp.enabled'] === '1' ? 'enabled' : 'disabled'],
+        ['SNMP version', settings['snmp.version'] || '2c'],
+        ['Last poll', state.last_poll ? relativeTime(state.last_poll) : 'not polled'],
+        ['Poll error', state.last_error || 'none'],
+        ['Syslog sources', settings['syslog.sources'] || 'host address'],
+      ]),
+    );
+    panel.append(grid);
+    const actions = el('div', 'modal-actions');
+    const network = el('button', 'btn primary', 'Network settings');
+    network.type = 'button';
+    network.addEventListener('click', () => showNetworkHostModal(host));
+    actions.append(network);
+    panel.append(actions);
+    return;
+  }
   const facts = (data.host && data.host.facts) || {};
   const key = data.host && data.host.trusted_key;
   const grid = el('div', 'detail-grid');
@@ -4617,6 +4649,16 @@ function renderOverviewPanel(panel, data, host) {
 
 function renderSystemPanel(panel, data, host, reload, onMetricsDaysChange = async () => {}) {
   panel.replaceChildren();
+  if (host.auth_type === 'network') {
+    panel.append(el('p', 'muted', 'System information for network devices is collected with SNMP polling, not over SSH. Use the Network action to configure SNMP credentials, OIDs, and syslog source IPs.'));
+    const actions = el('div', 'modal-actions');
+    const network = el('button', 'btn primary', 'Network settings');
+    network.type = 'button';
+    network.addEventListener('click', () => showNetworkHostModal(host));
+    actions.append(network);
+    panel.append(actions);
+    return;
+  }
   const metrics = data.metrics || [];
   const metricsDays = Number(data.metrics_days) || 30;
   const metricHead = el('div', 'metric-head');
@@ -5118,6 +5160,10 @@ function showDockerUpdateAllResult(result, title = 'Docker update all') {
 
 function renderServicesPanel(panel, data, host, reload) {
   panel.replaceChildren();
+  if (host.auth_type === 'network') {
+    panel.append(el('p', 'muted', 'Service baseline monitoring is not used for network devices. Use SNMP and syslog from the Network action instead.'));
+    return;
+  }
   const baseline = data.service_baseline || [];
   const states = data.service_states || [];
   const baselineByUnit = new Map(baseline.map((item) => [item.unit, item]));
@@ -5301,6 +5347,10 @@ function renderServicesPanel(panel, data, host, reload) {
 
 function renderContainersPanel(panel, data, host, reload) {
   panel.replaceChildren();
+  if (host.auth_type === 'network') {
+    panel.append(el('p', 'muted', 'Docker inventory is not collected for network devices. Use SNMP/system information or the Network action instead.'));
+    return;
+  }
   const settings = data.settings || {};
   const hostSettings = data.host_settings || {};
   const dockerSettings = el('div', 'detail-card');
