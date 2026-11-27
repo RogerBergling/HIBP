@@ -752,6 +752,51 @@ func TestServiceBaselineFleetExclusion(t *testing.T) {
 	}
 }
 
+func TestServiceBaselineFleetPrefixExclusion(t *testing.T) {
+	app, db, host := newMonitorTestApp(t)
+	if err := db.SaveSystemInfo(host.ID, time.Now().UTC().Format(time.RFC3339Nano),
+		`{"systemd":{"available":true,"units_collected":true}}`); err != nil {
+		t.Fatal(err)
+	}
+	units := []string{"ssh.service", "volatile-agent@123.service"}
+	if err := db.SaveServiceState(host.ID, nil, units); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.EnsureServiceBaseline(host.ID, units); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveServiceState(host.ID, nil, []string{"ssh.service"}); err != nil {
+		t.Fatal(err)
+	}
+	result := app.evaluateServiceBaseline(host)
+	if result.status != "critical" || !strings.Contains(result.message, "volatile-agent@123.service") {
+		t.Fatalf("expected missing dynamic service before prefix exclusion, got %+v", result)
+	}
+	if err := db.SetSetting("fleet", "monitor.service_baseline.exclude", "volatile-agent@*"); err != nil {
+		t.Fatal(err)
+	}
+	result = app.evaluateServiceBaseline(host)
+	if result.status != "ok" {
+		t.Fatalf("expected fleet prefix exclusion to ignore dynamic service, got %+v", result)
+	}
+}
+
+func TestParseUnitListPatterns(t *testing.T) {
+	units, err := parseUnitList("nginx.service, check-mk-agent@*, volatile-agent@*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"nginx.service", "check-mk-agent@*", "volatile-agent@*"}
+	if strings.Join(units, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected units: %v", units)
+	}
+	for _, value := range []string{"*", "bad;unit", "bad*unit"} {
+		if _, err := parseUnitList(value); err == nil {
+			t.Fatalf("expected invalid unit pattern %q to be rejected", value)
+		}
+	}
+}
+
 func TestDockerAllContainersMonitor(t *testing.T) {
 	app, db, host := newMonitorTestApp(t)
 	if err := db.SaveSystemInfo(host.ID, time.Now().UTC().Format(time.RFC3339Nano),

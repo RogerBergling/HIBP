@@ -1435,7 +1435,7 @@ func TestSettingsEndpoints(t *testing.T) {
 		t.Fatalf("get settings failed: %d %s", resp.StatusCode, data)
 	}
 	resp.Body.Close()
-	resp = request(t, http.MethodPut, ts.URL+"/api/v1/settings", "test-token", `{"scope":"fleet","settings":{"collector.metrics_interval":"1m","metrics.retention_days":"14","monitor.service_baseline.exclude":"packagekit.service, systemd-timedated.service"}}`)
+	resp = request(t, http.MethodPut, ts.URL+"/api/v1/settings", "test-token", `{"scope":"fleet","settings":{"collector.metrics_interval":"1m","metrics.retention_days":"14","monitor.service_baseline.exclude":"packagekit.service, systemd-timedated.service, check-mk-agent@*"}}`)
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
@@ -1452,7 +1452,7 @@ func TestSettingsEndpoints(t *testing.T) {
 	if payload.Resolved["collector.metrics_interval"] != "1m" || payload.Resolved["metrics.retention_days"] != "14" {
 		t.Fatalf("unexpected settings: %#v", payload.Resolved)
 	}
-	if payload.Resolved["monitor.service_baseline.exclude"] != "packagekit.service, systemd-timedated.service" {
+	if payload.Resolved["monitor.service_baseline.exclude"] != "packagekit.service, systemd-timedated.service, check-mk-agent@*" {
 		t.Fatalf("unexpected fleet baseline exclusions: %#v", payload.Resolved)
 	}
 	resp = request(t, http.MethodPut, ts.URL+"/api/v1/settings", "test-token", `{"scope":"fleet","settings":{"collector.metrics_interval":"2s","metrics.retention_days":"99"}}`)
@@ -1481,7 +1481,7 @@ func TestSettingsEndpoints(t *testing.T) {
 	if payload.Resolved["collector.metrics_interval"] != "1m" || payload.Resolved["metrics.retention_days"] != "14" {
 		t.Fatalf("rejected settings update was partially applied: %#v", payload.Resolved)
 	}
-	if payload.Resolved["monitor.service_baseline.exclude"] != "packagekit.service, systemd-timedated.service" {
+	if payload.Resolved["monitor.service_baseline.exclude"] != "packagekit.service, systemd-timedated.service, check-mk-agent@*" {
 		t.Fatalf("rejected settings update changed fleet baseline exclusions: %#v", payload.Resolved)
 	}
 }

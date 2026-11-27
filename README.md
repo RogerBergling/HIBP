@@ -1860,9 +1860,12 @@ baseline and later look missing. HIBP excludes a built-in list of commonly
 transient units by default, including on-demand D-Bus services such as
 `packagekit`, `systemd-timedated`, `systemd-hostnamed`, `systemd-localed`,
 `udisks2`, `upower`, and `accounts-daemon`, plus timer/boot units such as
-`apt-daily`, `logrotate`, `fstrim`, and `man-db`. The one-time default set is
-applied to existing baselines and to new hosts. Use **Settings → Fleet-wide
-baseline exclusions** to ignore additional units on every host at once. Open the
+`apt-daily`, `logrotate`, `fstrim`, and `man-db`. Volatile Checkmk agent
+connection units (`check-mk-agent@*`) are also excluded. The one-time default
+set is applied to existing baselines and to new hosts. Use **Settings →
+Fleet-wide baseline exclusions** to ignore additional units on every host at
+once; entries may be exact unit names or trailing-`*` prefixes such as
+`check-mk-agent@*`. Open the
 host and choose **Services** to exclude additional per-host units, restore an
 included unit, disable baseline monitoring for that host, disable automatic
 expansion, or reset the baseline to the current running set. Excluded units do

@@ -865,7 +865,12 @@ func parseUnitList(value string) ([]string, error) {
 		if unit == "" || seen[unit] {
 			continue
 		}
-		if !monitorServicePattern.MatchString(unit) {
+		if strings.HasSuffix(unit, "*") {
+			prefix := strings.TrimSuffix(unit, "*")
+			if prefix == "" || !monitorServicePattern.MatchString(prefix) {
+				return nil, fmt.Errorf("invalid systemd unit pattern %q", unit)
+			}
+		} else if !monitorServicePattern.MatchString(unit) {
 			return nil, fmt.Errorf("invalid systemd unit %q", unit)
 		}
 		seen[unit] = true
@@ -881,6 +886,23 @@ func unitSet(value string) map[string]bool {
 		set[unit] = true
 	}
 	return set
+}
+
+// unitExcluded matches exact unit names and trailing-* prefix patterns such as
+// check-mk-agent@*.
+func unitExcluded(patterns map[string]bool, unit string) bool {
+	if patterns[unit] {
+		return true
+	}
+	for pattern := range patterns {
+		if !strings.HasSuffix(pattern, "*") {
+			continue
+		}
+		if strings.HasPrefix(unit, strings.TrimSuffix(pattern, "*")) {
+			return true
+		}
+	}
+	return false
 }
 
 func validateSetting(key, value string) error {

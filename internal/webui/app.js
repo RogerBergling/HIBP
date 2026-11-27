@@ -5091,12 +5091,15 @@ function renderServicesPanel(panel, data, host, reload) {
   const settings = data.settings || {};
   const hostSettings = data.host_settings || {};
   const inherited = data.inherited_settings || {};
-  const fleetExcluded = new Set(String(settings['monitor.service_baseline.exclude'] || '')
-    .split(/[\s,]+/).filter(Boolean));
+  const fleetPatterns = String(settings['monitor.service_baseline.exclude'] || '')
+    .split(/[\s,]+/).filter(Boolean);
+  const fleetExcluded = (unit) => fleetPatterns.some((pattern) => pattern.endsWith('*')
+    ? unit.startsWith(pattern.slice(0, -1))
+    : unit === pattern);
 
   const intro = el('div', 'detail-card');
   intro.append(el('h3', '', 'Service baseline'));
-  intro.append(el('p', 'muted', 'HIBP records the systemd units observed running as the host baseline. The fleet Service baseline monitor alerts when an expected unit stops running or any current unit fails. Excluded units are ignored for both failed and missing alerts. Common on-demand, timer, and boot units such as packagekit.service and systemd-timedated.service are excluded by default; use Include to override. Socket- or timer-activated units that exit by design can look missing; exclude them here.'));
+  intro.append(el('p', 'muted', 'HIBP records the systemd units observed running as the host baseline. The fleet Service baseline monitor alerts when an expected unit stops running or any current unit fails. Excluded units are ignored for both failed and missing alerts. Common on-demand, timer, and boot units such as packagekit.service and systemd-timedated.service, plus volatile check-mk-agent@* connection units, are excluded by default; use Include to override. Socket- or timer-activated units that exit by design can look missing; exclude them here.'));
   const grid = el('div', 'settings-grid');
   const enabled = selectField(grid, 'Baseline monitoring', 'baseline_enabled', [
     ['', 'Inherit fleet default'], ['1', 'Enabled'], ['0', 'Disabled'],
@@ -5114,7 +5117,7 @@ function renderServicesPanel(panel, data, host, reload) {
     'automatic expansion ' + (settings['monitor.service_baseline.auto_add'] === '0' ? 'disabled' : 'enabled'),
   ];
   intro.append(el('p', 'field-note', 'Effective now: ' + effective.join(' · ') + '. Fleet default for automatic expansion: ' + (inherited['monitor.service_baseline.auto_add'] === '0' ? 'disabled' : 'enabled') + '.'));
-  const fleetList = [...fleetExcluded].sort();
+  const fleetList = [...fleetPatterns].sort();
   intro.append(el('p', 'field-note', fleetList.length
     ? 'Fleet-wide exclusions from Settings: ' + fleetList.join(', ') + '.'
     : 'No fleet-wide baseline exclusions are configured.'));
@@ -5143,7 +5146,7 @@ function renderServicesPanel(panel, data, host, reload) {
 
   const counts = { expected: 0, excluded: 0, failed: 0, running: 0 };
   for (const item of baseline) {
-    if (item.excluded || fleetExcluded.has(item.unit)) counts.excluded++;
+    if (item.excluded || fleetExcluded(item.unit)) counts.excluded++;
     else if (item.expected) counts.expected++;
   }
   for (const state of states) {
@@ -5186,7 +5189,7 @@ function renderServicesPanel(panel, data, host, reload) {
         currentTd.append(el('span', 'pill ' + currentClass, currentText));
         row.append(currentTd);
 
-        const fleet = fleetExcluded.has(unit);
+        const fleet = fleetExcluded(unit);
         const baselineTd = el('td');
         const baselineText = fleet ? 'fleet excluded'
           : item ? (item.excluded ? 'excluded' : item.expected ? 'expected' : 'tracked') : 'not in baseline';
@@ -5503,10 +5506,10 @@ async function showSettingsModal() {
   const baselineExclude = el('textarea');
   baselineExclude.rows = 3;
   baselineExclude.spellcheck = false;
-  baselineExclude.placeholder = 'packagekit.service, systemd-timedated.service';
+  baselineExclude.placeholder = 'packagekit.service, check-mk-agent@*, systemd-timedated.service';
   baselineExcludeWrap.append(baselineExclude);
   body.append(baselineExcludeWrap);
-  body.append(el('p', 'field-note', 'Comma- or whitespace-separated systemd units ignored by the Service baseline monitor on every host. Per-host exclusions and the built-in transient-unit defaults still apply. Automatic expansion controls whether newly observed running units are added to each host baseline.'));
+  body.append(el('p', 'field-note', 'Comma- or whitespace-separated systemd units or trailing-* prefixes ignored by the Service baseline monitor on every host. Use check-mk-agent@* for volatile Checkmk agent connection units. Per-host exclusions and the built-in transient-unit defaults still apply. Automatic expansion controls whether newly observed running units are added to each host baseline.'));
   body.append(el('p', 'muted', 'Backups are fleet-wide. Leave the directory blank to use the database directory. Only timestamped backups created by HIBP are pruned; lowering the count deletes older HIBP-created backups on the next backup.'));
   const backupGrid = el('div', 'settings-grid');
   const backupDir = inputField(backupGrid, 'Backup directory', 'backup_directory', '/var/lib/hibp/backups');

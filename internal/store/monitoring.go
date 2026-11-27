@@ -77,7 +77,7 @@ type ServiceBaseline struct {
 }
 
 const baselineDefaultExclusionsKey = "monitor.service_baseline.default_exclusions"
-const baselineDefaultExclusionsVersion = "1"
+const baselineDefaultExclusionsVersion = "2"
 
 // baselineDefaultExcludedUnits are units that are commonly started on demand,
 // by a timer, or during boot and are not expected to stay running. Excluding
@@ -117,6 +117,7 @@ var baselineDefaultExcludedUnits = map[string]bool{
 }
 
 var baselineDefaultExcludedPrefixes = []string{
+	"check-mk-agent@",
 	"e2scrub@",
 	"systemd-backlight@",
 	"systemd-fsck@",

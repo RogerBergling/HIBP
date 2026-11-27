@@ -200,7 +200,7 @@ func TestServiceBaselineDefaultTransientExclusions(t *testing.T) {
 	}
 	// Simulate a baseline created before the default exclusion list existed.
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	for _, unit := range []string{"packagekit.service", "systemd-timedated.service"} {
+	for _, unit := range []string{"check-mk-agent@123.service", "packagekit.service", "systemd-timedated.service"} {
 		if _, err := s.db.Exec(`INSERT INTO host_service_baseline
 			(host_id,unit,state,expected,excluded,first_seen,last_seen) VALUES(?,?,?,?,?,?,?)`,
 			host.ID, unit, "running", 1, 0, now, now); err != nil {
@@ -224,7 +224,7 @@ func TestServiceBaselineDefaultTransientExclusions(t *testing.T) {
 	if excluded["ssh.service"] {
 		t.Fatal("ssh.service should not be excluded by default")
 	}
-	for _, unit := range []string{"packagekit.service", "systemd-timedated.service"} {
+	for _, unit := range []string{"check-mk-agent@123.service", "packagekit.service", "systemd-timedated.service"} {
 		if !excluded[unit] {
 			t.Fatalf("expected %s to be excluded by default", unit)
 		}
