@@ -130,6 +130,12 @@
         <button class="nav-item" data-view="monitoring">
           <span class="ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 17l4-6 3 3 4-7 5 10" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 20h16" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></span>
           Monitoring
+          <span class="nav-status-counts" id="nav-monitor-counts" aria-label="Enabled monitor status counts">
+            <span class="nav-status-count critical" id="nav-monitor-critical" title="Critical monitors">0</span>
+            <span class="nav-status-count warning" id="nav-monitor-warning" title="Warning monitors">0</span>
+            <span class="nav-status-count unknown" id="nav-monitor-unknown" title="Unknown monitors">0</span>
+            <span class="nav-status-count ok" id="nav-monitor-ok" title="OK monitors">0</span>
+          </span>
         </button>
         <button class="nav-item" data-view="schedules">
           <span class="ico"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="3.5" y="5" width="17" height="15" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M7 3v4M17 3v4M3.5 9h17M8 13h2M14 13h2M8 17h2M14 17h2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></span>

@@ -127,6 +127,20 @@ code { background: rgba(139, 160, 189, .10); padding: 1px 4px; border-radius: 4p
   border-radius: 999px; background: rgba(244, 183, 64, .14); color: var(--amber);
   font-size: 10px; font-weight: 700; display: grid; place-items: center;
 }
+.nav-status-counts { margin-left: auto; display: grid; grid-template-columns: repeat(2, max-content); gap: 2px; }
+.nav-status-count {
+  min-width: 14px; height: 14px; padding: 0 3px; border-radius: 999px;
+  font-size: 8.5px; font-weight: 700; display: grid; place-items: center;
+  line-height: 1;
+}
+.nav-status-count.critical { background: rgba(242, 109, 109, .16); color: var(--red); }
+.nav-status-count.warning { background: rgba(244, 183, 64, .16); color: var(--amber); }
+.nav-status-count.unknown { background: rgba(139, 160, 189, .16); color: var(--muted); }
+.nav-status-count.ok { background: rgba(53, 208, 127, .14); color: var(--green); }
+[data-theme="light"] .nav-status-count.critical { background: rgba(185, 28, 28, .10); color: #b91c1c; }
+[data-theme="light"] .nav-status-count.warning { background: rgba(180, 83, 9, .12); color: #b45309; }
+[data-theme="light"] .nav-status-count.unknown { background: rgba(71, 85, 105, .10); color: #475569; }
+[data-theme="light"] .nav-status-count.ok { background: rgba(4, 120, 87, .10); color: #047857; }
 .nav-sep { height: 1px; background: var(--border-soft); margin: 14px 8px; }
 .server-card {
   margin-top: auto;

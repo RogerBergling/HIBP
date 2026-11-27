@@ -1746,6 +1746,38 @@ function monitorAggregate(monitor) {
   return { status: worst, summary: parts.join(' · '), title, detail };
 }
 
+// monitorStatusCounts returns enabled monitors grouped by their worst current
+// status. Disabled monitors are excluded so they do not inflate the unknown
+// counter in the sidebar.
+function monitorStatusCounts() {
+  const counts = { critical: 0, warning: 0, unknown: 0, ok: 0 };
+  for (const monitor of state.monitors || []) {
+    if (!monitor.enabled) continue;
+    const aggregate = monitorAggregate(monitor);
+    const status = Object.prototype.hasOwnProperty.call(counts, aggregate.status) ? aggregate.status : 'unknown';
+    counts[status]++;
+  }
+  return counts;
+}
+
+function renderMonitorNavCounts() {
+  const counts = monitorStatusCounts();
+  const targets = {
+    critical: $('nav-monitor-critical'),
+    warning: $('nav-monitor-warning'),
+    unknown: $('nav-monitor-unknown'),
+    ok: $('nav-monitor-ok'),
+  };
+  for (const [status, node] of Object.entries(targets)) {
+    if (node) node.textContent = String(counts[status]);
+  }
+  const wrapper = $('nav-monitor-counts');
+  if (wrapper) {
+    wrapper.title = counts.critical + ' critical · ' + counts.warning + ' warning · ' +
+      counts.unknown + ' unknown · ' + counts.ok + ' ok (enabled monitors)';
+  }
+}
+
 function monitorStatusPill(status, label = '') {
   const cls = status === 'ok' ? 'reachable' : status === 'warning' ? 'review' : status === 'critical' ? 'unreachable' : 'unknown';
   return el('span', 'pill ' + cls, '● ' + (label || status));
@@ -1932,19 +1964,15 @@ function renderMonitoring() {
   const aggregates = new Map(monitors.map((monitor) => [monitor.id, monitorAggregate(monitor)]));
   const sorted = sortedMonitors(monitors, aggregates);
   const enabled = monitors.filter((monitor) => monitor.enabled).length;
-  let critical = 0;
-  let warning = 0;
-  for (const monitor of monitors) {
-    const status = (aggregates.get(monitor.id) || {}).status;
-    if (status === 'critical') critical++;
-    else if (status === 'warning') warning++;
-  }
+  const counts = monitorStatusCounts();
   const summary = [];
   summary.push(monitors.length + ' monitor' + (monitors.length === 1 ? '' : 's'));
   summary.push(enabled + ' enabled');
-  if (critical) summary.push(critical + ' critical');
-  if (warning) summary.push(warning + ' warning');
+  for (const status of ['critical', 'warning', 'unknown', 'ok']) {
+    if (counts[status]) summary.push(counts[status] + ' ' + status);
+  }
   $('monitor-summary').textContent = summary.join(' · ');
+  renderMonitorNavCounts();
   syncMonitorSortHeaders();
   renderMonitorMap(monitors, aggregates);
 

@@ -1840,7 +1840,9 @@ enable; names, targets, thresholds, and assignments are left unchanged.
 A **Monitor map** above the table groups monitors by status, type, scope, or
 enabled state. Each node shows the monitor name, current worst status, type,
 target or scope, and last check; click a node to edit that monitor. Use the
-**Group by** selector to change the map layout.
+**Group by** selector to change the map layout. The **Monitoring** item in the
+left sidebar shows enabled monitor counts for critical, warning, unknown, and
+OK status, using each monitor's worst current per-host result.
 
 #### Service baseline
 
