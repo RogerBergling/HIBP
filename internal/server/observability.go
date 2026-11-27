@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"regexp"
@@ -726,6 +727,9 @@ func (s *Server) handleHostDetails(w http.ResponseWriter, r *http.Request) {
 	metrics, _ := s.store.ListMetricsSince(host.ID, since, 100000)
 	projects, containers, _ := s.store.GetDockerInventory(host.ID)
 	checks, _ := s.store.ListDockerProjectChecks(host.ID)
+	if err := s.store.ApplyServiceBaselineDefaultExclusions(host.ID); err != nil {
+		slog.Warn("host details: apply service baseline default exclusions", "host", host.Name, "error", err)
+	}
 	serviceBaseline, _ := s.store.ListServiceBaseline(host.ID)
 	serviceStates, _ := s.store.ListServiceStates(host.ID)
 	settings := s.resolveSettings(host.ID)

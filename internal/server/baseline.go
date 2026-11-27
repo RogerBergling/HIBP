@@ -23,6 +23,9 @@ type serviceBaselineView struct {
 }
 
 func (s *Server) serviceBaselineView(host store.Host) (serviceBaselineView, error) {
+	if err := s.store.ApplyServiceBaselineDefaultExclusions(host.ID); err != nil {
+		return serviceBaselineView{}, err
+	}
 	baseline, err := s.store.ListServiceBaseline(host.ID)
 	if err != nil {
 		return serviceBaselineView{}, err

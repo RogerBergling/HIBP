@@ -75,7 +75,11 @@ Implemented in the current tree:
   collection and, by default, adds units observed running later.
 - `service.baseline` is a fleet-assigned default monitor for failed units and
   baseline drift. Per-host settings can disable it, disable automatic expansion,
-  or exclude individual units; reset preserves exclusions.
+  or exclude individual units; reset preserves exclusions. A built-in default
+  exclusion list covers common on-demand D-Bus, timer, and boot units such as
+  `packagekit.service` and `systemd-timedated.service`; it is applied once to
+  existing baselines and to new hosts, and an operator can include any unit
+  explicitly.
 - `docker.health` is a fleet-assigned default monitor for unhealthy,
   restarting, or dead containers. A `docker.container` monitor with target `*`
   provides strict all-container monitoring, including stopped containers.

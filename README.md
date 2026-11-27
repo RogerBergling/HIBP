@@ -1854,10 +1854,16 @@ are added as well. The fleet `service.baseline` monitor then alerts for:
 
 Units that are socket- or timer-activated and exit by design (for example
 `packagekit.service` or `systemd-timedated.service`) often appear in the
-baseline and later look missing. Open the host and choose **Services** to
-exclude them, disable baseline monitoring for that host, disable automatic
-expansion, or reset the baseline to the current running set. Excluded units do
-not produce failed or missing alerts. Resetting keeps existing exclusions.
+baseline and later look missing. HIBP excludes a built-in list of commonly
+transient units by default, including on-demand D-Bus services such as
+`packagekit`, `systemd-timedated`, `systemd-hostnamed`, `systemd-localed`,
+`udisks2`, `upower`, and `accounts-daemon`, plus timer/boot units such as
+`apt-daily`, `logrotate`, `fstrim`, and `man-db`. The one-time default set is
+applied to existing baselines and to new hosts. Open the host and choose
+**Services** to exclude additional units, restore an included unit, disable
+baseline monitoring for that host, disable automatic expansion, or reset the
+baseline to the current running set. Excluded units do not produce failed or
+missing alerts. Resetting keeps existing exclusions.
 
 Docker uses two different checks. The fleet `docker.health` monitor watches all
 containers for unhealthy, restarting, or dead states and ignores cleanly stopped

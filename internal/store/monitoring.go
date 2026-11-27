@@ -76,6 +76,64 @@ type ServiceBaseline struct {
 	LastSeen  string `json:"last_seen"`
 }
 
+const baselineDefaultExclusionsKey = "monitor.service_baseline.default_exclusions"
+const baselineDefaultExclusionsVersion = "1"
+
+// baselineDefaultExcludedUnits are units that are commonly started on demand,
+// by a timer, or during boot and are not expected to stay running. Excluding
+// them avoids repeated baseline alerts for packagekit, timedated, fstrim and
+// similar transient services. Operators can include any unit explicitly from
+// the host Services tab.
+var baselineDefaultExcludedUnits = map[string]bool{
+	"accounts-daemon.service":          true,
+	"apt-daily.service":                true,
+	"apt-daily-upgrade.service":        true,
+	"apt-news.service":                 true,
+	"colord.service":                   true,
+	"dpkg-db-backup.service":           true,
+	"e2scrub_all.service":              true,
+	"e2scrub_reap.service":             true,
+	"fstrim.service":                   true,
+	"fwupd.service":                    true,
+	"geoclue.service":                  true,
+	"iio-sensor-proxy.service":         true,
+	"logrotate.service":                true,
+	"man-db.service":                   true,
+	"motd-news.service":                true,
+	"packagekit.service":               true,
+	"snapd.autoimport.service":         true,
+	"snapd.core-fixup.service":         true,
+	"snapd.refresh.service":            true,
+	"snapd.seeded.service":             true,
+	"switcheroo-control.service":       true,
+	"systemd-hostnamed.service":        true,
+	"systemd-localed.service":          true,
+	"systemd-timedated.service":        true,
+	"systemd-tmpfiles-clean.service":   true,
+	"udisks2.service":                  true,
+	"upower.service":                   true,
+	"update-notifier-download.service": true,
+	"ua-timer.service":                 true,
+}
+
+var baselineDefaultExcludedPrefixes = []string{
+	"e2scrub@",
+	"systemd-backlight@",
+	"systemd-fsck@",
+}
+
+func baselineDefaultExcluded(unit string) bool {
+	if baselineDefaultExcludedUnits[unit] {
+		return true
+	}
+	for _, prefix := range baselineDefaultExcludedPrefixes {
+		if strings.HasPrefix(unit, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Store) CreateMonitor(monitor Monitor) (Monitor, error) {
 	monitor.Name = strings.TrimSpace(monitor.Name)
 	if monitor.Name == "" || monitor.Type == "" {
@@ -388,8 +446,8 @@ func (s *Store) ListServiceStates(hostID string) ([]ServiceState, error) {
 }
 
 // EnsureServiceBaseline records the first running-unit snapshot for a host. It
-// deliberately does not add newly observed units on later collections. Use
-// SyncServiceBaseline when automatic baseline expansion is enabled.
+// deliberately does not add newly observed units on later collections. Default
+// transient-unit exclusions are still applied once to an existing baseline.
 func (s *Store) EnsureServiceBaseline(hostID string, running []string) error {
 	return s.syncServiceBaseline(hostID, running, false)
 }
@@ -405,35 +463,116 @@ func (s *Store) syncServiceBaseline(hostID string, running []string, addNew bool
 	if hostID == "" {
 		return errors.New("host id is required")
 	}
+	appliedVersion, _ := s.GetSetting("host:"+hostID, baselineDefaultExclusionsKey)
+	applyDefaults := appliedVersion != baselineDefaultExclusionsVersion
+
+	var existing int
 	if !addNew {
-		var count int
-		if err := s.db.QueryRow("SELECT COUNT(*) FROM host_service_baseline WHERE host_id=?", hostID).Scan(&count); err != nil {
+		if err := s.db.QueryRow("SELECT COUNT(*) FROM host_service_baseline WHERE host_id=?", hostID).Scan(&existing); err != nil {
 			return err
 		}
-		if count > 0 {
+		if existing > 0 && !applyDefaults {
 			return nil
 		}
 	}
+	insert := addNew || existing == 0
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	now := crypto.Now()
-	seen := make(map[string]bool, len(running))
-	for _, unit := range running {
-		unit = strings.TrimSpace(unit)
-		if unit == "" || seen[unit] {
-			continue
-		}
-		seen[unit] = true
-		if _, err := tx.Exec(`INSERT OR IGNORE INTO host_service_baseline
-			(host_id,unit,state,expected,excluded,first_seen,last_seen) VALUES(?,?,?,?,?,?,?)`,
-			hostID, unit, "running", 1, 0, now, now); err != nil {
+	if applyDefaults {
+		if err := applyBaselineDefaultExclusions(tx, hostID); err != nil {
 			_ = tx.Rollback()
 			return err
 		}
 	}
-	return tx.Commit()
+	if insert {
+		seen := make(map[string]bool, len(running))
+		for _, unit := range running {
+			unit = strings.TrimSpace(unit)
+			if unit == "" || seen[unit] {
+				continue
+			}
+			seen[unit] = true
+			excluded := 0
+			if baselineDefaultExcluded(unit) {
+				excluded = 1
+			}
+			if _, err := tx.Exec(`INSERT OR IGNORE INTO host_service_baseline
+				(host_id,unit,state,expected,excluded,first_seen,last_seen) VALUES(?,?,?,?,?,?,?)`,
+				hostID, unit, "running", 1, excluded, now, now); err != nil {
+				_ = tx.Rollback()
+				return err
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if applyDefaults {
+		if err := s.SetSetting("host:"+hostID, baselineDefaultExclusionsKey, baselineDefaultExclusionsVersion); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ApplyServiceBaselineDefaultExclusions applies the built-in transient-unit
+// exclusion list once per host. It is safe to call frequently; the version
+// setting makes it a no-op after the first application. It lets hosts with an
+// existing baseline adopt new default exclusions before the next collection.
+func (s *Store) ApplyServiceBaselineDefaultExclusions(hostID string) error {
+	if hostID == "" {
+		return errors.New("host id is required")
+	}
+	appliedVersion, _ := s.GetSetting("host:"+hostID, baselineDefaultExclusionsKey)
+	if appliedVersion == baselineDefaultExclusionsVersion {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	if err := applyBaselineDefaultExclusions(tx, hostID); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return s.SetSetting("host:"+hostID, baselineDefaultExclusionsKey, baselineDefaultExclusionsVersion)
+}
+
+func applyBaselineDefaultExclusions(tx *sql.Tx, hostID string) error {
+	rows, err := tx.Query(`SELECT unit FROM host_service_baseline WHERE host_id=? AND excluded=0`, hostID)
+	if err != nil {
+		return err
+	}
+	var units []string
+	for rows.Next() {
+		var unit string
+		if err := rows.Scan(&unit); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		units = append(units, unit)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	_ = rows.Close()
+	for _, unit := range units {
+		if !baselineDefaultExcluded(unit) {
+			continue
+		}
+		if _, err := tx.Exec(`UPDATE host_service_baseline SET excluded=1 WHERE host_id=? AND unit=?`, hostID, unit); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // SetServiceBaselineExcluded hides or restores a unit in the host baseline. A

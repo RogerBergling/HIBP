@@ -504,6 +504,9 @@ func (s *Server) evaluateServiceBaseline(host store.Host) monitorResult {
 	if s.store.ResolveSetting(host.ID, "monitor.service_baseline.enabled", "1") == "0" {
 		return monitorResult{status: "ok", message: "service baseline monitoring is disabled for this host"}
 	}
+	if err := s.store.ApplyServiceBaselineDefaultExclusions(host.ID); err != nil {
+		return monitorResult{status: "unknown", message: "service baseline exclusions are not available"}
+	}
 	if snapshot, err := s.store.GetSystemInfo(host.ID); err == nil {
 		var info helper.SystemInfo
 		if json.Unmarshal([]byte(snapshot.PayloadJSON), &info) == nil && !info.Systemd.UnitsCollected {

@@ -5038,7 +5038,7 @@ function renderServicesPanel(panel, data, host, reload) {
 
   const intro = el('div', 'detail-card');
   intro.append(el('h3', '', 'Service baseline'));
-  intro.append(el('p', 'muted', 'HIBP records the systemd units observed running as the host baseline. The fleet Service baseline monitor alerts when an expected unit stops running or any current unit fails. Excluded units are ignored for both failed and missing alerts. Socket- or timer-activated units that exit by design can look missing; exclude them here.'));
+  intro.append(el('p', 'muted', 'HIBP records the systemd units observed running as the host baseline. The fleet Service baseline monitor alerts when an expected unit stops running or any current unit fails. Excluded units are ignored for both failed and missing alerts. Common on-demand, timer, and boot units such as packagekit.service and systemd-timedated.service are excluded by default; use Include to override. Socket- or timer-activated units that exit by design can look missing; exclude them here.'));
   const grid = el('div', 'settings-grid');
   const enabled = selectField(grid, 'Baseline monitoring', 'baseline_enabled', [
     ['', 'Inherit fleet default'], ['1', 'Enabled'], ['0', 'Disabled'],

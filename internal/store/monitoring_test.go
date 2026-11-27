@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestMonitorAndServiceLifecycle(t *testing.T) {
@@ -182,6 +183,67 @@ func TestServiceBaselineExclusionsAndReset(t *testing.T) {
 	}
 	if err := s.SetServiceBaselineExcluded(host.ID, "not-tracked.service", false); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("expected missing baseline unit include to return ErrNoRows, got %v", err)
+	}
+}
+
+func TestServiceBaselineDefaultTransientExclusions(t *testing.T) {
+	s := openAuthTestStore(t)
+	host, err := s.CreateHost(Host{
+		Name: "web01", Address: "10.0.0.10", Port: 22, Username: "ubuntu",
+		AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EnsureServiceBaseline(host.ID, []string{"ssh.service"}); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a baseline created before the default exclusion list existed.
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, unit := range []string{"packagekit.service", "systemd-timedated.service"} {
+		if _, err := s.db.Exec(`INSERT INTO host_service_baseline
+			(host_id,unit,state,expected,excluded,first_seen,last_seen) VALUES(?,?,?,?,?,?,?)`,
+			host.ID, unit, "running", 1, 0, now, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.DeleteSetting("host:"+host.ID, baselineDefaultExclusionsKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SyncServiceBaseline(host.ID, []string{"ssh.service"}, false); err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := s.ListServiceBaseline(host.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	excluded := map[string]bool{}
+	for _, item := range baseline {
+		excluded[item.Unit] = item.Excluded
+	}
+	if excluded["ssh.service"] {
+		t.Fatal("ssh.service should not be excluded by default")
+	}
+	for _, unit := range []string{"packagekit.service", "systemd-timedated.service"} {
+		if !excluded[unit] {
+			t.Fatalf("expected %s to be excluded by default", unit)
+		}
+	}
+	// An explicit include must survive later automatic baseline syncs.
+	if err := s.SetServiceBaselineExcluded(host.ID, "systemd-timedated.service", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SyncServiceBaseline(host.ID, []string{"ssh.service"}, true); err != nil {
+		t.Fatal(err)
+	}
+	baseline, err = s.ListServiceBaseline(host.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range baseline {
+		if item.Unit == "systemd-timedated.service" && item.Excluded {
+			t.Fatal("explicitly included unit was re-excluded by the default list")
+		}
 	}
 }
 
