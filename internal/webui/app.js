@@ -6831,6 +6831,10 @@ function bind() {
   $('sign-out').addEventListener('click', signOut);
   $('account-security').addEventListener('click', showAccountSecurityModal);
 
+  $('monitor-events').addEventListener('click', () => {
+    const body = $('event-body');
+    if (body) body.closest('.table-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
   for (const button of document.querySelectorAll('.nav-item[data-view]')) {
     button.addEventListener('click', () => setView(button.dataset.view));
   }
