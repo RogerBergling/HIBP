@@ -1940,6 +1940,13 @@ read-only `auth_type=network` hosts. They have no SSH actions:
   Security/service events and alert history can be cleared with a typed `CLEAR`
   confirmation. The audit log is append-only and is not cleared; each clear
   action records an audit entry.
+- Click any event row to open **Event details** with the full message, all
+  stored fields, and — for UDM/CEF messages — the parsed CEF vendor, product,
+  event ID, event name, severity, and extension fields. The detail view has a
+  **Copy message** action. Stored event messages are bounded at 4 KiB.
+- CEF messages are classified using the CEF event name and extension values, so
+  UDM WAN, link, Wi-Fi, VPN, firewall, authentication, and system events appear
+  with a useful category and severity instead of a generic `syslog`/`info` row.
 
 The SNMP MVP polls scalar OIDs with `Get`; it does not walk interface tables.
 Use `snmpwalk` on the device to identify the exact scalar OIDs for CPU, memory,

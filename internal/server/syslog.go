@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -24,7 +25,29 @@ type syslogMessage struct {
 	AppName   string
 	ProcID    string
 	Message   string
+	CEF       *cefEvent
 }
+
+// cefEvent is a bounded view of an ArcSight Common Event Format message. The
+// raw message remains the source of truth; CEF fields are used to classify the
+// event and enrich the stored identity.
+type cefEvent struct {
+	Version       string
+	Vendor        string
+	Product       string
+	DeviceVersion string
+	EventID       string
+	Name          string
+	Severity      int
+	Extensions    map[string]string
+}
+
+const (
+	syslogMessageLimit = 4096
+	cefValueLimit      = 1024
+)
+
+var cefExtensionKey = regexp.MustCompile(`(^| )([A-Za-z0-9_.-]+)=`)
 
 // RunSyslog supervises the configurable syslog receiver. UDM pushes messages;
 // HIBP never connects back to the device.
@@ -193,14 +216,20 @@ func (s *Server) handleSyslogMessage(sourceIP, line string) {
 	if msg.AppName != "" {
 		message = msg.AppName + ": " + message
 	}
-	if len(message) > 512 {
-		message = message[:512]
+	if len(message) > syslogMessageLimit {
+		message = message[:syslogMessageLimit]
+	}
+	username := ""
+	if msg.CEF != nil {
+		username = truncateEventField(msg.CEF.firstExtension("suser", "duser", "unifi_user",
+			"unifi_username", "username", "user"), 128)
 	}
 	event := store.HostEvent{
 		EventID:    syslogEventID(sourceIP, msg),
 		Source:     "syslog",
 		Category:   category,
 		Severity:   severity,
+		Username:   username,
 		RemoteIP:   sourceIP,
 		Message:    message,
 		OccurredAt: msg.Timestamp.UTC().Format(time.RFC3339Nano),
@@ -291,7 +320,7 @@ func parseSyslogMessage(line string, now time.Time) (syslogMessage, error) {
 		// leading priority. The source is already restricted to a network host,
 		// so keep the bounded text as an informational event instead of dropping
 		// it silently.
-		return syslogMessage{Severity: 6, Timestamp: now, Message: line}, nil
+		return syslogMessage{Severity: 6, Timestamp: now, Message: line, CEF: parseCEF(line)}, nil
 	}
 	end := strings.IndexByte(line, '>')
 	if end < 1 {
@@ -315,6 +344,7 @@ func parseSyslogMessage(line string, now time.Time) (syslogMessage, error) {
 	} else {
 		parseRFC3164(rest, &msg, now)
 	}
+	msg.CEF = parseCEF(msg.Message)
 	return msg, nil
 }
 
@@ -403,6 +433,12 @@ func dashValue(value string) string {
 }
 
 func syslogEventClass(msg syslogMessage) (string, string) {
+	if msg.CEF == nil {
+		msg.CEF = parseCEF(msg.Message)
+	}
+	if msg.CEF != nil {
+		return cefEventClass(msg.CEF)
+	}
 	lower := strings.ToLower(msg.AppName + " " + msg.Message)
 	severity := "info"
 	switch {
@@ -430,6 +466,212 @@ func syslogEventClass(msg syslogMessage) (string, string) {
 		return "auth", severity
 	}
 	return "syslog", severity
+}
+
+// parseCEF extracts the bounded header and extension fields from an ArcSight
+// CEF message. Appliances may prefix CEF with a syslog timestamp and hostname,
+// so the marker is located rather than required at the start of the message.
+func parseCEF(message string) *cefEvent {
+	index := strings.Index(message, "CEF:")
+	if index < 0 {
+		return nil
+	}
+	if index > 0 {
+		previous := message[index-1]
+		if previous != ' ' && previous != '\t' && previous != '[' {
+			return nil
+		}
+	}
+	rest := message[index+4:]
+	fields := make([]string, 0, 7)
+	for len(fields) < 7 {
+		value, remainder, ok := cutCEFField(rest)
+		if !ok {
+			return nil
+		}
+		fields = append(fields, value)
+		rest = remainder
+	}
+	severity, err := strconv.Atoi(strings.TrimSpace(fields[6]))
+	if err != nil {
+		return nil
+	}
+	if severity < 0 {
+		severity = 0
+	}
+	if severity > 10 {
+		severity = 10
+	}
+	return &cefEvent{
+		Version:       fields[0],
+		Vendor:        fields[1],
+		Product:       fields[2],
+		DeviceVersion: fields[3],
+		EventID:       fields[4],
+		Name:          fields[5],
+		Severity:      severity,
+		Extensions:    parseCEFExtensions(rest),
+	}
+}
+
+func cutCEFField(value string) (string, string, bool) {
+	var builder strings.Builder
+	escaped := false
+	for index := 0; index < len(value); index++ {
+		char := value[index]
+		if escaped {
+			builder.WriteByte(char)
+			escaped = false
+			continue
+		}
+		switch char {
+		case '\\':
+			escaped = true
+		case '|':
+			return builder.String(), value[index+1:], true
+		default:
+			builder.WriteByte(char)
+		}
+	}
+	return "", "", false
+}
+
+func parseCEFExtensions(value string) map[string]string {
+	matches := cefExtensionKey.FindAllStringSubmatchIndex(value, 128)
+	if len(matches) == 0 {
+		return nil
+	}
+	extensions := make(map[string]string, len(matches))
+	for index, match := range matches {
+		if len(match) < 6 {
+			continue
+		}
+		key := strings.ToLower(value[match[4]:match[5]])
+		start := match[1]
+		end := len(value)
+		if index+1 < len(matches) {
+			end = matches[index+1][0]
+		}
+		item := strings.TrimSpace(value[start:end])
+		if len(item) > cefValueLimit {
+			item = item[:cefValueLimit]
+		}
+		if _, exists := extensions[key]; !exists {
+			extensions[key] = unescapeCEF(item)
+		}
+	}
+	return extensions
+}
+
+func unescapeCEF(value string) string {
+	if !strings.Contains(value, "\\") {
+		return value
+	}
+	var builder strings.Builder
+	builder.Grow(len(value))
+	escaped := false
+	for index := 0; index < len(value); index++ {
+		char := value[index]
+		if escaped {
+			switch char {
+			case 'n':
+				builder.WriteByte('\n')
+			case 'r':
+				builder.WriteByte('\r')
+			default:
+				builder.WriteByte(char)
+			}
+			escaped = false
+			continue
+		}
+		if char == '\\' {
+			escaped = true
+			continue
+		}
+		builder.WriteByte(char)
+	}
+	if escaped {
+		builder.WriteByte('\\')
+	}
+	return builder.String()
+}
+
+func (cef *cefEvent) firstExtension(keys ...string) string {
+	for _, key := range keys {
+		value := strings.TrimSpace(cef.Extensions[strings.ToLower(key)])
+		if value != "" && value != "-" {
+			return value
+		}
+	}
+	return ""
+}
+
+func (cef *cefEvent) searchable() string {
+	var builder strings.Builder
+	builder.WriteString(strings.ToLower(cef.EventID))
+	builder.WriteByte(' ')
+	builder.WriteString(strings.ToLower(cef.Name))
+	for key, value := range cef.Extensions {
+		builder.WriteByte(' ')
+		builder.WriteString(key)
+		builder.WriteByte(' ')
+		builder.WriteString(strings.ToLower(value))
+	}
+	return builder.String()
+}
+
+func cefEventClass(cef *cefEvent) (string, string) {
+	lower := cef.searchable()
+	severity := "info"
+	switch {
+	case cef.Severity >= 8:
+		severity = "critical"
+	case cef.Severity >= 4:
+		severity = "warning"
+	}
+	switch {
+	case containsAny(lower, "failed password", "authentication failure", "auth failure",
+		"login failed", "invalid user", "radius", "802.1x", "failed login"):
+		return "auth_failure", higherSeverity(severity, "warning")
+	case containsAny(lower, "intrusion", "malware", "exploit", "attack", "threat",
+		"botnet", "vulnerability", "ips ", "ids ", "c2 "):
+		return "security_threat", higherSeverity(severity, "warning")
+	case containsAny(lower, "vpn", "ipsec", "wireguard", "openvpn", "tunnel"):
+		return "network_vpn", severity
+	case containsAny(lower, "wifi", "wireless", "ssid", "roam", "access point", "adopt"):
+		return "network_wifi", severity
+	case containsAny(lower, "wan", "pppoe", "failover"):
+		if containsAny(lower, "down", "fail", "disconnect", "lost") {
+			return "network_wan", "critical"
+		}
+		if containsAny(lower, "up", "connect", "restore") {
+			return "network_wan", higherSeverity(severity, "warning")
+		}
+		return "network_wan", severity
+	case containsAny(lower, "link", "port", "interface", "stp") &&
+		containsAny(lower, "down", "up", "fail", "error"):
+		return "network_link", higherSeverity(severity, "warning")
+	case containsAny(lower, "firewall", "blocked", "denied", "dropped", "reject"):
+		return "network_firewall", severity
+	case containsAny(lower, "firmware", "upgrade", "reboot", "config change", "configuration", "restart", "backup"):
+		return "system", severity
+	}
+	return "syslog", severity
+}
+
+func higherSeverity(current, minimum string) string {
+	rank := map[string]int{"info": 0, "warning": 1, "critical": 2}
+	if rank[current] >= rank[minimum] {
+		return current
+	}
+	return minimum
+}
+
+func truncateEventField(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit]
 }
 
 func containsAny(value string, needles ...string) bool {

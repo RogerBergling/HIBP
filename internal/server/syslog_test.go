@@ -53,6 +53,63 @@ func TestParseSyslogWithoutPriority(t *testing.T) {
 	}
 }
 
+func TestParseCEFMessage(t *testing.T) {
+	line := `Nov 27 23:13:54 UDM CEF:0|Ubiquiti|UniFi Network|6.0.19|EVT_GW_WANTransition|WAN Transition|8|cat=network dvc=192.168.4.1 suser=admin src=192.168.4.50 msg=WAN 1 transitioned to down`
+	msg, err := parseSyslogMessage(line, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.CEF == nil {
+		t.Fatalf("expected CEF fields: %+v", msg)
+	}
+	if msg.CEF.Vendor != "Ubiquiti" || msg.CEF.Product != "UniFi Network" ||
+		msg.CEF.EventID != "EVT_GW_WANTransition" || msg.CEF.Name != "WAN Transition" ||
+		msg.CEF.Severity != 8 {
+		t.Fatalf("unexpected CEF header: %+v", msg.CEF)
+	}
+	if msg.CEF.Extensions["suser"] != "admin" || msg.CEF.Extensions["src"] != "192.168.4.50" ||
+		msg.CEF.Extensions["msg"] != "WAN 1 transitioned to down" {
+		t.Fatalf("unexpected CEF extensions: %+v", msg.CEF.Extensions)
+	}
+	if category, severity := syslogEventClass(msg); category != "network_wan" || severity != "critical" {
+		t.Fatalf("unexpected CEF classification: %s/%s", category, severity)
+	}
+}
+
+func TestCEFAuthClassification(t *testing.T) {
+	msg, err := parseSyslogMessage(`CEF:0|Ubiquiti|UniFi Network|6.0.19|EVT_ADMIN_LOGIN_FAILED|Admin login failed|5|suser=admin src=192.168.4.50`, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	category, severity := syslogEventClass(msg)
+	if category != "auth_failure" || severity != "warning" {
+		t.Fatalf("unexpected CEF auth classification: %s/%s", category, severity)
+	}
+}
+
+func TestHandleSyslogMessageKeepsLongCEF(t *testing.T) {
+	_, db, app := testServerWithApp(t, true)
+	host, err := db.CreateHost(store.Host{
+		Name: "udm", Address: "10.0.0.50", AuthType: "network",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	padding := strings.Repeat("x", 900)
+	app.handleSyslogMessage("10.0.0.50",
+		`CEF:0|Ubiquiti|UniFi Network|6.0.19|EVT_TEST|Test event|3|suser=admin msg=`+padding)
+	events, err := db.ListHostEvents(10)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("events: %+v %v", events, err)
+	}
+	if events[0].HostID != host.ID || events[0].Username != "admin" {
+		t.Fatalf("unexpected stored event: %+v", events[0])
+	}
+	if len(events[0].Message) <= 512 || !strings.Contains(events[0].Message, padding) {
+		t.Fatalf("expected a full long CEF message, got %d bytes", len(events[0].Message))
+	}
+}
+
 func TestSyslogEventClass(t *testing.T) {
 	tests := []struct {
 		message  string

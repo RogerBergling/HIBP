@@ -56,8 +56,8 @@ func (s *Store) AddHostEvents(hostID string, events []HostEvent) error {
 		if event.Message == "" {
 			event.Message = "event without message"
 		}
-		if len(event.Message) > 512 {
-			event.Message = event.Message[:512]
+		if len(event.Message) > 4096 {
+			event.Message = event.Message[:4096]
 		}
 		if _, err := tx.Exec(`INSERT OR IGNORE INTO host_events
 			(host_id,event_id,source,category,severity,unit,username,remote_ip,message,occurred_at,received_at)

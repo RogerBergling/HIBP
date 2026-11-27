@@ -223,8 +223,8 @@ func hashEvent(parts ...string) string {
 
 func truncateEventMessage(message string) string {
 	message = strings.Join(strings.Fields(message), " ")
-	if len(message) <= 512 {
+	if len(message) <= 4096 {
 		return message
 	}
-	return message[:512]
+	return message[:4096]
 }

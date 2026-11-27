@@ -2017,12 +2017,23 @@ function renderEventTable() {
     eventBody.append(emptyTableRow(8, 'No events match the current filter.'));
   }
   for (const record of filtered) {
-    const row = el('tr');
+    const row = el('tr', 'event-row');
+    row.tabIndex = 0;
+    row.setAttribute('role', 'button');
+    const host = (state.hosts || []).find((entry) => entry.id === record.host_id);
+    const hostName = host ? host.name : (record.host_id ? record.host_id.slice(0, 8) : 'unknown host');
+    row.setAttribute('aria-label', 'Open event details for ' + hostName + ', ' + (record.category || 'event'));
+    row.addEventListener('click', () => showEventDetails(record));
+    row.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        showEventDetails(record);
+      }
+    });
     const timeTd = el('td');
     const time = el('span', 'nowrap', relativeTime(record.occurred_at));
     time.title = record.occurred_at ? new Date(record.occurred_at).toLocaleString() : '';
     timeTd.append(time);
-    const host = (state.hosts || []).find((entry) => entry.id === record.host_id);
     const hostTd = el('td', '', host ? host.name : (record.host_id ? record.host_id.slice(0, 8) : '—'));
     const sourceTd = el('td', '', record.source || '—');
     sourceTd.title = record.source || '';
@@ -2077,6 +2088,174 @@ async function clearAlertEvents() {
     await loadAll({ force: true });
   } catch (error) {
     toast(error.message, 'error');
+  }
+}
+
+function parseCefMessage(message) {
+  const text = String(message || '');
+  const index = text.indexOf('CEF:');
+  if (index < 0) return null;
+  if (index > 0 && !/[\s[]/.test(text[index - 1])) return null;
+  let rest = text.slice(index + 4);
+  const fields = [];
+  for (let field = 0; field < 7; field++) {
+    let value = '';
+    let escaped = false;
+    let found = false;
+    for (let i = 0; i < rest.length; i++) {
+      const char = rest[i];
+      if (escaped) {
+        value += char;
+        escaped = false;
+        continue;
+      }
+      if (char === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (char === '|') {
+        rest = rest.slice(i + 1);
+        found = true;
+        break;
+      }
+      value += char;
+    }
+    if (!found) return null;
+    fields.push(value);
+  }
+  const severity = Number.parseInt(fields[6], 10);
+  if (!Number.isFinite(severity)) return null;
+  return {
+    version: fields[0],
+    vendor: fields[1],
+    product: fields[2],
+    deviceVersion: fields[3],
+    eventId: fields[4],
+    name: fields[5],
+    severity: Math.max(0, Math.min(10, severity)),
+    extensions: parseCefExtensions(rest),
+  };
+}
+
+function parseCefExtensions(text) {
+  const extensions = {};
+  const pattern = /(?:^| )([A-Za-z0-9_.-]+)=/g;
+  const matches = [...text.matchAll(pattern)];
+  for (let i = 0; i < matches.length && i < 128; i++) {
+    const match = matches[i];
+    const start = match.index + match[0].length;
+    const end = i + 1 < matches.length ? matches[i + 1].index : text.length;
+    const key = match[1].toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(extensions, key)) continue;
+    extensions[key] = text.slice(start, end).trim().replace(/\\(.)/g, '$1');
+  }
+  return extensions;
+}
+
+function cefSeverityLabel(severity) {
+  if (severity >= 8) return severity + ' (very high)';
+  if (severity >= 7) return severity + ' (high)';
+  if (severity >= 4) return severity + ' (medium)';
+  if (severity >= 1) return severity + ' (low)';
+  return severity + ' (info)';
+}
+
+function addEventDetailField(grid, label, value) {
+  const field = el('div', 'event-detail-field');
+  field.append(el('div', 'event-detail-label', label));
+  const content = el('div', 'event-detail-value');
+  if (value instanceof Node) content.append(value);
+  else content.textContent = value || '—';
+  field.append(content);
+  grid.append(field);
+}
+
+function showEventDetails(record) {
+  const body = el('div', 'modal-body');
+  const host = (state.hosts || []).find((entry) => entry.id === record.host_id);
+  const occurred = record.occurred_at ? new Date(record.occurred_at) : null;
+  const occurredText = occurred && !Number.isNaN(occurred.getTime())
+    ? occurred.toLocaleString() + ' (' + relativeTime(record.occurred_at) + ')'
+    : record.occurred_at || '—';
+  const summary = el('div', 'event-detail-grid');
+  addEventDetailField(summary, 'Time', occurredText);
+  addEventDetailField(summary, 'Received', record.received_at ? new Date(record.received_at).toLocaleString() : '—');
+  addEventDetailField(summary, 'Host', host ? host.name : record.host_id || '—');
+  addEventDetailField(summary, 'Source', record.source || '—');
+  addEventDetailField(summary, 'Category', record.category || '—');
+  addEventDetailField(summary, 'Severity', record.severity || 'info');
+  addEventDetailField(summary, 'User', record.username || '—');
+  addEventDetailField(summary, 'Source IP', record.remote_ip || '—');
+  body.append(summary);
+
+  const cef = parseCefMessage(record.message);
+  if (cef) {
+    const cefSection = el('section', 'event-detail-section');
+    cefSection.append(el('div', 'event-detail-heading', 'CEF event'));
+    const cefGrid = el('div', 'event-detail-grid');
+    addEventDetailField(cefGrid, 'Vendor', cef.vendor || '—');
+    addEventDetailField(cefGrid, 'Product', cef.product || '—');
+    addEventDetailField(cefGrid, 'Product version', cef.deviceVersion || '—');
+    addEventDetailField(cefGrid, 'Event ID', cef.eventId || '—');
+    addEventDetailField(cefGrid, 'Event name', cef.name || '—');
+    addEventDetailField(cefGrid, 'CEF severity', cefSeverityLabel(cef.severity));
+    cefSection.append(cefGrid);
+    const keys = Object.keys(cef.extensions).sort();
+    if (keys.length) {
+      const table = el('table', 'event-detail-table');
+      const head = el('thead');
+      const headRow = el('tr');
+      headRow.append(el('th', '', 'Field'), el('th', '', 'Value'));
+      head.append(headRow);
+      const tbody = el('tbody');
+      for (const key of keys) {
+        const row = el('tr');
+        const keyCell = el('td', 'event-detail-key', key);
+        const valueCell = el('td', 'event-detail-text', cef.extensions[key] || '—');
+        row.append(keyCell, valueCell);
+        tbody.append(row);
+      }
+      table.append(head, tbody);
+      cefSection.append(table);
+    }
+    body.append(cefSection);
+  }
+
+  const messageSection = el('section', 'event-detail-section');
+  messageSection.append(el('div', 'event-detail-heading', 'Full message'));
+  const message = el('pre', 'key-box event-message', record.message || '(empty)');
+  messageSection.append(message);
+  body.append(messageSection);
+
+  const actions = el('div', 'modal-actions');
+  const copy = el('button', 'btn', 'Copy message');
+  copy.type = 'button';
+  copy.addEventListener('click', () => copyToClipboard(record.message || ''));
+  const close = el('button', 'btn primary', 'Close');
+  close.type = 'button';
+  actions.append(copy, close);
+  body.append(actions);
+  const closeFn = openModal('Event details', body, null, 'wide');
+  close.addEventListener('click', closeFn);
+}
+
+async function copyToClipboard(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const area = document.createElement('textarea');
+      area.value = text;
+      area.style.position = 'fixed';
+      area.style.opacity = '0';
+      document.body.append(area);
+      area.select();
+      document.execCommand('copy');
+      area.remove();
+    }
+    toast('Copied to clipboard', 'ok');
+  } catch (error) {
+    toast('Copy failed: ' + error.message, 'error');
   }
 }
 

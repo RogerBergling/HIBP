@@ -504,6 +504,22 @@ label.field.checkbox-field input { width: auto; accent-color: #14b8a6; }
 .monitor-target { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .monitor-status-summary { font-size: 9.5px; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .alert-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+tr.event-row { cursor: pointer; }
+tr.event-row:hover { background: rgba(20, 184, 166, .06); }
+tr.event-row:focus-visible { outline: 2px solid rgba(45, 212, 191, .55); outline-offset: -2px; }
+.event-detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 9px; }
+.event-detail-field { min-width: 0; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--panel); }
+.event-detail-label { margin-bottom: 4px; color: var(--muted-2); font-size: 9px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
+.event-detail-value { color: var(--text); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.event-detail-section { display: flex; flex-direction: column; gap: 9px; padding: 10px; border: 1px solid var(--border-soft); border-radius: 9px; background: var(--panel); }
+.event-detail-heading { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.event-detail-table { table-layout: fixed; }
+.event-detail-table th { padding: 6px 8px; }
+.event-detail-table td { padding: 6px 8px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+.event-detail-table tr:last-child td { border-bottom: 0; }
+.event-detail-key { width: 28%; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9.5px; overflow-wrap: anywhere; }
+.event-detail-text { color: var(--text); font-size: 10px; overflow-wrap: anywhere; }
+.event-message { margin: 0; max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; color: #bae6fd; }
 .project-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .project-head h3 { margin: 0; }
