@@ -7,6 +7,29 @@ import (
 	"time"
 )
 
+func TestMonitorInsecureSkipVerifyPersistence(t *testing.T) {
+	s := openAuthTestStore(t)
+	monitor, err := s.CreateMonitor(Monitor{
+		Name: "NAS", Type: "http", Target: "https://192.168.6.20/",
+		IntervalSeconds: 60, InsecureSkipVerify: true, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := s.GetMonitor(monitor.ID)
+	if err != nil || !loaded.InsecureSkipVerify {
+		t.Fatalf("expected insecure flag to persist, got %+v %v", loaded, err)
+	}
+	monitor.InsecureSkipVerify = false
+	if err := s.UpdateMonitor(monitor); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = s.GetMonitor(monitor.ID)
+	if err != nil || loaded.InsecureSkipVerify {
+		t.Fatalf("expected insecure flag to clear, got %+v %v", loaded, err)
+	}
+}
+
 func TestMonitorAndServiceLifecycle(t *testing.T) {
 	s := openAuthTestStore(t)
 	host, err := s.CreateHost(Host{

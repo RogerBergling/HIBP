@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -795,6 +796,50 @@ func TestParseUnitListPatterns(t *testing.T) {
 			t.Fatalf("expected invalid unit pattern %q to be rejected", value)
 		}
 	}
+}
+
+func TestHTTPMonitorInsecureSkipVerify(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	monitor := store.Monitor{Type: "http", Target: server.URL}
+	result := evaluateHTTP(context.Background(), monitor)
+	if result.status != "critical" || !strings.Contains(strings.ToLower(result.message), "certificate") {
+		t.Fatalf("expected certificate verification failure, got %+v", result)
+	}
+	monitor.InsecureSkipVerify = true
+	result = evaluateHTTP(context.Background(), monitor)
+	if result.status != "ok" {
+		t.Fatalf("expected insecure HTTP monitor to succeed, got %+v", result)
+	}
+}
+
+func TestMonitorInsecureSkipVerifyValidation(t *testing.T) {
+	ts, _ := testServer(t)
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/monitors", "test-token",
+		`{"name":"NAS","type":"http","target":"https://192.168.6.20/cgi-bin/","interval_seconds":60,"insecure_skip_verify":true}`)
+	if resp.StatusCode != http.StatusCreated {
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		t.Fatalf("expected HTTP monitor creation, got %d %s", resp.StatusCode, raw)
+	}
+	var created store.Monitor
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		_ = resp.Body.Close()
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if !created.InsecureSkipVerify {
+		t.Fatal("expected insecure_skip_verify to be saved")
+	}
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/monitors", "test-token",
+		`{"name":"CPU","type":"host.cpu","warning":80,"critical":90,"interval_seconds":60,"insecure_skip_verify":true,"assignments":[{"scope":"fleet"}]}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		_ = resp.Body.Close()
+		t.Fatalf("expected insecure flag rejection for non-HTTP monitor, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
 }
 
 func TestDockerAllContainersMonitor(t *testing.T) {

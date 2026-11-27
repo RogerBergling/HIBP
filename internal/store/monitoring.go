@@ -10,22 +10,23 @@ import (
 )
 
 type Monitor struct {
-	ID              string              `json:"id"`
-	Name            string              `json:"name"`
-	Type            string              `json:"type"`
-	Target          string              `json:"target"`
-	Warning         float64             `json:"warning"`
-	Critical        float64             `json:"critical"`
-	IntervalSeconds int                 `json:"interval_seconds"`
-	RepeatMinutes   int                 `json:"repeat_minutes"`
-	CooldownMinutes int                 `json:"cooldown_minutes"`
-	Recipients      string              `json:"recipients"`
-	Enabled         bool                `json:"enabled"`
-	LastCheckedAt   string              `json:"last_checked_at"`
-	CreatedAt       string              `json:"created_at"`
-	UpdatedAt       string              `json:"updated_at"`
-	Assignments     []MonitorAssignment `json:"assignments,omitempty"`
-	States          []MonitorState      `json:"states,omitempty"`
+	ID                 string              `json:"id"`
+	Name               string              `json:"name"`
+	Type               string              `json:"type"`
+	Target             string              `json:"target"`
+	Warning            float64             `json:"warning"`
+	Critical           float64             `json:"critical"`
+	InsecureSkipVerify bool                `json:"insecure_skip_verify"`
+	IntervalSeconds    int                 `json:"interval_seconds"`
+	RepeatMinutes      int                 `json:"repeat_minutes"`
+	CooldownMinutes    int                 `json:"cooldown_minutes"`
+	Recipients         string              `json:"recipients"`
+	Enabled            bool                `json:"enabled"`
+	LastCheckedAt      string              `json:"last_checked_at"`
+	CreatedAt          string              `json:"created_at"`
+	UpdatedAt          string              `json:"updated_at"`
+	Assignments        []MonitorAssignment `json:"assignments,omitempty"`
+	States             []MonitorState      `json:"states,omitempty"`
 }
 
 type MonitorAssignment struct {
@@ -152,10 +153,14 @@ func (s *Store) CreateMonitor(monitor Monitor) (Monitor, error) {
 	if monitor.Enabled {
 		enabled = 1
 	}
-	if _, err := tx.Exec(`INSERT INTO monitors(id,name,type,target,warning,critical,interval_seconds,
+	insecureSkipVerify := 0
+	if monitor.InsecureSkipVerify {
+		insecureSkipVerify = 1
+	}
+	if _, err := tx.Exec(`INSERT INTO monitors(id,name,type,target,warning,critical,insecure_skip_verify,interval_seconds,
 		repeat_minutes,cooldown_minutes,recipients,enabled,last_checked_at,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, monitor.ID, monitor.Name, monitor.Type, monitor.Target,
-		monitor.Warning, monitor.Critical, monitor.IntervalSeconds, monitor.RepeatMinutes,
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, monitor.ID, monitor.Name, monitor.Type, monitor.Target,
+		monitor.Warning, monitor.Critical, insecureSkipVerify, monitor.IntervalSeconds, monitor.RepeatMinutes,
 		monitor.CooldownMinutes, monitor.Recipients, enabled, "", now, now); err != nil {
 		_ = tx.Rollback()
 		return Monitor{}, err
@@ -182,10 +187,14 @@ func (s *Store) UpdateMonitor(monitor Monitor) error {
 	if monitor.Enabled {
 		enabled = 1
 	}
-	res, err := tx.Exec(`UPDATE monitors SET name=?,type=?,target=?,warning=?,critical=?,interval_seconds=?,
+	insecureSkipVerify := 0
+	if monitor.InsecureSkipVerify {
+		insecureSkipVerify = 1
+	}
+	res, err := tx.Exec(`UPDATE monitors SET name=?,type=?,target=?,warning=?,critical=?,insecure_skip_verify=?,interval_seconds=?,
 		repeat_minutes=?,cooldown_minutes=?,recipients=?,enabled=?,updated_at=? WHERE id=?`,
 		monitor.Name, monitor.Type, monitor.Target, monitor.Warning, monitor.Critical,
-		monitor.IntervalSeconds, monitor.RepeatMinutes, monitor.CooldownMinutes, monitor.Recipients,
+		insecureSkipVerify, monitor.IntervalSeconds, monitor.RepeatMinutes, monitor.CooldownMinutes, monitor.Recipients,
 		enabled, now, monitor.ID)
 	if err != nil {
 		_ = tx.Rollback()
@@ -240,13 +249,13 @@ func (s *Store) DeleteMonitor(id string) error {
 }
 
 func (s *Store) GetMonitor(id string) (Monitor, error) {
-	row := s.db.QueryRow(`SELECT id,name,type,target,warning,critical,interval_seconds,repeat_minutes,
+	row := s.db.QueryRow(`SELECT id,name,type,target,warning,critical,insecure_skip_verify,interval_seconds,repeat_minutes,
 		cooldown_minutes,recipients,enabled,last_checked_at,created_at,updated_at FROM monitors WHERE id=?`, id)
 	return scanMonitor(row)
 }
 
 func (s *Store) ListMonitors() ([]Monitor, error) {
-	rows, err := s.db.Query(`SELECT id,name,type,target,warning,critical,interval_seconds,repeat_minutes,
+	rows, err := s.db.Query(`SELECT id,name,type,target,warning,critical,insecure_skip_verify,interval_seconds,repeat_minutes,
 		cooldown_minutes,recipients,enabled,last_checked_at,created_at,updated_at FROM monitors ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -269,11 +278,12 @@ type monitorScanner interface {
 
 func scanMonitor(row monitorScanner) (Monitor, error) {
 	var monitor Monitor
-	var enabled int
+	var enabled, insecureSkipVerify int
 	err := row.Scan(&monitor.ID, &monitor.Name, &monitor.Type, &monitor.Target, &monitor.Warning,
-		&monitor.Critical, &monitor.IntervalSeconds, &monitor.RepeatMinutes, &monitor.CooldownMinutes,
+		&monitor.Critical, &insecureSkipVerify, &monitor.IntervalSeconds, &monitor.RepeatMinutes, &monitor.CooldownMinutes,
 		&monitor.Recipients, &enabled, &monitor.LastCheckedAt, &monitor.CreatedAt, &monitor.UpdatedAt)
 	monitor.Enabled = enabled == 1
+	monitor.InsecureSkipVerify = insecureSkipVerify == 1
 	return monitor, err
 }
 

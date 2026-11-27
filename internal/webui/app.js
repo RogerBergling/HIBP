@@ -1664,7 +1664,7 @@ const MONITOR_TYPES = {
     placeholder: 'https://example.com/health', threshold: 'latency',
     warningLabel: 'Warning latency (ms)', criticalLabel: 'Critical latency (ms)', warning: 0, critical: 0,
     namePlaceholder: 'App availability',
-    note: '2xx and 3xx responses are healthy. Redirects are followed up to five times. Latency thresholds are optional; 0 disables them. Add a TLS certificate monitor for expiry alerts.',
+    note: '2xx and 3xx responses are healthy. Redirects are followed up to five times. Latency thresholds are optional; 0 disables them. Use the insecure TLS checkbox only for trusted internal endpoints with self-signed or name-mismatched certificates.',
   },
   'tcp': {
     label: 'TCP port', target: 'address', targetLabel: 'host:port',
@@ -2004,7 +2004,14 @@ function renderMonitoring() {
     nameTd.append(el('div', 'host-name', monitor.name));
     nameTd.append(el('div', 'host-ip', monitor.enabled ? 'enabled' : 'disabled'));
 
-    const typeTd = el('td', '', monitorTypeLabel(monitor.type));
+    const typeTd = el('td');
+    typeTd.append(document.createTextNode(monitorTypeLabel(monitor.type)));
+    if (monitor.insecure_skip_verify) {
+      const badge = el('span', 'badge amber', 'insecure TLS');
+      badge.style.marginLeft = '5px';
+      badge.title = 'TLS certificate verification is disabled for this monitor.';
+      typeTd.append(badge);
+    }
 
     const targetTd = el('td');
     const targetText = monitor.target || '—';
@@ -2369,6 +2376,13 @@ function showMonitorModal(monitor = null, preset = null) {
   targetWrap.append(target);
   form.append(targetWrap);
 
+  const insecureWrap = el('label', 'field checkbox-field hidden');
+  const insecure = el('input');
+  insecure.type = 'checkbox';
+  insecure.checked = Boolean(source.insecure_skip_verify);
+  insecureWrap.append(insecure, document.createTextNode('Skip TLS certificate verification (insecure)'));
+  form.append(insecureWrap);
+
   const enabledWrap = el('label', 'field checkbox-field');
   const enabled = el('input');
   enabled.type = 'checkbox';
@@ -2504,7 +2518,10 @@ function showMonitorModal(monitor = null, preset = null) {
   const applyMonitorType = (setDefaults) => {
     const info = MONITOR_TYPES[type.value] || {};
     const network = isNetworkMonitorType(type.value);
+    const http = type.value === 'http';
     targetWrap.classList.toggle('hidden', info.target === 'none');
+    insecureWrap.classList.toggle('hidden', !http);
+    if (!http) insecure.checked = false;
     name.placeholder = info.namePlaceholder || 'Monitor name';
     if (info.targetLabel) setFieldLabel(target, info.targetLabel);
     target.placeholder = info.placeholder || '';
@@ -2575,6 +2592,7 @@ function showMonitorModal(monitor = null, preset = null) {
       cooldown_minutes: Number(cooldown.value || 0),
       recipients: recipients.value.trim(),
       enabled: enabled.checked,
+      insecure_skip_verify: type.value === 'http' ? insecure.checked : false,
       assignments,
     };
     try {

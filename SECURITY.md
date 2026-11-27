@@ -173,6 +173,11 @@ cron-based patch schedules are implemented.
   controller egress destination; allowlist it in outbound firewall policy. HTTP
   targets reject embedded credentials, redirects are capped, and only status,
   latency, certificate expiry, and bounded error text are stored.
+- An HTTP monitor can opt into `insecure_skip_verify`. This disables TLS
+  certificate chain and hostname verification for that monitor only; encryption
+  is still used. Use it only for trusted internal endpoints with self-signed or
+  name-mismatched certificates. It is an authenticated admin setting and is
+  shown as an **insecure TLS** badge in the monitor table.
 - Optional single-hop `ProxyJump` uses a separately trusted jump-host key;
   HIBP verifies both the jump host and target host keys before running a helper
   action. Jump credentials are never logged, agent forwarding is not used, and

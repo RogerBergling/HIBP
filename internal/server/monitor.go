@@ -645,6 +645,14 @@ func evaluateHTTP(ctx context.Context, monitor store.Monitor) monitorResult {
 		}
 		return nil
 	}}
+	if monitor.InsecureSkipVerify {
+		// Explicit per-monitor opt-in for self-signed or name-mismatched
+		// endpoints on trusted internal networks. Encryption is still used;
+		// only certificate identity/chain verification is skipped.
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}
+		client.Transport = transport
+	}
 	started := time.Now()
 	response, err := client.Do(request)
 	latency := time.Since(started).Milliseconds()

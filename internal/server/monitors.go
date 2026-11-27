@@ -24,17 +24,18 @@ var monitorContainerPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,1
 var monitorServicePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9@_.:-]{0,127}$`)
 
 type monitorRequest struct {
-	Name            string                    `json:"name"`
-	Type            string                    `json:"type"`
-	Target          string                    `json:"target"`
-	Warning         float64                   `json:"warning"`
-	Critical        float64                   `json:"critical"`
-	IntervalSeconds int                       `json:"interval_seconds"`
-	RepeatMinutes   int                       `json:"repeat_minutes"`
-	CooldownMinutes int                       `json:"cooldown_minutes"`
-	Recipients      string                    `json:"recipients"`
-	Enabled         bool                      `json:"enabled"`
-	Assignments     []store.MonitorAssignment `json:"assignments"`
+	Name               string                    `json:"name"`
+	Type               string                    `json:"type"`
+	Target             string                    `json:"target"`
+	Warning            float64                   `json:"warning"`
+	Critical           float64                   `json:"critical"`
+	IntervalSeconds    int                       `json:"interval_seconds"`
+	RepeatMinutes      int                       `json:"repeat_minutes"`
+	CooldownMinutes    int                       `json:"cooldown_minutes"`
+	Recipients         string                    `json:"recipients"`
+	Enabled            bool                      `json:"enabled"`
+	InsecureSkipVerify bool                      `json:"insecure_skip_verify"`
+	Assignments        []store.MonitorAssignment `json:"assignments"`
 }
 
 func (s *Server) validateMonitor(request monitorRequest, monitorID string) (store.Monitor, error) {
@@ -124,6 +125,9 @@ func (s *Server) validateMonitor(request monitorRequest, monitorID string) (stor
 	if request.IntervalSeconds < 30 || request.IntervalSeconds > 86400 {
 		return store.Monitor{}, errors.New("interval_seconds must be between 30 and 86400")
 	}
+	if request.InsecureSkipVerify && request.Type != "http" {
+		return store.Monitor{}, errors.New("insecure_skip_verify is only supported for HTTP monitors")
+	}
 	if request.RepeatMinutes < 0 || request.RepeatMinutes > 10080 {
 		return store.Monitor{}, errors.New("repeat_minutes must be between 0 and 10080")
 	}
@@ -173,7 +177,8 @@ func (s *Server) validateMonitor(request monitorRequest, monitorID string) (stor
 	return store.Monitor{
 		ID: monitorID, Name: name, Type: request.Type, Target: target,
 		Warning: request.Warning, Critical: request.Critical,
-		IntervalSeconds: request.IntervalSeconds, RepeatMinutes: request.RepeatMinutes,
+		InsecureSkipVerify: request.InsecureSkipVerify && request.Type == "http",
+		IntervalSeconds:    request.IntervalSeconds, RepeatMinutes: request.RepeatMinutes,
 		CooldownMinutes: request.CooldownMinutes, Recipients: strings.Join(recipients, ", "),
 		Enabled: request.Enabled, Assignments: assignments,
 	}, nil

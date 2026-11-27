@@ -394,7 +394,7 @@ HIBP_SSH_DIR=./secrets/ssh
 HIBP_PASSPHRASE_FILE=./secrets/db.passphrase
 ```
 
-`:edge` contains schema 19 and can migrate older local databases forward. It is
+`:edge` contains schema 20 and can migrate older local databases forward. It is
 an unreleased build; after validating the migration, switch to a pinned release
 or image digest.
 
@@ -1807,6 +1807,8 @@ Implemented check types:
   journald/auth events. Warning and critical thresholds are counts inside a
   configurable window; the default is 5 warning / 10 critical in 10 minutes.
 - `http` — HTTP/HTTPS status (2xx/3xx healthy) and optional latency thresholds.
+  HTTP monitors can opt into skipping TLS certificate verification for trusted
+  internal endpoints with self-signed or name-mismatched certificates.
 - `tcp` — TCP connect and optional latency thresholds.
 - `ssl` — TLS handshake plus certificate expiry in days.
 
@@ -3691,7 +3693,7 @@ Current status:
 ## Data model
 
 The current schema is implemented in `internal/store/migrations/001_init.sql`
-through `019_agents.sql`. Domain objects use UUIDs, timestamps are
+through `020_monitor_insecure_skip_verify.sql`. Domain objects use UUIDs, timestamps are
 UTC ISO 8601, and durations are stored in seconds.
 
 > **Implemented:** `schema_migrations`, `app_meta`, `hosts`, `host_facts`,
@@ -3720,7 +3722,7 @@ UTC ISO 8601, and durations are stored in seconds.
 | `docker_projects`, `docker_containers` | Cached Docker inventory. | `host_id`, `name`/`id`, `project`, `state`, `health`, `image`, `ports`, `last_seen` |
 | `docker_project_checks` | Last Docker check/update result per project, used for status badges. | `host_id`, `project`, `status`, `checked_at`, `summary`, `error` |
 | `settings` | Fleet/host preferences, collection, backup retention, and SMTP configuration. | `scope`, `key`, `value`, `updated_at` |
-| `monitors`, `monitor_assignments` | Monitoring definitions and fleet/group/tag/host assignments. | `id`, `name`, `type`, `target`, thresholds, intervals, `recipients`, `scope`, `target` |
+| `monitors`, `monitor_assignments` | Monitoring definitions and fleet/group/tag/host assignments. | `id`, `name`, `type`, `target`, thresholds, `insecure_skip_verify`, intervals, `recipients`, `scope`, `target` |
 | `monitor_state` | Last status per monitor/host. | `monitor_id`, `host_id`, `status`, `message`, `checked_at`, `changed_at`, `last_notified` |
 | `alert_events` | Alert history independent of email delivery. | `id`, `monitor_id`, `host_id`, `status`, `subject`, `detail`, `created_at`, `emailed`, `error` |
 | `host_services` | systemd unit snapshot from metrics. | `host_id`, `unit`, `state`, `last_seen` |
@@ -3979,7 +3981,7 @@ not accept passwords, private keys, or scripts.
 
 ### Schema migrations
 
-- Current schema version: **19** (`019_agents.sql`). The `v0.6.9`
+- Current schema version: **20** (`020_monitor_insecure_skip_verify.sql`). The `v0.6.9`
   release used schema 9; `v0.6.6` used schema 8; `v0.6.2` used schema 7;
   `v0.5.1` used schema 6; `v0.5.0` and earlier used their respective earlier
   migrations.
