@@ -81,6 +81,9 @@ type Server struct {
 	mibMu               sync.Mutex
 	syslogWarnMu        sync.Mutex
 	syslogWarnAt        map[string]time.Time
+	syslogPolicyMu      sync.Mutex
+	syslogPolicyCache   []syslogPolicyRuntime
+	syslogPolicyCacheAt time.Time
 	schedulerMu         sync.Mutex
 	schedulerScanning   bool
 	schedulerRunning    map[string]bool
@@ -332,6 +335,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/v1/alerts", s.auth(s.handleClearAlerts))
 	s.mux.HandleFunc("GET /api/v1/events", s.auth(s.handleEvents))
 	s.mux.HandleFunc("DELETE /api/v1/events", s.auth(s.handleClearEvents))
+	s.mux.HandleFunc("GET /api/v1/syslog/policies", s.auth(s.handleListSyslogPolicies))
+	s.mux.HandleFunc("POST /api/v1/syslog/policies", s.auth(s.handleCreateSyslogPolicy))
+	s.mux.HandleFunc("PUT /api/v1/syslog/policies/{id}", s.auth(s.handleUpdateSyslogPolicy))
+	s.mux.HandleFunc("DELETE /api/v1/syslog/policies/{id}", s.auth(s.handleDeleteSyslogPolicy))
+	s.mux.HandleFunc("POST /api/v1/syslog/policies/preview", s.auth(s.handlePreviewSyslogPolicy))
 	s.mux.HandleFunc("GET /api/v1/jobs", s.auth(s.handleListJobs))
 	s.mux.HandleFunc("POST /api/v1/jobs", s.auth(s.handleCreateJob))
 	s.mux.HandleFunc("POST /api/v1/jobs/package", s.auth(s.handlePackageInstallJob))

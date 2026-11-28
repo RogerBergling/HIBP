@@ -177,6 +177,11 @@ cron-based patch schedules are implemented.
 - Imported MIB files are untrusted text. HIBP caps file size, total library
   size, and resolved symbol count; parses MIBs in-process; and never executes
   MIB content. MIB import and deletion are authenticated and audited.
+- Syslog policies can reclassify or suppress noisy events but never delete them.
+  Suppressed events remain in the encrypted database and can be viewed with
+  **Show suppressed**. Policy changes are audited. Critical events,
+  authentication failures, security threats, and protected kernel failures
+  cannot be suppressed or downgraded.
 - The syslog receiver is disabled by default. When enabled it binds the
   configured address and accepts events only from source IPs mapped to a
   `network` host (the host address plus its configured extra source IPs).

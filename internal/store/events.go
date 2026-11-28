@@ -10,18 +10,24 @@ import (
 // HostEvent is one normalized monitoring/security event. Raw log lines are
 // intentionally bounded and stored only in this redacted shape.
 type HostEvent struct {
-	ID         int64  `json:"id"`
-	HostID     string `json:"host_id"`
-	EventID    string `json:"event_id"`
-	Source     string `json:"source"`
-	Category   string `json:"category"`
-	Severity   string `json:"severity"`
-	Unit       string `json:"unit,omitempty"`
-	Username   string `json:"username,omitempty"`
-	RemoteIP   string `json:"remote_ip,omitempty"`
-	Message    string `json:"message,omitempty"`
-	OccurredAt string `json:"occurred_at"`
-	ReceivedAt string `json:"received_at"`
+	ID               int64  `json:"id"`
+	HostID           string `json:"host_id"`
+	EventID          string `json:"event_id"`
+	Source           string `json:"source"`
+	Category         string `json:"category"`
+	Severity         string `json:"severity"`
+	Unit             string `json:"unit,omitempty"`
+	Username         string `json:"username,omitempty"`
+	RemoteIP         string `json:"remote_ip,omitempty"`
+	Message          string `json:"message,omitempty"`
+	OccurredAt       string `json:"occurred_at"`
+	ReceivedAt       string `json:"received_at"`
+	OriginalCategory string `json:"original_category,omitempty"`
+	OriginalSeverity string `json:"original_severity,omitempty"`
+	PolicyID         string `json:"policy_id,omitempty"`
+	PolicyName       string `json:"policy_name,omitempty"`
+	Suppressed       bool   `json:"suppressed"`
+	Guardrail        bool   `json:"guardrail"`
 }
 
 func (s *Store) AddHostEvents(hostID string, events []HostEvent) error {
@@ -49,11 +55,25 @@ func (s *Store) AddHostEvents(hostID string, events []HostEvent) error {
 		}
 		if event.Category == "auth_failure" {
 			// Authentication failures are critical regardless of which
-			// collector or device produced the event.
+			// collector or device produced the event. A policy may never
+			// suppress or downgrade them.
 			event.Severity = "critical"
+			event.Suppressed = false
+			event.Guardrail = true
+		}
+		if event.Category == "security_threat" {
+			// Security threats are always critical and cannot be suppressed.
+			event.Severity = "critical"
+			event.Suppressed = false
+			event.Guardrail = true
 		}
 		if event.Severity == "" {
 			event.Severity = "info"
+		}
+		if event.Guardrail {
+			// Guardrailed events are never suppressed, even if a caller
+			// bypassed the policy engine.
+			event.Suppressed = false
 		}
 		if event.OccurredAt == "" {
 			event.OccurredAt = now
@@ -64,11 +84,22 @@ func (s *Store) AddHostEvents(hostID string, events []HostEvent) error {
 		if len(event.Message) > 4096 {
 			event.Message = event.Message[:4096]
 		}
+		suppressed := 0
+		if event.Suppressed {
+			suppressed = 1
+		}
+		guardrail := 0
+		if event.Guardrail {
+			guardrail = 1
+		}
 		if _, err := tx.Exec(`INSERT OR IGNORE INTO host_events
-			(host_id,event_id,source,category,severity,unit,username,remote_ip,message,occurred_at,received_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+			(host_id,event_id,source,category,severity,unit,username,remote_ip,message,occurred_at,received_at,
+			 original_category,original_severity,policy_id,policy_name,suppressed,guardrail)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			hostID, event.EventID, event.Source, event.Category, event.Severity,
-			event.Unit, event.Username, event.RemoteIP, event.Message, event.OccurredAt, now); err != nil {
+			event.Unit, event.Username, event.RemoteIP, event.Message, event.OccurredAt, now,
+			event.OriginalCategory, event.OriginalSeverity, event.PolicyID, event.PolicyName,
+			suppressed, guardrail); err != nil {
 			_ = tx.Rollback()
 			return err
 		}
@@ -77,22 +108,30 @@ func (s *Store) AddHostEvents(hostID string, events []HostEvent) error {
 }
 
 func (s *Store) ListHostEvents(limit int) ([]HostEvent, error) {
-	return s.listHostEvents(limit, "", "")
+	return s.listHostEvents(limit, "", "", false)
 }
 
 // ListHostEventsFiltered optionally restricts the list to one severity so a
 // dashboard severity filter can reach events older than the newest page.
+// Suppressed events are excluded.
 func (s *Store) ListHostEventsFiltered(limit int, since, severity string) ([]HostEvent, error) {
-	return s.listHostEvents(limit, since, severity)
+	return s.listHostEvents(limit, since, severity, false)
 }
 
-func (s *Store) listHostEvents(limit int, since, severity string) ([]HostEvent, error) {
+// ListHostEventsFilteredIncludingSuppressed returns events with an explicit
+// choice about suppressed rows. Suppressed events are always retained.
+func (s *Store) ListHostEventsFilteredIncludingSuppressed(limit int, since, severity string, includeSuppressed bool) ([]HostEvent, error) {
+	return s.listHostEvents(limit, since, severity, includeSuppressed)
+}
+
+func (s *Store) listHostEvents(limit int, since, severity string, includeSuppressed bool) ([]HostEvent, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
 	query := `SELECT id,host_id,event_id,source,category,severity,unit,username,
-		remote_ip,message,occurred_at,received_at FROM host_events`
-	where := make([]string, 0, 2)
+		remote_ip,message,occurred_at,received_at,original_category,original_severity,
+		policy_id,policy_name,suppressed,guardrail FROM host_events`
+	where := make([]string, 0, 3)
 	args := []any{}
 	if since != "" {
 		where = append(where, "occurred_at>=?")
@@ -101,6 +140,9 @@ func (s *Store) listHostEvents(limit int, since, severity string) ([]HostEvent, 
 	if severity != "" {
 		where = append(where, "severity=?")
 		args = append(args, severity)
+	}
+	if !includeSuppressed {
+		where = append(where, "suppressed=0")
 	}
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
@@ -115,11 +157,15 @@ func (s *Store) listHostEvents(limit int, since, severity string) ([]HostEvent, 
 	events := make([]HostEvent, 0, limit)
 	for rows.Next() {
 		var event HostEvent
+		var suppressed, guardrail int
 		if err := rows.Scan(&event.ID, &event.HostID, &event.EventID, &event.Source, &event.Category,
 			&event.Severity, &event.Unit, &event.Username, &event.RemoteIP, &event.Message,
-			&event.OccurredAt, &event.ReceivedAt); err != nil {
+			&event.OccurredAt, &event.ReceivedAt, &event.OriginalCategory, &event.OriginalSeverity,
+			&event.PolicyID, &event.PolicyName, &suppressed, &guardrail); err != nil {
 			return nil, err
 		}
+		event.Suppressed = suppressed == 1
+		event.Guardrail = guardrail == 1
 		events = append(events, event)
 	}
 	return events, rows.Err()
@@ -141,6 +187,7 @@ type HostEventSummary struct {
 	Warning        int                    `json:"warning"`
 	Info           int                    `json:"info"`
 	Other          int                    `json:"other"`
+	Suppressed     int                    `json:"suppressed"`
 	LastOccurredAt string                 `json:"last_occurred_at"`
 	LastCritical   string                 `json:"last_critical"`
 	LastWarning    string                 `json:"last_warning"`
@@ -149,18 +196,41 @@ type HostEventSummary struct {
 	Hosts          []HostEventSummaryItem `json:"hosts"`
 }
 
-// SummarizeHostEvents aggregates events for the security dashboard. An empty
-// since value covers every retained event.
+// SummarizeHostEvents aggregates visible events for the security dashboard.
+// Suppressed events are excluded.
 func (s *Store) SummarizeHostEvents(since string) (HostEventSummary, error) {
+	return s.SummarizeHostEventsIncludingSuppressed(since, false)
+}
+
+// SummarizeHostEventsIncludingSuppressed aggregates events and reports how many
+// suppressed events are retained. An empty since value covers every retained
+// event.
+func (s *Store) SummarizeHostEventsIncludingSuppressed(since string, includeSuppressed bool) (HostEventSummary, error) {
 	summary := HostEventSummary{
 		Categories: make([]HostEventSummaryItem, 0),
 		Hosts:      make([]HostEventSummaryItem, 0),
 	}
-	where := ""
+	filters := make([]string, 0, 2)
 	args := []any{}
 	if since != "" {
-		where = " WHERE occurred_at>=?"
+		filters = append(filters, "occurred_at>=?")
 		args = append(args, since)
+	}
+	if !includeSuppressed {
+		filters = append(filters, "suppressed=0")
+	}
+	where := ""
+	if len(filters) > 0 {
+		where = " WHERE " + strings.Join(filters, " AND ")
+	}
+	suppressedQuery := "SELECT COUNT(*) FROM host_events WHERE suppressed=1"
+	suppressedArgs := []any{}
+	if since != "" {
+		suppressedQuery = "SELECT COUNT(*) FROM host_events WHERE occurred_at>=? AND suppressed=1"
+		suppressedArgs = append(suppressedArgs, since)
+	}
+	if err := s.db.QueryRow(suppressedQuery, suppressedArgs...).Scan(&summary.Suppressed); err != nil {
+		return summary, err
 	}
 	rows, err := s.db.Query(`SELECT severity,COUNT(*),COALESCE(MAX(occurred_at),'')
 		FROM host_events`+where+` GROUP BY severity`, args...)
@@ -239,15 +309,16 @@ func (s *Store) SummarizeHostEvents(since string) (HostEventSummary, error) {
 func (s *Store) CountHostEventsSince(hostID, category, since string) (int, error) {
 	var count int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM host_events
-		WHERE host_id=? AND category=? AND occurred_at>=?`, hostID, category, since).Scan(&count)
+		WHERE host_id=? AND category=? AND occurred_at>=? AND suppressed=0`,
+		hostID, category, since).Scan(&count)
 	return count, err
 }
 
 // CountHostEventsMatching counts events from a source whose message contains
 // the supplied text. An empty contains value matches every event from the
-// source.
+// source. Suppressed events do not trigger monitors.
 func (s *Store) CountHostEventsMatching(hostID, source, contains, since string) (int, error) {
-	query := `SELECT COUNT(*) FROM host_events WHERE host_id=? AND occurred_at>=?`
+	query := `SELECT COUNT(*) FROM host_events WHERE host_id=? AND occurred_at>=? AND suppressed=0`
 	args := []any{hostID, since}
 	if source != "" {
 		query += " AND source LIKE ?"

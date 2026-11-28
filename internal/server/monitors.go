@@ -417,7 +417,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	default:
 		severity = ""
 	}
-	events, err := s.store.ListHostEventsFiltered(limit, since, severity)
+	includeSuppressed := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_suppressed")), "1") ||
+		strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_suppressed")), "true")
+	events, err := s.store.ListHostEventsFilteredIncludingSuppressed(limit, since, severity, includeSuppressed)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -425,13 +427,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if events == nil {
 		events = []store.HostEvent{}
 	}
-	summary, err := s.store.SummarizeHostEvents(since)
+	summary, err := s.store.SummarizeHostEventsIncludingSuppressed(since, includeSuppressed)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"events": events, "summary": summary, "window": window, "severity": severity,
+		"include_suppressed": includeSuppressed,
 	})
 }
 

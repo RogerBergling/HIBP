@@ -62,6 +62,106 @@ func TestSummarizeHostEventsEmpty(t *testing.T) {
 	}
 }
 
+func TestHostEventsSuppressedFiltering(t *testing.T) {
+	s := openAuthTestStore(t)
+	host, err := s.CreateHost(Host{
+		Name: "udm", Address: "192.168.4.1", AuthType: "network",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := s.AddHostEvents(host.ID, []HostEvent{
+		{EventID: "visible-1", Source: "syslog", Category: "network_wifi", Severity: "info", Message: "visible", OccurredAt: now},
+		{EventID: "visible-2", Source: "syslog", Category: "syslog", Severity: "info", Message: "visible syslog", OccurredAt: now},
+		{EventID: "suppressed-1", Source: "syslog", Category: "syslog", Severity: "info", Message: "hidden noise", OccurredAt: now, Suppressed: true, PolicyID: "policy-1"},
+		{EventID: "guarded-1", Source: "syslog", Category: "system", Severity: "critical", Message: "kernel: I/O error", OccurredAt: now, Suppressed: true, Guardrail: true, PolicyID: "policy-1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	usage, err := s.SyslogPolicyUsage()
+	if err != nil || usage["policy-1"].Suppressed != 1 || usage["policy-1"].Guardrails != 1 {
+		t.Fatalf("unexpected policy usage: %+v %v", usage, err)
+	}
+	visible, err := s.ListHostEvents(10)
+	if err != nil || len(visible) != 3 {
+		t.Fatalf("visible events: %+v %v", visible, err)
+	}
+	for _, event := range visible {
+		if event.Suppressed {
+			t.Fatalf("suppressed event leaked into default list: %+v", event)
+		}
+	}
+	all, err := s.ListHostEventsFilteredIncludingSuppressed(10, "", "", true)
+	if err != nil || len(all) != 4 {
+		t.Fatalf("all events: %+v %v", all, err)
+	}
+	summary, err := s.SummarizeHostEvents("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Total != 3 || summary.Suppressed != 1 {
+		t.Fatalf("unexpected visible summary: %+v", summary)
+	}
+	allSummary, err := s.SummarizeHostEventsIncludingSuppressed("", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allSummary.Total != 4 || allSummary.Suppressed != 1 {
+		t.Fatalf("unexpected full summary: %+v", allSummary)
+	}
+	count, err := s.CountHostEventsSince(host.ID, "syslog", time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano))
+	if err != nil || count != 1 {
+		t.Fatalf("suppressed event must not count toward monitors: %d %v", count, err)
+	}
+	matching, err := s.CountHostEventsMatching(host.ID, "syslog", "visible", time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano))
+	if err != nil || matching != 2 {
+		t.Fatalf("visible syslog match count: %d %v", matching, err)
+	}
+	hidden, err := s.CountHostEventsMatching(host.ID, "syslog", "hidden", time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano))
+	if err != nil || hidden != 0 {
+		t.Fatalf("suppressed syslog match count: %d %v", hidden, err)
+	}
+}
+
+func TestSyslogPolicyCRUD(t *testing.T) {
+	s := openAuthTestStore(t)
+	policy, err := s.CreateSyslogPolicy(SyslogPolicy{
+		Name: "Noise", Scope: "fleet", MatchType: "contains", Pattern: "mc2uc",
+		Category: "network_wifi", Severity: "info", Suppress: true,
+		Priority: 10, Enabled: true, CreatedBy: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.ID == "" {
+		t.Fatal("expected generated policy id")
+	}
+	loaded, err := s.GetSyslogPolicy(policy.ID)
+	if err != nil || loaded.Name != "Noise" || !loaded.Suppress || !loaded.Enabled {
+		t.Fatalf("unexpected policy: %+v %v", loaded, err)
+	}
+	loaded.Severity = "warning"
+	loaded.Suppress = false
+	if err := s.UpdateSyslogPolicy(loaded); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := s.GetSyslogPolicy(policy.ID)
+	if err != nil || updated.Severity != "warning" || updated.Suppress {
+		t.Fatalf("unexpected updated policy: %+v %v", updated, err)
+	}
+	list, err := s.ListSyslogPolicies()
+	if err != nil || len(list) != 1 {
+		t.Fatalf("policies: %+v %v", list, err)
+	}
+	if err := s.DeleteSyslogPolicy(policy.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetSyslogPolicy(policy.ID); err == nil {
+		t.Fatal("expected deleted policy to be gone")
+	}
+}
+
 func TestClearHostEventsAndAlertEvents(t *testing.T) {
 	s := openAuthTestStore(t)
 	host, err := s.CreateHost(Host{

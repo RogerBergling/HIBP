@@ -13,6 +13,7 @@ const state = {
   eventSummary: null,
   eventWindow: '24h',
   eventSeverity: '',
+  eventIncludeSuppressed: false,
   eventRequest: 0,
   jobs: [],
   jobDetail: null,
@@ -2058,6 +2059,7 @@ function eventSummaryData() {
     warning: Number(source.warning) || 0,
     info: Number(source.info) || 0,
     other: Number(source.other) || 0,
+    suppressed: Number(source.suppressed) || 0,
     last_occurred_at: source.last_occurred_at || '',
     last_critical: source.last_critical || '',
     last_warning: source.last_warning || '',
@@ -2080,6 +2082,7 @@ function eventSummaryData() {
   for (const record of events) {
     const severity = String(record.severity || 'info');
     summary.total += 1;
+    if (record.suppressed) summary.suppressed += 1;
     if (severity === 'critical') {
       summary.critical += 1;
       if (!summary.last_critical) summary.last_critical = record.occurred_at || '';
@@ -2224,6 +2227,7 @@ async function resetEventFilters() {
 function eventsQuery(limit = 200) {
   let query = '/api/v1/events?limit=' + limit + '&window=' + encodeURIComponent(state.eventWindow || 'all');
   if (state.eventSeverity) query += '&severity=' + encodeURIComponent(state.eventSeverity);
+  if (state.eventIncludeSuppressed) query += '&include_suppressed=1';
   return query;
 }
 
@@ -2276,12 +2280,15 @@ function renderEventTable() {
   });
   eventBody.replaceChildren();
   if (!events.length) {
-    eventBody.append(emptyTableRow(8, 'No events in ' + eventWindowLabel() + '.'));
+    const suppressed = Number(summary.suppressed) || 0;
+    eventBody.append(emptyTableRow(8, suppressed
+      ? 'No visible events. ' + suppressed + ' suppressed event(s) are retained; enable Show suppressed to view them.'
+      : 'No events in ' + eventWindowLabel() + '.'));
   } else if (!filtered.length) {
     eventBody.append(emptyTableRow(8, 'No events match the current filter.'));
   }
   for (const record of filtered) {
-    const row = el('tr', 'event-row');
+    const row = el('tr', 'event-row' + (record.suppressed ? ' suppressed-event' : ''));
     row.tabIndex = 0;
     row.setAttribute('role', 'button');
     const host = (state.hosts || []).find((entry) => entry.id === record.host_id);
@@ -2306,6 +2313,18 @@ function renderEventTable() {
     const severityClass = severity === 'critical' ? 'unreachable' : severity === 'warning' ? 'review' : severity === 'info' ? 'reachable' : 'unknown';
     const severityTd = el('td');
     severityTd.append(el('span', 'pill ' + severityClass, severity));
+    if (record.suppressed) {
+      const badge = el('span', 'badge amber', 'suppressed');
+      badge.style.marginLeft = '4px';
+      badge.title = 'Retained but excluded from dashboard counts and alert monitors by a syslog policy.';
+      severityTd.append(badge);
+    }
+    if (record.guardrail) {
+      const badge = el('span', 'badge red', 'guardrail');
+      badge.style.marginLeft = '4px';
+      badge.title = 'Critical or protected event. Policy suppression and downgrade are blocked.';
+      severityTd.append(badge);
+    }
     const userTd = el('td', '', record.username || '—');
     const ipTd = el('td', '', record.remote_ip || '—');
     const messageTd = el('td', 'alert-detail', record.message || '');
@@ -2329,10 +2348,14 @@ function renderEventTable() {
   const summaryNode = $('events-summary');
   if (summaryNode) {
     const filtersActive = Boolean(severityFilter || sourceFilter || query);
+    const suppressed = Number(summary.suppressed) || 0;
     let text = filtersActive
       ? filtered.length + ' shown · ' + summary.total + ' in ' + eventWindowLabel()
       : summary.total + ' ' + (summary.total === 1 ? 'event' : 'events') + ' · ' + eventWindowLabel();
     if (summary.total > events.length) text += ' · latest ' + events.length + ' listed';
+    if (suppressed) {
+      text += ' · ' + suppressed + ' suppressed' + (state.eventIncludeSuppressed ? '' : ' hidden');
+    }
     summaryNode.textContent = text;
   }
 }
@@ -2462,9 +2485,30 @@ function showEventDetails(record) {
   addEventDetailField(summary, 'Source', record.source || '—');
   addEventDetailField(summary, 'Category', record.category || '—');
   addEventDetailField(summary, 'Severity', record.severity || 'info');
+  if (record.original_category && record.original_category !== record.category) {
+    addEventDetailField(summary, 'Original category', record.original_category);
+  }
+  if (record.original_severity && record.original_severity !== record.severity) {
+    addEventDetailField(summary, 'Original severity', record.original_severity);
+  }
   addEventDetailField(summary, 'User', record.username || '—');
   addEventDetailField(summary, 'Source IP', record.remote_ip || '—');
+  if (record.policy_name) addEventDetailField(summary, 'Applied policy', record.policy_name);
+  if (record.suppressed) addEventDetailField(summary, 'Suppressed', 'yes');
+  if (record.guardrail) addEventDetailField(summary, 'Guardrail', 'yes');
   body.append(summary);
+  if (record.suppressed) {
+    const note = el('div', 'event-policy-note');
+    note.append(el('strong', '', 'Suppressed by policy'));
+    note.append(el('p', '', 'This event is retained but excluded from dashboard counts and alert monitors. Enable “Show suppressed” to include it in the list.'));
+    body.append(note);
+  }
+  if (record.guardrail) {
+    const note = el('div', 'event-policy-note guardrail');
+    note.append(el('strong', '', 'Guardrail applied'));
+    note.append(el('p', '', 'This is a critical or protected event. Policy suppression and downgrade are blocked.'));
+    body.append(note);
+  }
 
   const cef = parseCefMessage(record.message);
   if (cef) {
@@ -6384,6 +6428,11 @@ async function showSettingsModal() {
   mibButton.addEventListener('click', () => showMIBModal());
   body.append(mibButton);
   body.append(el('p', 'field-note', 'Import SMIv1/SMIv2 MIB files to use symbolic OID names in network settings and to show MIB labels and enum values in SNMP results.'));
+  const policyButton = el('button', 'btn', 'Syslog policies');
+  policyButton.type = 'button';
+  policyButton.addEventListener('click', () => showSyslogPoliciesModal());
+  body.append(policyButton);
+  body.append(el('p', 'field-note', 'Classify or suppress noisy syslog while retaining every event. Critical events and protected kernel failures cannot be suppressed or downgraded.'));
   body.append(el('p', 'muted', 'Backups are fleet-wide. Leave the directory blank to use the database directory. Only timestamped backups created by HIBP are pruned; lowering the count deletes older HIBP-created backups on the next backup.'));
   const backupGrid = el('div', 'settings-grid');
   const backupDir = inputField(backupGrid, 'Backup directory', 'backup_directory', '/var/lib/hibp/backups');
@@ -6797,6 +6846,282 @@ async function showMIBModal(options = {}) {
   } catch (error) {
     toast(error.message, 'error');
   }
+}
+
+function syslogPolicyActionLabel(policy) {
+  const actions = [];
+  if (policy.category) actions.push('category=' + policy.category);
+  if (policy.severity) actions.push('severity=' + policy.severity);
+  if (policy.suppress) actions.push('suppress');
+  return actions.join(', ') || '—';
+}
+
+function syslogPolicyScopeLabel(policy) {
+  if (policy.scope === 'host') return 'Host: ' + monitorHostName(policy.host_id);
+  return 'Fleet';
+}
+
+async function showSyslogPoliciesModal() {
+  const body = el('div', 'modal-body');
+  body.append(el('p', 'muted', 'Classify or suppress noisy syslog without deleting evidence. Suppressed events are retained and can be shown with “Show suppressed”. Critical events and protected kernel failures are guarded and cannot be suppressed or downgraded.'));
+  const status = el('p', 'field-note');
+  const tableWrap = el('div', 'scroll-list');
+  const table = el('table');
+  const head = el('tr');
+  for (const label of ['Name', 'Scope', 'Match', 'Action', 'Priority', 'Enabled', '']) head.append(el('th', '', label));
+  const tbody = el('tbody');
+  table.append(head, tbody);
+  tableWrap.append(table);
+  const guardrails = el('details');
+  const guardrailSummary = el('summary', '', 'Protected kernel guardrails');
+  const guardrailList = el('div', 'field-note scroll-list');
+  guardrails.append(guardrailSummary, guardrailList);
+  const actions = el('div', 'modal-actions');
+  const add = el('button', 'btn primary', 'Add policy');
+  add.type = 'button';
+  const closeButton = el('button', 'btn', 'Close');
+  closeButton.type = 'button';
+  actions.append(add, closeButton);
+  body.append(status, tableWrap, guardrails, actions);
+  const close = openModal('Syslog policies', body, null, 'wide');
+
+  const render = (data) => {
+    const policies = data.policies || [];
+    status.textContent = policies.length + ' ' + (policies.length === 1 ? 'policy' : 'policies') + ' · suppressed events are retained';
+    tbody.replaceChildren();
+    if (!policies.length) {
+      const row = el('tr');
+      const cell = el('td', 'empty-state', 'No syslog policies yet.');
+      cell.colSpan = 7;
+      row.append(cell);
+      tbody.append(row);
+    }
+    for (const policy of policies) {
+      const row = el('tr');
+      const nameCell = el('td');
+      nameCell.append(el('div', 'host-name', policy.name));
+      if (policy.description) {
+        const desc = el('div', 'host-ip alert-detail', policy.description);
+        desc.title = policy.description;
+        nameCell.append(desc);
+      }
+      if (policy.suppressed_count || policy.guardrail_count) {
+        nameCell.append(el('div', 'field-note',
+          (policy.suppressed_count || 0) + ' suppressed · ' + (policy.guardrail_count || 0) + ' guardrail block(s)'));
+      }
+      const enabled = el('span', 'badge ' + (policy.enabled ? 'green' : 'amber'), policy.enabled ? 'enabled' : 'disabled');
+      const actionsCell = el('td');
+      const edit = el('button', 'btn small', 'Edit');
+      edit.type = 'button';
+      edit.addEventListener('click', () => showSyslogPolicyModal(policy, reload));
+      const remove = el('button', 'btn small danger', 'Delete');
+      remove.type = 'button';
+      remove.addEventListener('click', async () => {
+        if (!confirm('Delete syslog policy “' + policy.name + '”?')) return;
+        try {
+          await api('/api/v1/syslog/policies/' + encodeURIComponent(policy.id), { method: 'DELETE' });
+          toast('Syslog policy deleted', 'ok');
+          await reload();
+        } catch (error) {
+          toast(error.message, 'error');
+        }
+      });
+      actionsCell.append(edit, remove);
+      const enabledCell = el('td');
+      enabledCell.append(enabled);
+      row.append(
+        nameCell,
+        el('td', '', syslogPolicyScopeLabel(policy)),
+        el('td', 'mono', policy.match_type + ': ' + policy.pattern),
+        el('td', '', syslogPolicyActionLabel(policy)),
+        el('td', '', String(policy.priority)),
+        enabledCell,
+        actionsCell,
+      );
+      tbody.append(row);
+    }
+    guardrailList.replaceChildren();
+    for (const pattern of (data.guardrails || [])) guardrailList.append(el('div', '', pattern));
+  };
+  const reload = async () => {
+    try {
+      render(await api('/api/v1/syslog/policies'));
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  };
+  add.addEventListener('click', () => showSyslogPolicyModal(null, reload));
+  closeButton.addEventListener('click', close);
+  await reload();
+}
+
+function showSyslogPolicyModal(policy = null, onSaved = async () => {}) {
+  const editing = Boolean(policy);
+  const source = policy || {};
+  const form = el('form', 'modal-body');
+  form.append(el('p', 'muted', 'Policies apply to new syslog events; existing retained events are not rewritten. Policies apply in priority order (lower number first). Host-scoped policies run before fleet policies at the same priority. The first matching policy wins.'));
+
+  const top = el('div', 'form-row');
+  const name = inputField(top, 'Name', 'name', 'UniFi driver noise');
+  const priority = inputField(top, 'Priority', 'priority', '100', 'number');
+  priority.min = '1';
+  priority.max = '1000';
+  form.append(top);
+
+  const description = inputField(form, 'Description (optional)', 'description', 'Why this rule exists');
+  form.append(description);
+
+  const scopeRow = el('div', 'form-row');
+  const scope = selectField(scopeRow, 'Scope', 'scope', [['fleet', 'Fleet'], ['host', 'Host']]);
+  const hostWrap = el('label', 'field', 'Host');
+  const hostSelect = el('select');
+  hostSelect.name = 'policy_host';
+  for (const host of (state.hosts || [])) {
+    const option = el('option', '', host.name + ' (' + host.address + ')');
+    option.value = host.id;
+    hostSelect.append(option);
+  }
+  hostWrap.append(hostSelect);
+  scopeRow.append(hostWrap);
+  form.append(scopeRow);
+
+  const matchRow = el('div', 'form-row');
+  const matchType = selectField(matchRow, 'Match type', 'match_type', [['contains', 'Contains text'], ['regex', 'Regular expression']]);
+  const pattern = inputField(matchRow, 'Pattern', 'pattern', 'mc2uc');
+  form.append(matchRow);
+
+  const actionRow = el('div', 'form-row');
+  const category = inputField(actionRow, 'Category (optional)', 'category', 'network_wifi');
+  const severity = selectField(actionRow, 'Severity', 'severity', [['', 'No change'], ['info', 'Info'], ['warning', 'Warning'], ['critical', 'Critical']]);
+  form.append(actionRow);
+
+  const suppressWrap = el('label', 'field checkbox-field');
+  const suppress = el('input');
+  suppress.type = 'checkbox';
+  suppressWrap.append(suppress, document.createTextNode('Suppress from dashboard counts and alert monitors (event is retained)'));
+  form.append(suppressWrap);
+  const enabledWrap = el('label', 'field checkbox-field');
+  const enabled = el('input');
+  enabled.type = 'checkbox';
+  enabled.checked = source.enabled !== false;
+  enabledWrap.append(enabled, document.createTextNode('Enabled'));
+  form.append(enabledWrap);
+  form.append(el('p', 'field-note', 'Suppressed events remain in the database and appear with “Show suppressed”. They do not trigger syslog or auth monitors. Critical events, authentication failures, security threats, and protected kernel failures cannot be suppressed or downgraded. Broad suppressions or downgrades of all events or all kernel messages are rejected.'));
+
+  const previewCard = el('section', 'detail-card');
+  previewCard.append(el('h3', '', 'Preview against recent events'));
+  const previewResult = el('div');
+  const previewButton = el('button', 'btn', 'Preview 24 hours');
+  previewButton.type = 'button';
+  previewCard.append(previewButton, previewResult);
+  form.append(previewCard);
+
+  const actions = el('div', 'modal-actions');
+  const cancel = el('button', 'btn', 'Cancel');
+  cancel.type = 'button';
+  const save = el('button', 'btn primary', editing ? 'Save policy' : 'Add policy');
+  save.type = 'submit';
+  actions.append(cancel, save);
+  form.append(actions);
+  const close = openModal(editing ? 'Edit syslog policy' : 'Add syslog policy', form, null, 'wide');
+
+  name.value = source.name || '';
+  description.value = source.description || '';
+  scope.value = source.scope || 'fleet';
+  hostSelect.value = source.host_id || (state.hosts[0] ? state.hosts[0].id : '');
+  matchType.value = source.match_type || 'contains';
+  pattern.value = source.pattern || '';
+  category.value = source.category || '';
+  severity.value = source.severity || '';
+  suppress.checked = Boolean(source.suppress);
+  priority.value = String(source.priority || 100);
+
+  const syncScope = () => {
+    hostWrap.classList.toggle('hidden', scope.value !== 'host');
+  };
+  scope.addEventListener('change', syncScope);
+  syncScope();
+
+  const payload = () => ({
+    name: name.value.trim(),
+    description: description.value.trim(),
+    scope: scope.value,
+    host_id: scope.value === 'host' ? hostSelect.value : '',
+    match_type: matchType.value,
+    pattern: pattern.value.trim(),
+    category: category.value.trim(),
+    severity: severity.value,
+    suppress: suppress.checked,
+    priority: Number(priority.value || 100),
+    enabled: enabled.checked,
+  });
+
+  previewButton.addEventListener('click', async () => {
+    previewButton.disabled = true;
+    previewResult.replaceChildren();
+    try {
+      const result = await api('/api/v1/syslog/policies/preview', {
+        method: 'POST',
+        body: JSON.stringify({ ...payload(), window: '24h', limit: 200 }),
+      });
+      const summary = el('p', 'field-note',
+        'Scanned ' + result.scanned + ' · matched ' + result.matched +
+        ' · would suppress ' + result.would_suppress +
+        ' · protected matches ' + result.protected_matches);
+      previewResult.append(summary);
+      if (result.scanned && result.matched / result.scanned >= 0.5) {
+        const broad = el('div', 'event-policy-note');
+        broad.append(el('strong', '', 'Broad match'));
+        broad.append(el('p', '', 'This rule matches at least half of the scanned events. Review the samples carefully before saving.'));
+        previewResult.append(broad);
+      }
+      if (result.protected_matches) {
+        const warning = el('div', 'event-policy-note guardrail');
+        warning.append(el('strong', '', 'Guardrail will apply'));
+        warning.append(el('p', '', 'Some matches are critical or protected kernel failures. They will stay critical and visible.'));
+        previewResult.append(warning);
+      }
+      const samples = result.samples || [];
+      if (samples.length) {
+        const wrap = el('div', 'scroll-list');
+        const table = el('table');
+        const head = el('tr');
+        for (const label of ['Host', 'Before', 'After', 'Guardrail', 'Message']) head.append(el('th', '', label));
+        table.append(head);
+        for (const sample of samples) {
+          const row = el('tr');
+          const host = monitorHostName(sample.host_id);
+          const before = sample.before.category + ' / ' + sample.before.severity + (sample.before.suppressed ? ' / suppressed' : '');
+          const after = sample.after.category + ' / ' + sample.after.severity + (sample.after.suppressed ? ' / suppressed' : '');
+          const message = el('td', 'alert-detail', sample.message || '');
+          message.title = sample.message || '';
+          row.append(el('td', '', host), el('td', 'mono', before), el('td', 'mono', after),
+            el('td', '', sample.guardrail ? 'yes' : 'no'), message);
+          table.append(row);
+        }
+        wrap.append(table);
+        previewResult.append(wrap);
+      }
+    } catch (error) {
+      toast(error.message, 'error');
+    } finally {
+      previewButton.disabled = false;
+    }
+  });
+
+  cancel.addEventListener('click', close);
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    try {
+      const url = editing ? '/api/v1/syslog/policies/' + encodeURIComponent(policy.id) : '/api/v1/syslog/policies';
+      await api(url, { method: editing ? 'PUT' : 'POST', body: JSON.stringify(payload()) });
+      close();
+      toast(editing ? 'Syslog policy updated' : 'Syslog policy added', 'ok');
+      await onSaved();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  });
 }
 
 async function showNetworkHostModal(host) {
@@ -7891,6 +8216,10 @@ function bind() {
   $('event-severity-filter').addEventListener('change', (event) => {
     state.eventSeverity = event.target.value || '';
     renderEventTable();
+    loadEvents().catch((error) => toast(error.message, 'error'));
+  });
+  $('event-include-suppressed').addEventListener('change', (event) => {
+    state.eventIncludeSuppressed = event.target.checked;
     loadEvents().catch((error) => toast(error.message, 'error'));
   });
   $('event-source-filter').addEventListener('change', renderEventTable);

@@ -394,7 +394,7 @@ HIBP_SSH_DIR=./secrets/ssh
 HIBP_PASSPHRASE_FILE=./secrets/db.passphrase
 ```
 
-`:edge` contains schema 21 and can migrate older local databases forward. It is
+`:edge` contains schema 27 and can migrate older local databases forward. It is
 an unreleased build; after validating the migration, switch to a pinned release
 or image digest.
 
@@ -1973,6 +1973,20 @@ read-only `auth_type=network` hosts. They have no SSH actions:
   stored as the event user and source IP. Hostapd RADIUS accounting
   start/stop messages and MediaTek/Ralink `mc2uc` driver counters are treated as
   `network_wifi` activity, not authentication failures or warnings.
+- **Syslog policies.** **Settings → Syslog policies** adds fleet- or host-scoped
+  rules that can reclassify or suppress noisy syslog. Policies never delete
+  events. A suppressed event is retained, excluded from dashboard counts and
+  monitor evaluation, and remains visible with **Show suppressed**. Policies
+  apply to new events; existing retained events are not rewritten. Rules are
+  evaluated by priority (lower numbers first); host-scoped rules run before
+  fleet rules at the same priority, and the first match wins. Every policy
+  change is audited. The editor includes a dry-run preview against recent
+  events. Patterns that would suppress or downgrade every event or every
+  kernel message are rejected; use specific driver or message patterns.
+  Critical events, authentication failures, security threats, and protected
+  kernel failures (OOM, I/O errors, filesystem/RAID failures, NVMe/ATA errors,
+  hardware/MCE, panic, hung tasks, thermal failures) cannot be suppressed or
+  downgraded.
 
 The SNMP MVP polls up to 20 scalar OIDs with `Get`; it does not walk interface
 tables.
@@ -4096,7 +4110,7 @@ not accept passwords, private keys, or scripts.
 
 ### Schema migrations
 
-- Current schema version: **21** (`021_network_monitoring.sql`). The `v0.6.9`
+- Current schema version: **27** (`027_syslog_policies.sql`). The `v0.6.9`
   release used schema 9; `v0.6.6` used schema 8; `v0.6.2` used schema 7;
   `v0.5.1` used schema 6; `v0.5.0` and earlier used their respective earlier
   migrations.

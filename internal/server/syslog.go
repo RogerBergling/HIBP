@@ -221,6 +221,7 @@ func (s *Server) handleSyslogMessage(sourceIP, line string) {
 	if len(message) > syslogMessageLimit {
 		message = message[:syslogMessageLimit]
 	}
+	decision := s.evaluateSyslogPolicy(host.ID, message, category, severity)
 	username := ""
 	remoteIP := sourceIP
 	if msg.CEF != nil {
@@ -239,20 +240,26 @@ func (s *Server) handleSyslogMessage(sourceIP, line string) {
 		remoteIP = truncateEventField(strings.TrimSpace(match[1]), 64)
 	}
 	event := store.HostEvent{
-		EventID:    syslogEventID(sourceIP, msg),
-		Source:     "syslog",
-		Category:   category,
-		Severity:   severity,
-		Username:   username,
-		RemoteIP:   remoteIP,
-		Message:    message,
-		OccurredAt: msg.Timestamp.UTC().Format(time.RFC3339Nano),
+		EventID:          syslogEventID(sourceIP, msg),
+		Source:           "syslog",
+		Category:         decision.Category,
+		Severity:         decision.Severity,
+		Username:         username,
+		RemoteIP:         remoteIP,
+		Message:          message,
+		OccurredAt:       msg.Timestamp.UTC().Format(time.RFC3339Nano),
+		OriginalCategory: category,
+		OriginalSeverity: severity,
+		PolicyID:         decision.PolicyID,
+		PolicyName:       decision.PolicyName,
+		Suppressed:       decision.Suppressed,
+		Guardrail:        decision.Guardrail,
 	}
 	if err := s.store.AddHostEvents(host.ID, []store.HostEvent{event}); err != nil {
 		slog.Warn("syslog: store event", "host", host.Name, "error", err)
 		return
 	}
-	s.logSyslogAccepted(sourceIP, host.Name, category)
+	s.logSyslogAccepted(sourceIP, host.Name, decision.Category)
 }
 
 func (s *Server) logSyslogAccepted(source, host, category string) {
