@@ -336,6 +336,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/alerts", s.auth(s.handleAlerts))
 	s.mux.HandleFunc("DELETE /api/v1/alerts", s.auth(s.handleClearAlerts))
 	s.mux.HandleFunc("GET /api/v1/events", s.auth(s.handleEvents))
+	s.mux.HandleFunc("POST /api/v1/events/{id}/ack", s.auth(s.handleAcknowledgeHostEvent))
+	s.mux.HandleFunc("POST /api/v1/events/{id}/unack", s.auth(s.handleUnacknowledgeHostEvent))
 	s.mux.HandleFunc("DELETE /api/v1/events", s.auth(s.handleClearEvents))
 	s.mux.HandleFunc("GET /api/v1/syslog/policies", s.auth(s.handleListSyslogPolicies))
 	s.mux.HandleFunc("POST /api/v1/syslog/policies", s.auth(s.handleCreateSyslogPolicy))

@@ -1054,6 +1054,82 @@ func TestEventsWindowSummaryAPI(t *testing.T) {
 	}
 }
 
+func TestHostEventAckAPI(t *testing.T) {
+	ts, db := testServer(t)
+	host, err := db.CreateHost(store.Host{
+		Name: "jump", Address: "10.0.0.70", Port: 22, Username: "ubuntu",
+		AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := db.AddHostEvents(host.ID, []store.HostEvent{
+		{EventID: "ack-api-1", Source: "session.scope", Category: "auth_failure",
+			Severity: "critical", Message: "pam_unix authentication failure", OccurredAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := db.ListHostEvents(10)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("events: %+v %v", events, err)
+	}
+	id := strconv.FormatInt(events[0].ID, 10)
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/events/"+id+"/ack", "test-token",
+		`{"note":"reviewed"}`)
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		t.Fatalf("ack failed: %d %s", resp.StatusCode, raw)
+	}
+	_ = resp.Body.Close()
+	events, err = db.ListHostEvents(10)
+	if err != nil || len(events) != 1 || events[0].AcknowledgedAt == "" ||
+		events[0].AcknowledgedBy != "test" || events[0].AcknowledgementNote != "reviewed" {
+		t.Fatalf("unexpected acknowledged event: %+v %v", events, err)
+	}
+	if events[0].Severity != "critical" || events[0].Category != "auth_failure" {
+		t.Fatalf("acknowledgement changed event severity/category: %+v", events[0])
+	}
+	resp = request(t, http.MethodGet, ts.URL+"/api/v1/events?window=all", "test-token", "")
+	var listResponse struct {
+		Events  []store.HostEvent      `json:"events"`
+		Summary store.HostEventSummary `json:"summary"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listResponse); err != nil {
+		_ = resp.Body.Close()
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if listResponse.Summary.Acknowledged != 1 || len(listResponse.Events) != 1 ||
+		listResponse.Events[0].AcknowledgedAt == "" {
+		t.Fatalf("summary did not count acknowledged event: %+v", listResponse)
+	}
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/events/"+id+"/unack", "test-token", `{}`)
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		t.Fatalf("unack failed: %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+	events, _ = db.ListHostEvents(10)
+	if events[0].AcknowledgedAt != "" || events[0].AcknowledgedBy != "" ||
+		events[0].AcknowledgementNote != "" {
+		t.Fatalf("acknowledgement not cleared: %+v", events[0])
+	}
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/events/999999/ack", "test-token", `{}`)
+	if resp.StatusCode != http.StatusNotFound {
+		_ = resp.Body.Close()
+		t.Fatalf("expected 404 for unknown event, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/events/not-a-number/ack", "test-token", `{}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		_ = resp.Body.Close()
+		t.Fatalf("expected 400 for invalid id, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+}
+
 func TestClearEventsAndAlertsAPI(t *testing.T) {
 	ts, db := testServer(t)
 	host, err := db.CreateHost(store.Host{

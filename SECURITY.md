@@ -185,6 +185,10 @@ cron-based patch schedules are implemented.
 - Monitor acknowledgements keep the current critical/warning state visible,
   suppress repeat email notifications, and clear automatically on recovery or
   severity escalation. Ack/unack actions are audited.
+- Event acknowledgements only mark a retained event as reviewed. They never
+  change severity, category, suppression, retention, monitor counts, or
+  guardrails. Ack/unack actions are audited; events remain until explicitly
+  cleared.
 - The syslog receiver is disabled by default. When enabled it binds the
   configured address and accepts events only from source IPs mapped to a
   managed host (the host address plus its configured extra source IPs). Syslog

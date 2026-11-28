@@ -162,6 +162,53 @@ func TestSyslogPolicyCRUD(t *testing.T) {
 	}
 }
 
+func TestHostEventAcknowledgement(t *testing.T) {
+	s := openAuthTestStore(t)
+	host, err := s.CreateHost(Host{
+		Name: "jump", Address: "10.0.0.70", Port: 22, Username: "ubuntu",
+		AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := s.AddHostEvents(host.ID, []HostEvent{{
+		EventID: "ack-1", Source: "session.scope", Category: "auth_failure",
+		Severity: "critical", Message: "pam_unix authentication failure", OccurredAt: now,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := s.ListHostEvents(10)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("events: %+v %v", events, err)
+	}
+	found, err := s.AcknowledgeHostEvent(events[0].ID, "roger", "reviewed", now)
+	if err != nil || !found {
+		t.Fatalf("acknowledge: found=%v err=%v", found, err)
+	}
+	events, err = s.ListHostEvents(10)
+	if err != nil || len(events) != 1 || events[0].AcknowledgedAt == "" ||
+		events[0].AcknowledgedBy != "roger" || events[0].AcknowledgementNote != "reviewed" {
+		t.Fatalf("unexpected acknowledged event: %+v %v", events, err)
+	}
+	summary, err := s.SummarizeHostEvents("")
+	if err != nil || summary.Acknowledged != 1 {
+		t.Fatalf("unexpected summary: %+v %v", summary, err)
+	}
+	found, err = s.UnacknowledgeHostEvent(events[0].ID)
+	if err != nil || !found {
+		t.Fatalf("unacknowledge: found=%v err=%v", found, err)
+	}
+	events, _ = s.ListHostEvents(10)
+	if events[0].AcknowledgedAt != "" {
+		t.Fatalf("acknowledgement not cleared: %+v", events[0])
+	}
+	summary, _ = s.SummarizeHostEvents("")
+	if summary.Acknowledged != 0 {
+		t.Fatalf("summary still shows acknowledged: %+v", summary)
+	}
+}
+
 func TestClearHostEventsAndAlertEvents(t *testing.T) {
 	s := openAuthTestStore(t)
 	host, err := s.CreateHost(Host{

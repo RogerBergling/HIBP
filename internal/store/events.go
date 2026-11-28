@@ -10,24 +10,27 @@ import (
 // HostEvent is one normalized monitoring/security event. Raw log lines are
 // intentionally bounded and stored only in this redacted shape.
 type HostEvent struct {
-	ID               int64  `json:"id"`
-	HostID           string `json:"host_id"`
-	EventID          string `json:"event_id"`
-	Source           string `json:"source"`
-	Category         string `json:"category"`
-	Severity         string `json:"severity"`
-	Unit             string `json:"unit,omitempty"`
-	Username         string `json:"username,omitempty"`
-	RemoteIP         string `json:"remote_ip,omitempty"`
-	Message          string `json:"message,omitempty"`
-	OccurredAt       string `json:"occurred_at"`
-	ReceivedAt       string `json:"received_at"`
-	OriginalCategory string `json:"original_category,omitempty"`
-	OriginalSeverity string `json:"original_severity,omitempty"`
-	PolicyID         string `json:"policy_id,omitempty"`
-	PolicyName       string `json:"policy_name,omitempty"`
-	Suppressed       bool   `json:"suppressed"`
-	Guardrail        bool   `json:"guardrail"`
+	ID                  int64  `json:"id"`
+	HostID              string `json:"host_id"`
+	EventID             string `json:"event_id"`
+	Source              string `json:"source"`
+	Category            string `json:"category"`
+	Severity            string `json:"severity"`
+	Unit                string `json:"unit,omitempty"`
+	Username            string `json:"username,omitempty"`
+	RemoteIP            string `json:"remote_ip,omitempty"`
+	Message             string `json:"message,omitempty"`
+	OccurredAt          string `json:"occurred_at"`
+	ReceivedAt          string `json:"received_at"`
+	OriginalCategory    string `json:"original_category,omitempty"`
+	OriginalSeverity    string `json:"original_severity,omitempty"`
+	PolicyID            string `json:"policy_id,omitempty"`
+	PolicyName          string `json:"policy_name,omitempty"`
+	Suppressed          bool   `json:"suppressed"`
+	Guardrail           bool   `json:"guardrail"`
+	AcknowledgedAt      string `json:"acknowledged_at,omitempty"`
+	AcknowledgedBy      string `json:"acknowledged_by,omitempty"`
+	AcknowledgementNote string `json:"acknowledgement_note,omitempty"`
 }
 
 func (s *Store) AddHostEvents(hostID string, events []HostEvent) error {
@@ -94,12 +97,13 @@ func (s *Store) AddHostEvents(hostID string, events []HostEvent) error {
 		}
 		if _, err := tx.Exec(`INSERT OR IGNORE INTO host_events
 			(host_id,event_id,source,category,severity,unit,username,remote_ip,message,occurred_at,received_at,
-			 original_category,original_severity,policy_id,policy_name,suppressed,guardrail)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			 original_category,original_severity,policy_id,policy_name,suppressed,guardrail,
+			 acknowledged_at,acknowledged_by,acknowledgement_note)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			hostID, event.EventID, event.Source, event.Category, event.Severity,
 			event.Unit, event.Username, event.RemoteIP, event.Message, event.OccurredAt, now,
 			event.OriginalCategory, event.OriginalSeverity, event.PolicyID, event.PolicyName,
-			suppressed, guardrail); err != nil {
+			suppressed, guardrail, event.AcknowledgedAt, event.AcknowledgedBy, event.AcknowledgementNote); err != nil {
 			_ = tx.Rollback()
 			return err
 		}
@@ -130,7 +134,8 @@ func (s *Store) listHostEvents(limit int, since, severity string, includeSuppres
 	}
 	query := `SELECT id,host_id,event_id,source,category,severity,unit,username,
 		remote_ip,message,occurred_at,received_at,original_category,original_severity,
-		policy_id,policy_name,suppressed,guardrail FROM host_events`
+		policy_id,policy_name,suppressed,guardrail,acknowledged_at,acknowledged_by,
+		acknowledgement_note FROM host_events`
 	where := make([]string, 0, 3)
 	args := []any{}
 	if since != "" {
@@ -161,7 +166,8 @@ func (s *Store) listHostEvents(limit int, since, severity string, includeSuppres
 		if err := rows.Scan(&event.ID, &event.HostID, &event.EventID, &event.Source, &event.Category,
 			&event.Severity, &event.Unit, &event.Username, &event.RemoteIP, &event.Message,
 			&event.OccurredAt, &event.ReceivedAt, &event.OriginalCategory, &event.OriginalSeverity,
-			&event.PolicyID, &event.PolicyName, &suppressed, &guardrail); err != nil {
+			&event.PolicyID, &event.PolicyName, &suppressed, &guardrail,
+			&event.AcknowledgedAt, &event.AcknowledgedBy, &event.AcknowledgementNote); err != nil {
 			return nil, err
 		}
 		event.Suppressed = suppressed == 1
@@ -188,6 +194,7 @@ type HostEventSummary struct {
 	Info           int                    `json:"info"`
 	Other          int                    `json:"other"`
 	Suppressed     int                    `json:"suppressed"`
+	Acknowledged   int                    `json:"acknowledged"`
 	LastOccurredAt string                 `json:"last_occurred_at"`
 	LastCritical   string                 `json:"last_critical"`
 	LastWarning    string                 `json:"last_warning"`
@@ -230,6 +237,15 @@ func (s *Store) SummarizeHostEventsIncludingSuppressed(since string, includeSupp
 		suppressedArgs = append(suppressedArgs, since)
 	}
 	if err := s.db.QueryRow(suppressedQuery, suppressedArgs...).Scan(&summary.Suppressed); err != nil {
+		return summary, err
+	}
+	ackQuery := "SELECT COUNT(*) FROM host_events"
+	if where == "" {
+		ackQuery += " WHERE acknowledged_at<>''"
+	} else {
+		ackQuery += where + " AND acknowledged_at<>''"
+	}
+	if err := s.db.QueryRow(ackQuery, args...).Scan(&summary.Acknowledged); err != nil {
 		return summary, err
 	}
 	rows, err := s.db.Query(`SELECT severity,COUNT(*),COALESCE(MAX(occurred_at),'')
@@ -331,6 +347,28 @@ func (s *Store) CountHostEventsMatching(hostID, source, contains, since string) 
 	var count int
 	err := s.db.QueryRow(query, args...).Scan(&count)
 	return count, err
+}
+
+// AcknowledgeHostEvent marks one retained event as reviewed without changing
+// its severity, category, suppression, or monitor behavior.
+func (s *Store) AcknowledgeHostEvent(id int64, actor, note, at string) (bool, error) {
+	result, err := s.db.Exec(`UPDATE host_events SET acknowledged_at=?, acknowledged_by=?,
+		acknowledgement_note=? WHERE id=?`, at, actor, note, id)
+	if err != nil {
+		return false, err
+	}
+	rows, _ := result.RowsAffected()
+	return rows > 0, nil
+}
+
+func (s *Store) UnacknowledgeHostEvent(id int64) (bool, error) {
+	result, err := s.db.Exec(`UPDATE host_events SET acknowledged_at='', acknowledged_by='',
+		acknowledgement_note='' WHERE id=?`, id)
+	if err != nil {
+		return false, err
+	}
+	rows, _ := result.RowsAffected()
+	return rows > 0, nil
 }
 
 // ClearHostEvents deletes security/service event history. An empty hostID

@@ -2212,6 +2212,7 @@ function eventSummaryData() {
     info: Number(source.info) || 0,
     other: Number(source.other) || 0,
     suppressed: Number(source.suppressed) || 0,
+    acknowledged: Number(source.acknowledged) || 0,
     last_occurred_at: source.last_occurred_at || '',
     last_critical: source.last_critical || '',
     last_warning: source.last_warning || '',
@@ -2235,6 +2236,7 @@ function eventSummaryData() {
     const severity = String(record.severity || 'info');
     summary.total += 1;
     if (record.suppressed) summary.suppressed += 1;
+    if (record.acknowledged_at) summary.acknowledged += 1;
     if (severity === 'critical') {
       summary.critical += 1;
       if (!summary.last_critical) summary.last_critical = record.occurred_at || '';
@@ -2364,9 +2366,11 @@ async function resetEventFilters() {
   const severity = $('event-severity-filter');
   const source = $('event-source-filter');
   const search = $('event-search');
+  const unack = $('event-unacknowledged-only');
   if (severity) severity.value = '';
   if (source) source.value = '';
   if (search) search.value = '';
+  if (unack) unack.checked = false;
   state.eventSeverity = '';
   renderEventTable();
   try {
@@ -2418,10 +2422,12 @@ function renderEventTable() {
   }
   const sourceFilter = sourceSelect ? sourceSelect.value : '';
   const severityFilter = severitySelect ? severitySelect.value : '';
+  const unackOnly = Boolean($('event-unacknowledged-only') && $('event-unacknowledged-only').checked);
   const query = searchInput ? searchInput.value.trim().toLowerCase() : '';
   const filtered = events.filter((record) => {
     if (severityFilter && String(record.severity || 'info') !== severityFilter) return false;
     if (sourceFilter && record.source !== sourceFilter) return false;
+    if (unackOnly && record.acknowledged_at) return false;
     if (!query) return true;
     const host = (state.hosts || []).find((entry) => entry.id === record.host_id);
     const haystack = [
@@ -2465,6 +2471,13 @@ function renderEventTable() {
     const severityClass = severity === 'critical' ? 'unreachable' : severity === 'warning' ? 'review' : severity === 'info' ? 'reachable' : 'unknown';
     const severityTd = el('td');
     severityTd.append(el('span', 'pill ' + severityClass, severity));
+    if (record.acknowledged_at) {
+      const badge = el('span', 'badge green', 'acknowledged');
+      badge.style.marginLeft = '4px';
+      badge.title = 'Acknowledged by ' + (record.acknowledged_by || '?') +
+        (record.acknowledgement_note ? ' — ' + record.acknowledgement_note : '');
+      severityTd.append(badge);
+    }
     if (record.suppressed) {
       const badge = el('span', 'badge amber', 'suppressed');
       badge.style.marginLeft = '4px';
@@ -2499,12 +2512,13 @@ function renderEventTable() {
   }
   const summaryNode = $('events-summary');
   if (summaryNode) {
-    const filtersActive = Boolean(severityFilter || sourceFilter || query);
+    const filtersActive = Boolean(severityFilter || sourceFilter || query || unackOnly);
     const suppressed = Number(summary.suppressed) || 0;
     let text = filtersActive
       ? filtered.length + ' shown · ' + summary.total + ' in ' + eventWindowLabel()
       : summary.total + ' ' + (summary.total === 1 ? 'event' : 'events') + ' · ' + eventWindowLabel();
     if (summary.total > events.length) text += ' · latest ' + events.length + ' listed';
+    if (summary.acknowledged) text += ' · ' + summary.acknowledged + ' acknowledged';
     if (suppressed) {
       text += ' · ' + suppressed + ' suppressed' + (state.eventIncludeSuppressed ? '' : ' hidden');
     }
@@ -2648,7 +2662,14 @@ function showEventDetails(record) {
   if (record.policy_name) addEventDetailField(summary, 'Applied policy', record.policy_name);
   if (record.suppressed) addEventDetailField(summary, 'Suppressed', 'yes');
   if (record.guardrail) addEventDetailField(summary, 'Guardrail', 'yes');
+  if (record.acknowledged_at) {
+    const ackText = (record.acknowledged_by || 'unknown') + ' · ' +
+      new Date(record.acknowledged_at).toLocaleString() +
+      (record.acknowledgement_note ? ' — ' + record.acknowledgement_note : '');
+    addEventDetailField(summary, 'Acknowledged', ackText);
+  }
   body.append(summary);
+  body.append(el('p', 'field-note', 'Acknowledging marks this event as reviewed. It does not change severity, remove the event, or silence monitor alarms.'));
   if (record.suppressed) {
     const note = el('div', 'event-policy-note');
     note.append(el('strong', '', 'Suppressed by policy'));
@@ -2702,15 +2723,58 @@ function showEventDetails(record) {
   body.append(messageSection);
 
   const actions = el('div', 'modal-actions');
+  const ack = el('button', 'btn', record.acknowledged_at ? 'Unacknowledge' : 'Acknowledge');
+  ack.type = 'button';
+  ack.title = record.acknowledged_at
+    ? 'Clear the review acknowledgement for this event.'
+    : 'Mark this event as reviewed. Severity and monitor alarms are unchanged.';
+  ack.addEventListener('click', () => {
+    if (record.acknowledged_at) {
+      unacknowledgeEventRecord(record, closeFn);
+    } else {
+      acknowledgeEventRecord(record, closeFn);
+    }
+  });
   const copy = el('button', 'btn', 'Copy message');
   copy.type = 'button';
   copy.addEventListener('click', () => copyToClipboard(record.message || ''));
   const close = el('button', 'btn primary', 'Close');
   close.type = 'button';
-  actions.append(copy, close);
+  actions.append(ack, copy, close);
   body.append(actions);
   const closeFn = openModal('Event details', body, null, 'wide');
   close.addEventListener('click', closeFn);
+}
+
+async function acknowledgeEventRecord(record, closeFn) {
+  const note = prompt('Acknowledge this event as reviewed.\n\nSeverity and monitor alarms are unchanged.\n\nOptional note:');
+  if (note === null) return;
+  try {
+    await api('/api/v1/events/' + encodeURIComponent(record.id) + '/ack', {
+      method: 'POST',
+      body: JSON.stringify({ note }),
+    });
+    toast('Event acknowledged', 'ok');
+    if (closeFn) closeFn();
+    await loadEvents();
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
+async function unacknowledgeEventRecord(record, closeFn) {
+  if (!confirm('Clear the acknowledgement for this event?')) return;
+  try {
+    await api('/api/v1/events/' + encodeURIComponent(record.id) + '/unack', {
+      method: 'POST',
+      body: '{}',
+    });
+    toast('Event acknowledgement cleared', 'ok');
+    if (closeFn) closeFn();
+    await loadEvents();
+  } catch (error) {
+    toast(error.message, 'error');
+  }
 }
 
 async function copyToClipboard(text) {
@@ -8455,6 +8519,7 @@ function bind() {
     renderEventTable();
     loadEvents().catch((error) => toast(error.message, 'error'));
   });
+  $('event-unacknowledged-only').addEventListener('change', renderEventTable);
   $('event-include-suppressed').addEventListener('change', (event) => {
     state.eventIncludeSuppressed = event.target.checked;
     loadEvents().catch((error) => toast(error.message, 'error'));

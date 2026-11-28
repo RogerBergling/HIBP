@@ -394,7 +394,7 @@ HIBP_SSH_DIR=./secrets/ssh
 HIBP_PASSPHRASE_FILE=./secrets/db.passphrase
 ```
 
-`:edge` contains schema 28 and can migrate older local databases forward. It is
+`:edge` contains schema 29 and can migrate older local databases forward. It is
 an unreleased build; after validating the migration, switch to a pinned release
 or image digest.
 
@@ -1976,6 +1976,13 @@ read-only `auth_type=network` hosts. They have no SSH actions:
   stored fields, and — for UDM/CEF messages — the parsed CEF vendor, product,
   event ID, event name, severity, and extension fields. The detail view has a
   **Copy message** action. Stored event messages are bounded at 4 KiB.
+- **Event acknowledgements** mark an individual event as reviewed and record
+  who reviewed it, when, and an optional note. Acknowledgement does not change
+  the event severity or category, remove or suppress the event, alter
+  `security.auth`/`syslog.event` monitor counts, or bypass guardrails. Use
+  **Acknowledge** / **Unacknowledge** in **Event details**; acknowledged rows
+  show an **acknowledged** badge, and **Unacknowledged only** filters the table
+  to events still awaiting review. Ack/unack actions are audited.
 - CEF messages are classified using the CEF event name and extension values, so
   UDM WAN, link, Wi-Fi, VPN, firewall, authentication, and system events appear
   with a useful category and severity instead of a generic `syslog`/`info` row.
@@ -4123,7 +4130,7 @@ not accept passwords, private keys, or scripts.
 
 ### Schema migrations
 
-- Current schema version: **28** (`028_monitor_acknowledgements.sql`). The `v0.6.9`
+- Current schema version: **29** (`029_host_event_acknowledgements.sql`). The `v0.6.9`
   release used schema 9; `v0.6.6` used schema 8; `v0.6.2` used schema 7;
   `v0.5.1` used schema 6; `v0.5.0` and earlier used their respective earlier
   migrations.
