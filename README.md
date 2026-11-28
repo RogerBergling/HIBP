@@ -1966,8 +1966,9 @@ read-only `auth_type=network` hosts. They have no SSH actions:
 - CEF messages are classified using the CEF event name and extension values, so
   UDM WAN, link, Wi-Fi, VPN, firewall, authentication, and system events appear
   with a useful category and severity instead of a generic `syslog`/`info` row.
-- QNAP QuLog `Action: Login Fail` messages are classified as
-  `auth_failure` / `critical`. The QNAP `Users:` and `Source IP:` fields are
+- Authentication failures from syslog/CEF and agent/journal events are
+  classified as `auth_failure` / `critical`. This includes QNAP
+  `Action: Login Fail` messages; the QNAP `Users:` and `Source IP:` fields are
   stored as the event user and source IP.
 
 The SNMP MVP polls up to 20 scalar OIDs with `Get`; it does not walk interface

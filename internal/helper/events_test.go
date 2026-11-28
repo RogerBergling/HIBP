@@ -8,7 +8,7 @@ func TestParseJournalAuthEvent(t *testing.T) {
 	if !ok {
 		t.Fatal("expected auth event")
 	}
-	if event.EventID != "cursor-1" || event.Category != "auth_failure" || event.Severity != "warning" {
+	if event.EventID != "cursor-1" || event.Category != "auth_failure" || event.Severity != "critical" {
 		t.Fatalf("unexpected event: %+v", event)
 	}
 	if event.Username != "admin" || event.RemoteIP != "192.0.2.10" {

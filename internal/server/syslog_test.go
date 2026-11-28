@@ -136,7 +136,7 @@ func TestCEFAuthClassification(t *testing.T) {
 		t.Fatal(err)
 	}
 	category, severity := syslogEventClass(msg)
-	if category != "auth_failure" || severity != "warning" {
+	if category != "auth_failure" || severity != "critical" {
 		t.Fatalf("unexpected CEF auth classification: %s/%s", category, severity)
 	}
 }
@@ -173,7 +173,8 @@ func TestSyslogEventClass(t *testing.T) {
 		{"WAN down", "network_wan", "critical"},
 		{"WAN up", "network_wan", "warning"},
 		{"link down on port 3", "network_link", "warning"},
-		{"authentication failure for user admin", "auth_failure", "warning"},
+		{"authentication failure for user admin", "auth_failure", "critical"},
+		{"Login Fail for user admin", "auth_failure", "critical"},
 		{"firmware upgrade completed", "system", "info"},
 		{"random device message", "syslog", "info"},
 	}

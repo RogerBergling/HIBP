@@ -477,10 +477,8 @@ func syslogEventClass(msg syslogMessage) (string, string) {
 		severity = "warning"
 	}
 	switch {
-	case containsAny(lower, "qulogd", "qulog") && containsAny(lower, "login fail"):
-		return "auth_failure", "critical"
 	case containsAny(lower, "authentication failure", "auth failure", "failed password", "invalid user", "login failed", "login fail", "radius", "802.1x"):
-		return "auth_failure", "warning"
+		return "auth_failure", "critical"
 	case containsAny(lower, "wan", "pppoe", "failover") && containsAny(lower, "down", "up", "fail", "disconnect", "connect", "lost"):
 		if containsAny(lower, "down", "fail", "disconnect", "lost") {
 			return "network_wan", "critical"
@@ -665,11 +663,9 @@ func cefEventClass(cef *cefEvent) (string, string) {
 		severity = "warning"
 	}
 	switch {
-	case containsAny(lower, "qulogd", "qulog") && containsAny(lower, "login fail"):
-		return "auth_failure", "critical"
 	case containsAny(lower, "failed password", "authentication failure", "auth failure",
 		"login failed", "invalid user", "radius", "802.1x", "failed login", "login fail"):
-		return "auth_failure", higherSeverity(severity, "warning")
+		return "auth_failure", "critical"
 	case containsAny(lower, "intrusion", "malware", "exploit", "attack", "threat",
 		"botnet", "vulnerability", "ips ", "ids ", "c2 "):
 		return "security_threat", higherSeverity(severity, "warning")

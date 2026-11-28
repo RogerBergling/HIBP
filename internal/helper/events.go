@@ -148,7 +148,7 @@ func classifyEvent(message, unit, identifier string) (string, string) {
 		strings.Contains(lower, "invalid user"),
 		strings.Contains(lower, "incorrect password"),
 		strings.Contains(lower, "sorry, try again"):
-		return "auth_failure", "warning"
+		return "auth_failure", "critical"
 	case strings.Contains(lower, "out of memory"),
 		strings.Contains(lower, "oom-kill"),
 		strings.Contains(lower, "killed process"):
