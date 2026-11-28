@@ -54,6 +54,25 @@ func TestParseSyslogWithoutPriority(t *testing.T) {
 	}
 }
 
+func TestHostapdRADIUSAccountingIsNotAuthFailure(t *testing.T) {
+	line := `d021f9e615c8,U6-Lite-6.7.60+15906: hostapd[4696]: ra2: STA ec:75:0c:9c:8e:34 RADIUS: starting accounting session EDC75FCE1CAABB2B`
+	msg, err := parseSyslogMessage(line, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	category, severity := syslogEventClass(msg)
+	if category != "network_wifi" || severity != "info" {
+		t.Fatalf("unexpected RADIUS accounting classification: %s/%s", category, severity)
+	}
+}
+
+func TestRADIUSFailureIsAuthFailure(t *testing.T) {
+	msg := syslogMessage{Severity: 6, Message: "hostapd: ra2: STA aa:bb:cc:dd:ee:ff RADIUS: Access-Reject"}
+	if category, severity := syslogEventClass(msg); category != "auth_failure" || severity != "critical" {
+		t.Fatalf("unexpected RADIUS failure classification: %s/%s", category, severity)
+	}
+}
+
 func TestQNAPLoginFailIsCritical(t *testing.T) {
 	const qnapLine = `qulogd: conn log: Users: asdc, Source IP: 192.168.7.10, Computer name: ---, Connection type: HTTPS, Accessed resources: Administration, Action: Login Fail`
 	msg, err := parseSyslogMessage(qnapLine, time.Now())

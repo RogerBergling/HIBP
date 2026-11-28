@@ -1970,7 +1970,9 @@ read-only `auth_type=network` hosts. They have no SSH actions:
   classified as `auth_failure` / `critical`. All event ingestion paths
   normalize stored auth-failure severity to `critical`. This includes QNAP
   `Action: Login Fail` messages; the QNAP `Users:` and `Source IP:` fields are
-  stored as the event user and source IP.
+  stored as the event user and source IP. Hostapd RADIUS accounting
+  start/stop messages are treated as `network_wifi` activity, not authentication
+  failures.
 
 The SNMP MVP polls up to 20 scalar OIDs with `Get`; it does not walk interface
 tables.

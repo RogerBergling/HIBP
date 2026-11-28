@@ -477,7 +477,10 @@ func syslogEventClass(msg syslogMessage) (string, string) {
 		severity = "warning"
 	}
 	switch {
-	case containsAny(lower, "authentication failure", "auth failure", "failed password", "invalid user", "login failed", "login fail", "radius", "802.1x"):
+	case (containsAny(lower, "radius") && containsAny(lower, "fail", "reject", "denied", "invalid", "timeout", "unreachable")) ||
+		(containsAny(lower, "802.1x") && containsAny(lower, "fail", "reject", "denied", "invalid", "timeout")):
+		return "auth_failure", "critical"
+	case containsAny(lower, "authentication failure", "auth failure", "failed password", "invalid user", "login failed", "login fail"):
 		return "auth_failure", "critical"
 	case containsAny(lower, "wan", "pppoe", "failover") && containsAny(lower, "down", "up", "fail", "disconnect", "connect", "lost"):
 		if containsAny(lower, "down", "fail", "disconnect", "lost") {
@@ -486,7 +489,7 @@ func syslogEventClass(msg syslogMessage) (string, string) {
 		return "network_wan", "warning"
 	case containsAny(lower, "link", "port", "interface", "stp") && containsAny(lower, "down", "up", "fail", "error"):
 		return "network_link", "warning"
-	case containsAny(lower, "access point", "ap ", "adopt", "disconnect", "roam", "ssid", "wifi"):
+	case containsAny(lower, "access point", "ap ", "adopt", "disconnect", "roam", "ssid", "wifi", "hostapd"):
 		return "network_wifi", severity
 	case containsAny(lower, "firmware", "upgrade", "reboot", "config change", "configuration", "restart"):
 		return "system", severity
@@ -663,15 +666,18 @@ func cefEventClass(cef *cefEvent) (string, string) {
 		severity = "warning"
 	}
 	switch {
+	case (containsAny(lower, "radius") && containsAny(lower, "fail", "reject", "denied", "invalid", "timeout", "unreachable")) ||
+		(containsAny(lower, "802.1x") && containsAny(lower, "fail", "reject", "denied", "invalid", "timeout")):
+		return "auth_failure", "critical"
 	case containsAny(lower, "failed password", "authentication failure", "auth failure",
-		"login failed", "invalid user", "radius", "802.1x", "failed login", "login fail"):
+		"login failed", "invalid user", "failed login", "login fail"):
 		return "auth_failure", "critical"
 	case containsAny(lower, "intrusion", "malware", "exploit", "attack", "threat",
 		"botnet", "vulnerability", "ips ", "ids ", "c2 "):
 		return "security_threat", higherSeverity(severity, "warning")
 	case containsAny(lower, "vpn", "ipsec", "wireguard", "openvpn", "tunnel"):
 		return "network_vpn", severity
-	case containsAny(lower, "wifi", "wireless", "ssid", "roam", "access point", "adopt"):
+	case containsAny(lower, "wifi", "wireless", "ssid", "roam", "access point", "adopt", "hostapd"):
 		return "network_wifi", severity
 	case containsAny(lower, "wan", "pppoe", "failover"):
 		if containsAny(lower, "down", "fail", "disconnect", "lost") {
