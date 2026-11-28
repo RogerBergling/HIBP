@@ -187,7 +187,9 @@ cron-based patch schedules are implemented.
   severity escalation. Ack/unack actions are audited.
 - Event acknowledgements only mark a retained event as reviewed. They never
   change severity, category, suppression, retention, monitor counts, or
-  guardrails. Ack/unack actions are audited; events remain until explicitly
+  guardrails. Dashboard severity cards and the sidebar count show unreviewed
+  events, while acknowledged events remain retained, listed, and reported
+  separately. Ack/unack actions are audited; events remain until explicitly
   cleared.
 - The syslog receiver is disabled by default. When enabled it binds the
   configured address and accepts events only from source IPs mapped to a

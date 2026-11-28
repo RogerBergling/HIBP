@@ -2213,6 +2213,10 @@ function eventSummaryData() {
     other: Number(source.other) || 0,
     suppressed: Number(source.suppressed) || 0,
     acknowledged: Number(source.acknowledged) || 0,
+    acknowledged_critical: Number(source.acknowledged_critical) || 0,
+    acknowledged_warning: Number(source.acknowledged_warning) || 0,
+    acknowledged_info: Number(source.acknowledged_info) || 0,
+    acknowledged_other: Number(source.acknowledged_other) || 0,
     last_occurred_at: source.last_occurred_at || '',
     last_critical: source.last_critical || '',
     last_warning: source.last_warning || '',
@@ -2236,7 +2240,13 @@ function eventSummaryData() {
     const severity = String(record.severity || 'info');
     summary.total += 1;
     if (record.suppressed) summary.suppressed += 1;
-    if (record.acknowledged_at) summary.acknowledged += 1;
+    if (record.acknowledged_at) {
+      summary.acknowledged += 1;
+      if (severity === 'critical') summary.acknowledged_critical += 1;
+      else if (severity === 'warning') summary.acknowledged_warning += 1;
+      else if (severity === 'info') summary.acknowledged_info += 1;
+      else summary.acknowledged_other += 1;
+    }
     if (severity === 'critical') {
       summary.critical += 1;
       if (!summary.last_critical) summary.last_critical = record.occurred_at || '';
@@ -2267,23 +2277,34 @@ function renderSecurityCards() {
   const active = severitySelect ? severitySelect.value : '';
   const range = eventWindowLabel();
   const cards = [
-    { severity: 'critical', label: 'Critical', count: summary.critical, last: summary.last_critical, hint: 'Needs immediate attention' },
-    { severity: 'warning', label: 'Warning', count: summary.warning, last: summary.last_warning, hint: 'Review when time permits' },
-    { severity: 'info', label: 'Info', count: summary.info, last: summary.last_info, hint: 'Normal operational events' },
+    { severity: 'critical', label: 'Critical', total: summary.critical, acknowledged: summary.acknowledged_critical, last: summary.last_critical, hint: 'Needs immediate attention' },
+    { severity: 'warning', label: 'Warning', total: summary.warning, acknowledged: summary.acknowledged_warning, last: summary.last_warning, hint: 'Review when time permits' },
+    { severity: 'info', label: 'Info', total: summary.info, acknowledged: summary.acknowledged_info, last: summary.last_info, hint: 'Normal operational events' },
   ];
   container.replaceChildren();
   for (const card of cards) {
-    const button = el('button', 'security-card ' + card.severity + (card.count ? ' has-events' : ''));
+    const open = Math.max(0, card.total - card.acknowledged);
+    const acknowledged = Math.max(0, card.total - open);
+    const button = el('button', 'security-card ' + card.severity + (open ? ' has-events' : ''));
     button.type = 'button';
     button.setAttribute('aria-pressed', String(active === card.severity));
-    button.title = 'Filter events to ' + card.label.toLowerCase();
+    button.title = 'Filter events to ' + card.label.toLowerCase() +
+      (acknowledged ? ' (' + open + ' unreviewed, ' + acknowledged + ' acknowledged)' : '');
     const top = el('div', 'security-card-top');
     top.append(el('span', 'security-dot ' + card.severity), el('span', '', card.label));
     top.append(el('span', 'security-card-action', active === card.severity ? 'Filtering' : 'View events'));
-    const value = el('div', 'security-card-value', String(card.count));
-    value.append(el('small', '', card.count === 1 ? 'event' : 'events'));
-    const foot = el('div', 'security-card-foot',
-      card.count === 0 ? 'None in ' + range : (card.last ? 'Latest ' + relativeTime(card.last) : card.hint));
+    const value = el('div', 'security-card-value', String(open));
+    value.append(el('small', '', open === 1 ? 'unreviewed event' : 'unreviewed events'));
+    let footText;
+    if (card.total === 0) {
+      footText = 'None in ' + range;
+    } else if (open === 0) {
+      footText = acknowledged + ' acknowledged · none open';
+    } else {
+      footText = card.last ? 'Latest ' + relativeTime(card.last) : card.hint;
+      if (acknowledged) footText += ' · ' + acknowledged + ' acknowledged';
+    }
+    const foot = el('div', 'security-card-foot', footText);
     button.append(top, value, foot);
     button.addEventListener('click', async () => {
       const select = $('event-severity-filter');
@@ -2497,18 +2518,23 @@ function renderEventTable() {
     row.append(timeTd, hostTd, sourceTd, categoryTd, severityTd, userTd, ipTd, messageTd);
     eventBody.append(row);
   }
+  const openCritical = Math.max(0, summary.critical - summary.acknowledged_critical);
+  const openWarning = Math.max(0, summary.warning - summary.acknowledged_warning);
+  const openInfo = Math.max(0, summary.info - summary.acknowledged_info);
   const count = $('nav-event-count');
   if (count) {
-    count.textContent = summary.critical > 999 ? '999+' : String(summary.critical);
-    count.classList.toggle('hidden', summary.critical === 0);
-    count.classList.toggle('critical', summary.critical > 0);
-    count.title = summary.critical + ' critical ' + (summary.critical === 1 ? 'event' : 'events') +
-      ' in ' + eventWindowLabel();
+    count.textContent = openCritical > 999 ? '999+' : String(openCritical);
+    count.classList.toggle('hidden', openCritical === 0);
+    count.classList.toggle('critical', openCritical > 0);
+    count.title = openCritical + ' unreviewed critical ' +
+      (openCritical === 1 ? 'event' : 'events') + ' in ' + eventWindowLabel() +
+      (summary.acknowledged_critical ? ' · ' + summary.acknowledged_critical + ' acknowledged' : '');
   }
   const pageSub = $('events-page-sub');
   if (pageSub) {
-    pageSub.textContent = summary.critical + ' critical · ' + summary.warning + ' warning · ' +
-      summary.info + ' info · ' + eventWindowLabel();
+    pageSub.textContent = openCritical + ' critical open · ' + openWarning + ' warning open · ' +
+      openInfo + ' info open · ' + (summary.acknowledged ? summary.acknowledged + ' acknowledged · ' : '') +
+      eventWindowLabel();
   }
   const summaryNode = $('events-summary');
   if (summaryNode) {

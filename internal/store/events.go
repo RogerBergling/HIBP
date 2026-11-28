@@ -188,19 +188,23 @@ type HostEventSummaryItem struct {
 // HostEventSummary powers the security dashboard. Counts cover the requested
 // time window, not just the bounded event list.
 type HostEventSummary struct {
-	Total          int                    `json:"total"`
-	Critical       int                    `json:"critical"`
-	Warning        int                    `json:"warning"`
-	Info           int                    `json:"info"`
-	Other          int                    `json:"other"`
-	Suppressed     int                    `json:"suppressed"`
-	Acknowledged   int                    `json:"acknowledged"`
-	LastOccurredAt string                 `json:"last_occurred_at"`
-	LastCritical   string                 `json:"last_critical"`
-	LastWarning    string                 `json:"last_warning"`
-	LastInfo       string                 `json:"last_info"`
-	Categories     []HostEventSummaryItem `json:"categories"`
-	Hosts          []HostEventSummaryItem `json:"hosts"`
+	Total                int                    `json:"total"`
+	Critical             int                    `json:"critical"`
+	Warning              int                    `json:"warning"`
+	Info                 int                    `json:"info"`
+	Other                int                    `json:"other"`
+	Suppressed           int                    `json:"suppressed"`
+	Acknowledged         int                    `json:"acknowledged"`
+	AcknowledgedCritical int                    `json:"acknowledged_critical"`
+	AcknowledgedWarning  int                    `json:"acknowledged_warning"`
+	AcknowledgedInfo     int                    `json:"acknowledged_info"`
+	AcknowledgedOther    int                    `json:"acknowledged_other"`
+	LastOccurredAt       string                 `json:"last_occurred_at"`
+	LastCritical         string                 `json:"last_critical"`
+	LastWarning          string                 `json:"last_warning"`
+	LastInfo             string                 `json:"last_info"`
+	Categories           []HostEventSummaryItem `json:"categories"`
+	Hosts                []HostEventSummaryItem `json:"hosts"`
 }
 
 // SummarizeHostEvents aggregates visible events for the security dashboard.
@@ -239,13 +243,37 @@ func (s *Store) SummarizeHostEventsIncludingSuppressed(since string, includeSupp
 	if err := s.db.QueryRow(suppressedQuery, suppressedArgs...).Scan(&summary.Suppressed); err != nil {
 		return summary, err
 	}
-	ackQuery := "SELECT COUNT(*) FROM host_events"
+	ackQuery := "SELECT severity,COUNT(*) FROM host_events"
 	if where == "" {
 		ackQuery += " WHERE acknowledged_at<>''"
 	} else {
 		ackQuery += where + " AND acknowledged_at<>''"
 	}
-	if err := s.db.QueryRow(ackQuery, args...).Scan(&summary.Acknowledged); err != nil {
+	ackQuery += " GROUP BY severity"
+	ackRows, err := s.db.Query(ackQuery, args...)
+	if err != nil {
+		return summary, err
+	}
+	for ackRows.Next() {
+		var severity string
+		var count int
+		if err := ackRows.Scan(&severity, &count); err != nil {
+			_ = ackRows.Close()
+			return summary, err
+		}
+		summary.Acknowledged += count
+		switch severity {
+		case "critical":
+			summary.AcknowledgedCritical = count
+		case "warning":
+			summary.AcknowledgedWarning = count
+		case "info":
+			summary.AcknowledgedInfo = count
+		default:
+			summary.AcknowledgedOther += count
+		}
+	}
+	if err := ackRows.Close(); err != nil {
 		return summary, err
 	}
 	rows, err := s.db.Query(`SELECT severity,COUNT(*),COALESCE(MAX(occurred_at),'')

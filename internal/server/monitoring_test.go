@@ -1101,7 +1101,8 @@ func TestHostEventAckAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = resp.Body.Close()
-	if listResponse.Summary.Acknowledged != 1 || len(listResponse.Events) != 1 ||
+	if listResponse.Summary.Acknowledged != 1 || listResponse.Summary.AcknowledgedCritical != 1 ||
+		listResponse.Summary.AcknowledgedWarning != 0 || len(listResponse.Events) != 1 ||
 		listResponse.Events[0].AcknowledgedAt == "" {
 		t.Fatalf("summary did not count acknowledged event: %+v", listResponse)
 	}
@@ -1115,6 +1116,15 @@ func TestHostEventAckAPI(t *testing.T) {
 	if events[0].AcknowledgedAt != "" || events[0].AcknowledgedBy != "" ||
 		events[0].AcknowledgementNote != "" {
 		t.Fatalf("acknowledgement not cleared: %+v", events[0])
+	}
+	resp = request(t, http.MethodGet, ts.URL+"/api/v1/events?window=all", "test-token", "")
+	if err := json.NewDecoder(resp.Body).Decode(&listResponse); err != nil {
+		_ = resp.Body.Close()
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if listResponse.Summary.Acknowledged != 0 || listResponse.Summary.AcknowledgedCritical != 0 {
+		t.Fatalf("summary still counts acknowledged event: %+v", listResponse.Summary)
 	}
 	resp = request(t, http.MethodPost, ts.URL+"/api/v1/events/999999/ack", "test-token", `{}`)
 	if resp.StatusCode != http.StatusNotFound {

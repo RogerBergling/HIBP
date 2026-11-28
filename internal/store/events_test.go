@@ -172,39 +172,71 @@ func TestHostEventAcknowledgement(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if err := s.AddHostEvents(host.ID, []HostEvent{{
-		EventID: "ack-1", Source: "session.scope", Category: "auth_failure",
-		Severity: "critical", Message: "pam_unix authentication failure", OccurredAt: now,
-	}}); err != nil {
+	if err := s.AddHostEvents(host.ID, []HostEvent{
+		{
+			EventID: "ack-1", Source: "session.scope", Category: "auth_failure",
+			Severity: "critical", Message: "pam_unix authentication failure", OccurredAt: now,
+		},
+		{
+			EventID: "ack-2", Source: "syslog", Category: "syslog",
+			Severity: "warning", Message: "service restart", OccurredAt: now,
+		},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	events, err := s.ListHostEvents(10)
-	if err != nil || len(events) != 1 {
+	if err != nil || len(events) != 2 {
 		t.Fatalf("events: %+v %v", events, err)
 	}
-	found, err := s.AcknowledgeHostEvent(events[0].ID, "roger", "reviewed", now)
+	ids := map[string]int64{}
+	for _, event := range events {
+		ids[event.EventID] = event.ID
+	}
+	found, err := s.AcknowledgeHostEvent(ids["ack-1"], "roger", "reviewed", now)
 	if err != nil || !found {
 		t.Fatalf("acknowledge: found=%v err=%v", found, err)
 	}
 	events, err = s.ListHostEvents(10)
-	if err != nil || len(events) != 1 || events[0].AcknowledgedAt == "" ||
-		events[0].AcknowledgedBy != "roger" || events[0].AcknowledgementNote != "reviewed" {
-		t.Fatalf("unexpected acknowledged event: %+v %v", events, err)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("events after ack: %+v %v", events, err)
+	}
+	var acknowledged HostEvent
+	for _, event := range events {
+		if event.EventID == "ack-1" {
+			acknowledged = event
+		}
+	}
+	if acknowledged.AcknowledgedAt == "" || acknowledged.AcknowledgedBy != "roger" ||
+		acknowledged.AcknowledgementNote != "reviewed" || acknowledged.Severity != "critical" {
+		t.Fatalf("unexpected acknowledged event: %+v", acknowledged)
 	}
 	summary, err := s.SummarizeHostEvents("")
-	if err != nil || summary.Acknowledged != 1 {
+	if err != nil || summary.Acknowledged != 1 || summary.AcknowledgedCritical != 1 ||
+		summary.AcknowledgedWarning != 0 {
 		t.Fatalf("unexpected summary: %+v %v", summary, err)
 	}
-	found, err = s.UnacknowledgeHostEvent(events[0].ID)
+	if _, err := s.AcknowledgeHostEvent(ids["ack-2"], "roger", "", now); err != nil {
+		t.Fatal(err)
+	}
+	summary, err = s.SummarizeHostEvents("")
+	if err != nil || summary.Acknowledged != 2 || summary.AcknowledgedCritical != 1 ||
+		summary.AcknowledgedWarning != 1 {
+		t.Fatalf("unexpected per-severity summary: %+v %v", summary, err)
+	}
+	found, err = s.UnacknowledgeHostEvent(ids["ack-1"])
 	if err != nil || !found {
 		t.Fatalf("unacknowledge: found=%v err=%v", found, err)
 	}
-	events, _ = s.ListHostEvents(10)
-	if events[0].AcknowledgedAt != "" {
-		t.Fatalf("acknowledgement not cleared: %+v", events[0])
+	summary, err = s.SummarizeHostEvents("")
+	if err != nil || summary.Acknowledged != 1 || summary.AcknowledgedCritical != 0 ||
+		summary.AcknowledgedWarning != 1 {
+		t.Fatalf("unexpected summary after unack: %+v %v", summary, err)
+	}
+	if _, err := s.UnacknowledgeHostEvent(ids["ack-2"]); err != nil {
+		t.Fatal(err)
 	}
 	summary, _ = s.SummarizeHostEvents("")
-	if summary.Acknowledged != 0 {
+	if summary.Acknowledged != 0 || summary.AcknowledgedWarning != 0 {
 		t.Fatalf("summary still shows acknowledged: %+v", summary)
 	}
 }

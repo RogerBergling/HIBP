@@ -1982,7 +1982,10 @@ read-only `auth_type=network` hosts. They have no SSH actions:
   `security.auth`/`syslog.event` monitor counts, or bypass guardrails. Use
   **Acknowledge** / **Unacknowledge** in **Event details**; acknowledged rows
   show an **acknowledged** badge, and **Unacknowledged only** filters the table
-  to events still awaiting review. Ack/unack actions are audited.
+  to events still awaiting review. The severity cards and sidebar count show
+  unreviewed events; acknowledged events stay retained and listed, and the
+  cards report the acknowledged count separately. Ack/unack actions are
+  audited.
 - CEF messages are classified using the CEF event name and extension values, so
   UDM WAN, link, Wi-Fi, VPN, firewall, authentication, and system events appear
   with a useful category and severity instead of a generic `syslog`/`info` row.
