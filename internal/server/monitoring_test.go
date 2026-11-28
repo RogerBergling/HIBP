@@ -400,7 +400,7 @@ func TestResolveMonitorTargets(t *testing.T) {
 		t.Fatalf("service baseline must exclude network hosts: %+v active=%v", targets, active)
 	}
 	targets, active, _ = resolveMonitorTargets("syslog.event", []store.MonitorAssignment{{Scope: "fleet"}}, hosts)
-	if !active || len(targets) != 1 || targets[0].ID != "n" {
+	if !active || len(targets) != 4 {
 		t.Fatalf("syslog fleet targets: %+v active=%v", targets, active)
 	}
 	targets, active, _ = resolveMonitorTargets("security.auth", []store.MonitorAssignment{{Scope: "fleet"}}, hosts)

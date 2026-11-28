@@ -204,8 +204,10 @@ func resolveMonitorTargets(monitorType string, assignments []store.MonitorAssign
 // and syslog monitors.
 func monitorHostCompatible(monitorType string, host store.Host) bool {
 	switch monitorType {
-	case "snmp.value", "snmp.poll", "syslog.event":
+	case "snmp.value", "snmp.poll":
 		return host.AuthType == "network"
+	case "syslog.event":
+		return true
 	case "host.cpu", "host.memory", "host.load", "host.disk", "host.ntp",
 		"service.systemd", "service.baseline",
 		"docker.project", "docker.container", "docker.health":

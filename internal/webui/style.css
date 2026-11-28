@@ -574,6 +574,14 @@ label.field.checkbox-field input { width: auto; accent-color: #14b8a6; }
 .monitor-target { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .monitor-status-summary { font-size: 9.5px; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .alert-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.host-row-alert-critical { background: rgba(242, 109, 109, .045); }
+.host-row-alert-warning { background: rgba(244, 183, 64, .04); }
+.host-name .badge { margin-left: 5px; vertical-align: middle; font-size: 8px; }
+.monitor-row-critical { background: rgba(242, 109, 109, .045); }
+.monitor-row-warning { background: rgba(244, 183, 64, .04); }
+.monitor-affected-hosts { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 5px; }
+.monitor-affected-hosts .badge { cursor: pointer; border: 0; }
+.monitor-affected-hosts .badge:hover { filter: brightness(1.2); }
 tr.event-row { cursor: pointer; }
 tr.event-row:hover { background: rgba(20, 184, 166, .06); }
 tr.event-row:focus-visible { outline: 2px solid rgba(45, 212, 191, .55); outline-offset: -2px; }

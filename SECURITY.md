@@ -184,12 +184,12 @@ cron-based patch schedules are implemented.
   cannot be suppressed or downgraded.
 - The syslog receiver is disabled by default. When enabled it binds the
   configured address and accepts events only from source IPs mapped to a
-  `network` host (the host address plus its configured extra source IPs).
-  Syslog is unauthenticated and spoofable; bind it to the LAN, firewall it to
-  the device/network CIDR, and never expose it publicly.
+  managed host (the host address plus its configured extra source IPs). Syslog
+  is unauthenticated and spoofable; bind it to the LAN, firewall it to the
+  device/network CIDR, and never expose it publicly.
 - `snmp.value` monitors compare numeric scalar OID values. `snmp.poll` alerts on
   failed or stale polls. `syslog.event` counts matching messages in a bounded
-  window. None of these actions can change the network device.
+  window. None of these actions can change the target host.
 - HTTP, TCP, and TLS monitors are controller-originated network probes. They do
   not use SSH, the helper, or a host assignment, so a standalone monitor works
   when the target host is offline or unreachable. The target is therefore a

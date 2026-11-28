@@ -1444,6 +1444,29 @@ function renderStats() {
   $('empty-state').classList.toggle('hidden', total !== 0);
 }
 
+function lastHostEvent(hostID) {
+  return (state.events || []).find((event) => event.host_id === hostID) || null;
+}
+
+function hostMonitorAlerts(hostID) {
+  const items = [];
+  for (const monitor of state.monitors || []) {
+    if (!monitor.enabled) continue;
+    for (const entry of monitor.states || []) {
+      if (entry.host_id !== hostID) continue;
+      if (entry.status !== 'critical' && entry.status !== 'warning') continue;
+      items.push({ status: entry.status, monitor, entry });
+    }
+  }
+  if (!items.length) return null;
+  items.sort((left, right) => MONITOR_STATUS_RANK[right.status] - MONITOR_STATUS_RANK[left.status]);
+  return {
+    status: items[0].status,
+    count: items.length,
+    title: items.map((item) => item.monitor.name + ': ' + item.status + ' — ' + (item.entry.message || 'no detail')).join('\n'),
+  };
+}
+
 function renderHosts() {
   const rows = state.hosts.map(hostRow);
   $('hosts-body').replaceChildren(...rows);
@@ -1454,6 +1477,9 @@ function renderHosts() {
 function hostRow(host) {
   const tr = el('tr');
   const facts = host.facts || {};
+  const monitorAlert = hostMonitorAlerts(host.id);
+  const lastEvent = lastHostEvent(host.id);
+  if (monitorAlert) tr.classList.add('host-row-alert-' + monitorAlert.status);
 
   const selectTd = el('td');
   const select = el('input', 'row-select host-select');
@@ -1476,6 +1502,12 @@ function hostRow(host) {
   const hostText = el('div');
   const hostName = el('div', 'host-name');
   hostName.append(document.createTextNode(host.name));
+  if (monitorAlert) {
+    const badge = el('span', 'badge ' + (monitorAlert.status === 'critical' ? 'red' : 'amber'),
+      'monitor ' + monitorAlert.status);
+    badge.title = monitorAlert.title;
+    hostName.append(badge);
+  }
   if (Number(host.docker_project_count || 0) > 0 || Number(host.docker_container_count || 0) > 0) {
     const dockerToggle = el('button', 'host-docker-toggle', '+');
     dockerToggle.type = 'button';
@@ -1488,6 +1520,12 @@ function hostRow(host) {
     hostName.append(dockerToggle);
   }
   hostText.append(hostName, el('div', 'host-ip', host.address + ':' + host.port));
+  if (lastEvent) {
+    const eventLine = el('div', 'host-ip',
+      (lastEvent.source === 'syslog' ? 'syslog ' : 'event ') + relativeTime(lastEvent.occurred_at));
+    eventLine.title = lastEvent.occurred_at ? new Date(lastEvent.occurred_at).toLocaleString() : '';
+    hostText.append(eventLine);
+  }
   hostText.classList.add('host-open');
   hostText.title = 'Open host details';
   hostText.tabIndex = 0;
@@ -1551,13 +1589,27 @@ function hostRow(host) {
 
   const statusTd = el('td');
   const statusClass = host.status === 'reachable' ? 'reachable' : host.status === 'unreachable' ? 'unreachable' : 'unknown';
-  statusTd.append(el('span', 'pill ' + statusClass, '● ' + (host.status || 'unknown')));
+  const statusLabel = host.auth_type === 'network' && host.status === 'unreachable'
+    ? 'SNMP down'
+    : (host.status || 'unknown');
+  const statusPill = el('span', 'pill ' + statusClass, '● ' + statusLabel);
+  statusPill.title = host.auth_type === 'network'
+    ? 'Network-device status is based on SNMP polling. Syslog can still be active when SNMP is unreachable.'
+    : '';
+  statusTd.append(statusPill);
+  if (host.auth_type === 'network' && lastEvent && lastEvent.source === 'syslog') {
+    const syslogBadge = el('span', 'badge green', 'syslog active');
+    syslogBadge.style.marginLeft = '4px';
+    syslogBadge.title = 'Last syslog event ' + relativeTime(lastEvent.occurred_at);
+    statusTd.append(syslogBadge);
+  }
 
   const actionsTd = el('td');
   const actions = el('div', 'actions');
   actions.append(actionButton('Edit', () => showAddHostModal(host)));
   if (host.auth_type !== 'network') {
     actions.append(actionButton('Services', () => showHostDetails(host, 'services')));
+    actions.append(actionButton('Syslog', () => showSyslogSourcesModal(host)));
   }
   if (host.auth_type === 'agent') {
     actions.append(actionButton('Agent token', () => showAgentTokenModal(host)));
@@ -1730,7 +1782,7 @@ function isNetworkMonitorType(type) {
 
 function monitorHostCompatible(type, host) {
   if (!host) return false;
-  if (type === 'snmp.poll' || type === 'snmp.value' || type === 'syslog.event') {
+  if (type === 'snmp.poll' || type === 'snmp.value') {
     return host.auth_type === 'network';
   }
   if (type === 'host.cpu' || type === 'host.memory' || type === 'host.load' ||
@@ -2609,6 +2661,8 @@ function renderMonitoring() {
   for (const monitor of sorted) {
     const aggregate = aggregates.get(monitor.id) || monitorAggregate(monitor);
     const row = el('tr');
+    if (aggregate.status === 'critical') row.classList.add('monitor-row-critical');
+    else if (aggregate.status === 'warning') row.classList.add('monitor-row-warning');
 
     const selectTd = el('td');
     const select = el('input', 'row-select monitor-select');
@@ -2658,6 +2712,27 @@ function renderMonitoring() {
       }
     }
     assignmentTd.append(assignmentWrap);
+    const affected = (monitor.states || [])
+      .filter((entry) => entry.host_id && (entry.status === 'critical' || entry.status === 'warning'))
+      .sort((left, right) => MONITOR_STATUS_RANK[right.status] - MONITOR_STATUS_RANK[left.status] ||
+        monitorHostName(left.host_id).localeCompare(monitorHostName(right.host_id)));
+    if (affected.length) {
+      const flags = el('div', 'monitor-affected-hosts');
+      for (const entry of affected.slice(0, 8)) {
+        const flag = el('button', 'badge ' + (entry.status === 'critical' ? 'red' : 'amber'),
+          monitorHostName(entry.host_id) + ' · ' + entry.status);
+        flag.type = 'button';
+        flag.title = entry.message || 'Open ' + monitorHostName(entry.host_id);
+        flag.addEventListener('click', (event) => {
+          event.stopPropagation();
+          const host = (state.hosts || []).find((candidate) => candidate.id === entry.host_id);
+          if (host) showHostDetails(host);
+        });
+        flags.append(flag);
+      }
+      if (affected.length > 8) flags.append(el('span', 'muted', '+' + (affected.length - 8) + ' more'));
+      assignmentTd.append(flags);
+    }
 
     const intervalTd = el('td', '', formatMonitorInterval(monitor.interval_seconds));
 
@@ -3064,12 +3139,14 @@ function showMonitorModal(monitor = null, preset = null) {
     if (hosts.some((hostEntry) => hostEntry.id === current)) hostSelect.value = current;
     else if (hosts.length) hostSelect.value = hosts[0].id;
     if (scope.value === 'host') addAssignment.disabled = hosts.length === 0;
-    const snmp = type.value === 'snmp.poll' || type.value === 'snmp.value' || type.value === 'syslog.event';
+    const snmp = type.value === 'snmp.poll' || type.value === 'snmp.value';
     assignmentNote.textContent = snmp
       ? (hosts.length
-        ? 'SNMP and syslog monitors apply to network-device hosts only.'
+        ? 'SNMP monitors apply to network-device hosts only.'
         : 'No network-device hosts are configured. Add a network device first.')
-      : '';
+      : type.value === 'syslog.event'
+        ? 'Syslog event monitors can target any managed host that sends syslog.'
+        : '';
   };
 
   const standaloneNote = el('div', 'detail-card hidden');
@@ -5327,6 +5404,12 @@ function renderOverviewPanel(panel, data, host) {
     ]),
   );
   panel.append(grid);
+  const actions = el('div', 'modal-actions');
+  const syslog = el('button', 'btn', 'Syslog sources');
+  syslog.type = 'button';
+  syslog.addEventListener('click', () => showSyslogSourcesModal(host));
+  actions.append(syslog);
+  panel.append(actions);
 }
 
 function renderSystemPanel(panel, data, host, reload, onMetricsDaysChange = async () => {}) {
@@ -7118,6 +7201,48 @@ function showSyslogPolicyModal(policy = null, onSaved = async () => {}) {
       close();
       toast(editing ? 'Syslog policy updated' : 'Syslog policy added', 'ok');
       await onSaved();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  });
+}
+
+async function showSyslogSourcesModal(host) {
+  let data;
+  try {
+    data = await api('/api/v1/hosts/' + encodeURIComponent(host.id) + '/details');
+  } catch (error) {
+    toast(error.message, 'error');
+    return;
+  }
+  const settings = data.settings || {};
+  const form = el('form', 'modal-body');
+  form.append(el('p', 'muted', 'Syslog is pushed by the host. The host address is always accepted. Add extra source IPs only when this host sends from another interface or address.'));
+  const sources = inputField(form, 'Extra syslog source IPs', 'syslog_sources', '10.0.0.63, 192.168.4.50');
+  sources.value = settings['syslog.sources'] || '';
+  form.append(el('p', 'field-note', 'Comma- or whitespace-separated IPs. The syslog receiver must be enabled under Settings → Syslog receiver, and the host firewall must allow outbound UDP/TCP to the HIBP port.'));
+  const actions = el('div', 'modal-actions');
+  const cancel = el('button', 'btn', 'Cancel');
+  cancel.type = 'button';
+  const save = el('button', 'btn primary', 'Save syslog sources');
+  save.type = 'submit';
+  actions.append(cancel, save);
+  form.append(actions);
+  const close = openModal('Syslog sources — ' + host.name, form);
+  cancel.addEventListener('click', close);
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    try {
+      await api('/api/v1/settings', {
+        method: 'PUT',
+        body: JSON.stringify({
+          scope: 'host', host_id: host.id,
+          settings: { 'syslog.sources': sources.value.trim() },
+        }),
+      });
+      close();
+      toast('Syslog sources saved', 'ok');
+      await loadAll({ silent: true });
     } catch (error) {
       toast(error.message, 'error');
     }

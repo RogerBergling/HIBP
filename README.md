@@ -1806,9 +1806,10 @@ Implemented check types:
 - `security.auth` — fleet-wide failed-authentication count from normalized
   journald/auth events. Warning and critical thresholds are counts inside a
   configurable window; the default is 5 warning / 10 critical in 10 minutes.
-- `syslog.event` — counts network-device syslog messages whose text contains the
-  monitor target during `syslog.window_minutes`. Warning and critical thresholds
-  are counts; a blank target matches every syslog event.
+- `syslog.event` — counts syslog messages whose text contains the monitor
+  target during `syslog.window_minutes`. Warning and critical thresholds are
+  counts; a blank target matches every syslog event. Any managed host can send
+  syslog, not only network devices.
 - `snmp.value` — numeric scalar OID value from the network host’s SNMP poll,
   compared with warning/critical thresholds.
 - `snmp.poll` — critical when the latest SNMP poll failed; unknown when no poll
@@ -1926,8 +1927,11 @@ read-only `auth_type=network` hosts. They have no SSH actions:
 
 - **Syslog is pushed by the device.** Enable the receiver under
   **Settings → Syslog receiver**, set the listen address and UDP/TCP protocol,
-  then point the device at that address. Only source IPs matching a network
-  host’s address or its **Extra syslog source IPs** are accepted.
+  then point the device at that address. A configured host address is accepted
+  automatically; use **Syslog sources** on a host for additional source IPs.
+  Linux hosts can send syslog too, but the helper/agent already collects
+  journald/auth events without syslog. SSH login failures therefore appear in
+  **Security events** even when Linux syslog forwarding is not enabled.
 - **SNMP is polled by HIBP.** Open the host’s **Network** action to set the SNMP
   version (`v1` or `v2c`), community string, port, poll interval, and scalar OID
   list. The community is masked in API responses and stored encrypted at rest.
@@ -1940,9 +1944,12 @@ read-only `auth_type=network` hosts. They have no SSH actions:
     count to warning/critical thresholds inside the configured syslog window.
   - `snmp.value` compares a numeric OID value to warning/critical thresholds.
   - `snmp.poll` alerts when the latest SNMP poll failed or is stale.
-  - SNMP and syslog monitors are assigned to the network host, not run as a
-    standalone probe. The host **System** tab has an **Add SNMP poll monitor**
-    shortcut that pre-assigns the monitor to that device.
+  - SNMP monitors are assigned to a network host. `syslog.event` monitors can
+    target any managed host. The network host **System** tab has an **Add SNMP
+    poll monitor** shortcut that pre-assigns the monitor to that device.
+  - Network-host status is SNMP poll status. A syslog-only device can show
+    `SNMP down` or `unknown` while still sending logs; the host row shows the
+    last syslog/event and a **syslog active** badge.
 - **MIB library:** **Settings → MIB library** imports SMIv1 and SMIv2 MIB files.
   Imported symbols can be used instead of numeric OIDs in the host OID list and
   in `snmp.value` monitor targets. Scalars automatically get the `.0` instance;

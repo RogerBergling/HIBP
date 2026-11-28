@@ -208,7 +208,7 @@ func (s *Server) handleSyslogMessage(sourceIP, line string) {
 		s.logSyslogDiagnostic(sourceIP, "invalid message: "+err.Error())
 		return
 	}
-	host, ok := s.networkHostForSource(sourceIP)
+	host, ok := s.syslogHostForSource(sourceIP)
 	if !ok {
 		s.logSyslogDiagnostic(sourceIP, "unmapped source")
 		return
@@ -298,21 +298,18 @@ func (s *Server) logSyslogDiagnostic(source, issue string) {
 	slog.Warn("syslog: "+issue, "source", source)
 }
 
-func (s *Server) networkHostForSource(sourceIP string) (store.Host, bool) {
+func (s *Server) syslogHostForSource(sourceIP string) (store.Host, bool) {
 	normalized := sourceIP
 	if parsed := net.ParseIP(sourceIP); parsed != nil {
 		normalized = parsed.String()
 	}
-	s.networkHostsMu.Lock()
-	defer s.networkHostsMu.Unlock()
-	if s.networkHosts == nil || time.Since(s.networkHostsAt) > 30*time.Second {
+	s.syslogHostsMu.Lock()
+	defer s.syslogHostsMu.Unlock()
+	if s.syslogHosts == nil || time.Since(s.syslogHostsAt) > 30*time.Second {
 		hosts, err := s.store.ListHosts()
 		if err == nil {
 			cache := make(map[string]store.Host)
 			for _, host := range hosts {
-				if host.AuthType != "network" {
-					continue
-				}
 				if parsed := net.ParseIP(host.Address); parsed != nil {
 					cache[parsed.String()] = host
 				}
@@ -323,12 +320,18 @@ func (s *Server) networkHostForSource(sourceIP string) (store.Host, bool) {
 					}
 				}
 			}
-			s.networkHosts = cache
-			s.networkHostsAt = time.Now()
+			s.syslogHosts = cache
+			s.syslogHostsAt = time.Now()
 		}
 	}
-	host, ok := s.networkHosts[normalized]
+	host, ok := s.syslogHosts[normalized]
 	return host, ok
+}
+
+func (s *Server) invalidateSyslogHostCache() {
+	s.syslogHostsMu.Lock()
+	s.syslogHostsAt = time.Time{}
+	s.syslogHostsMu.Unlock()
 }
 
 func parseSyslogMessage(line string, now time.Time) (syslogMessage, error) {

@@ -879,6 +879,12 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	if dockerChanged {
 		s.markMonitorTypesDue("docker.health", "docker.project", "docker.container")
 	}
+	if request.Scope == "host" && request.HostID != "" {
+		if enabled, ok := request.Settings["snmp.enabled"]; ok && enabled == "0" {
+			_ = s.store.SetHostStatus(request.HostID, "unknown")
+		}
+	}
+	s.invalidateSyslogHostCache()
 	_ = s.store.AddAudit(s.auditActor(r), "settings-update", "settings", scope, "updated")
 	s.handleGetSettings(w, r)
 }

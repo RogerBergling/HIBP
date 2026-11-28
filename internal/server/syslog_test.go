@@ -217,6 +217,44 @@ func TestSyslogEventClass(t *testing.T) {
 	}
 }
 
+func TestHandleSyslogMessageFromSSHHost(t *testing.T) {
+	_, db, app := testServerWithApp(t, true)
+	host, err := db.CreateHost(store.Host{
+		Name: "linux01", Address: "10.0.0.61", Port: 22, Username: "ubuntu",
+		AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.handleSyslogMessage("10.0.0.61", `<134>Nov 28 02:00:00 linux01 sshd: Failed password for admin`)
+	events, err := db.ListHostEvents(10)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("events: %+v %v", events, err)
+	}
+	if events[0].HostID != host.ID || events[0].Category != "auth_failure" || events[0].Severity != "critical" {
+		t.Fatalf("unexpected Linux syslog event: %+v", events[0])
+	}
+}
+
+func TestHandleSyslogMessageUsesExtraSourceIP(t *testing.T) {
+	_, db, app := testServerWithApp(t, true)
+	host, err := db.CreateHost(store.Host{
+		Name: "linux02", Address: "10.0.0.62", Port: 22, Username: "ubuntu",
+		AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetSetting("host:"+host.ID, "syslog.sources", "10.0.0.63"); err != nil {
+		t.Fatal(err)
+	}
+	app.handleSyslogMessage("10.0.0.63", `<134>Nov 28 02:00:01 linux02 app: forwarded log`)
+	events, err := db.ListHostEvents(10)
+	if err != nil || len(events) != 1 || events[0].HostID != host.ID {
+		t.Fatalf("extra source events: %+v %v", events, err)
+	}
+}
+
 func TestHandleSyslogMessageStoresEvent(t *testing.T) {
 	_, db, app := testServerWithApp(t, true)
 	host, err := db.CreateHost(store.Host{

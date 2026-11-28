@@ -177,6 +177,7 @@ func (s *Server) handleCreateHost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.invalidateSyslogHostCache()
 	writeJSON(w, http.StatusCreated, host)
 }
 
@@ -214,6 +215,7 @@ func (s *Server) handleUpdateHost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.invalidateSyslogHostCache()
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -237,6 +239,7 @@ func (s *Server) handleDeleteHost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.invalidateSyslogHostCache()
 	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
 }
 
