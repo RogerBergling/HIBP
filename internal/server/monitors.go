@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -269,6 +270,71 @@ func (s *Server) filterMonitorStates(monitor store.Monitor, states []store.Monit
 		}
 	}
 	return filtered
+}
+
+type monitorAckRequest struct {
+	HostID string `json:"host_id"`
+	Note   string `json:"note"`
+}
+
+func (s *Server) handleAcknowledgeMonitor(w http.ResponseWriter, r *http.Request) {
+	monitor, err := s.store.GetMonitor(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "monitor not found")
+		return
+	}
+	var request monitorAckRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	hostID := strings.TrimSpace(request.HostID)
+	note := strings.TrimSpace(request.Note)
+	if len(note) > 512 {
+		writeError(w, http.StatusBadRequest, "acknowledgement note must be at most 512 characters")
+		return
+	}
+	if hostID != "" {
+		if _, err := s.store.GetHost(hostID); err != nil {
+			writeError(w, http.StatusNotFound, "host not found")
+			return
+		}
+	}
+	at := time.Now().UTC().Format(time.RFC3339Nano)
+	count, err := s.store.AcknowledgeMonitorStates(monitor.ID, hostID, s.auditActor(r), note, at)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if count == 0 {
+		writeError(w, http.StatusBadRequest, "no active non-OK alerts to acknowledge")
+		return
+	}
+	_ = s.store.AddAudit(s.auditActor(r), "monitor-ack", "monitor", monitor.ID,
+		fmt.Sprintf("host_id=%s note=%q states=%d", hostID, note, count))
+	writeJSON(w, http.StatusOK, map[string]any{"acknowledged": count})
+}
+
+func (s *Server) handleUnacknowledgeMonitor(w http.ResponseWriter, r *http.Request) {
+	monitor, err := s.store.GetMonitor(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "monitor not found")
+		return
+	}
+	var request monitorAckRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	hostID := strings.TrimSpace(request.HostID)
+	count, err := s.store.ClearMonitorAcknowledgements(monitor.ID, hostID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = s.store.AddAudit(s.auditActor(r), "monitor-unack", "monitor", monitor.ID,
+		fmt.Sprintf("host_id=%s states=%d", hostID, count))
+	writeJSON(w, http.StatusOK, map[string]any{"cleared": count})
 }
 
 func (s *Server) handleCreateMonitor(w http.ResponseWriter, r *http.Request) {

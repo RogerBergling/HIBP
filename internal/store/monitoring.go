@@ -36,13 +36,17 @@ type MonitorAssignment struct {
 }
 
 type MonitorState struct {
-	MonitorID    string `json:"monitor_id"`
-	HostID       string `json:"host_id"`
-	Status       string `json:"status"`
-	Message      string `json:"message"`
-	CheckedAt    string `json:"checked_at"`
-	ChangedAt    string `json:"changed_at"`
-	LastNotified string `json:"last_notified"`
+	MonitorID           string `json:"monitor_id"`
+	HostID              string `json:"host_id"`
+	Status              string `json:"status"`
+	Message             string `json:"message"`
+	CheckedAt           string `json:"checked_at"`
+	ChangedAt           string `json:"changed_at"`
+	LastNotified        string `json:"last_notified"`
+	AcknowledgedAt      string `json:"acknowledged_at,omitempty"`
+	AcknowledgedBy      string `json:"acknowledged_by,omitempty"`
+	AcknowledgementNote string `json:"acknowledgement_note,omitempty"`
+	AcknowledgedStatus  string `json:"acknowledged_status,omitempty"`
 }
 
 type AlertEvent struct {
@@ -311,25 +315,68 @@ func (s *Store) SetMonitorChecked(monitorID, checkedAt string) error {
 
 func (s *Store) GetMonitorState(monitorID, hostID string) (MonitorState, error) {
 	var state MonitorState
-	err := s.db.QueryRow(`SELECT monitor_id,host_id,status,message,checked_at,changed_at,last_notified
+	err := s.db.QueryRow(`SELECT monitor_id,host_id,status,message,checked_at,changed_at,last_notified,
+		acknowledged_at,acknowledged_by,acknowledgement_note,acknowledged_status
 		FROM monitor_state WHERE monitor_id=? AND host_id=?`, monitorID, hostID).
 		Scan(&state.MonitorID, &state.HostID, &state.Status, &state.Message, &state.CheckedAt,
-			&state.ChangedAt, &state.LastNotified)
+			&state.ChangedAt, &state.LastNotified, &state.AcknowledgedAt, &state.AcknowledgedBy,
+			&state.AcknowledgementNote, &state.AcknowledgedStatus)
 	return state, err
 }
 
 func (s *Store) UpsertMonitorState(state MonitorState) error {
-	_, err := s.db.Exec(`INSERT INTO monitor_state(monitor_id,host_id,status,message,checked_at,changed_at,last_notified)
-		VALUES(?,?,?,?,?,?,?)
+	_, err := s.db.Exec(`INSERT INTO monitor_state(monitor_id,host_id,status,message,checked_at,changed_at,last_notified,
+		acknowledged_at,acknowledged_by,acknowledgement_note,acknowledged_status)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(monitor_id,host_id) DO UPDATE SET
 			status=excluded.status, message=excluded.message, checked_at=excluded.checked_at,
-			changed_at=excluded.changed_at, last_notified=excluded.last_notified`,
-		state.MonitorID, state.HostID, state.Status, state.Message, state.CheckedAt, state.ChangedAt, state.LastNotified)
+			changed_at=excluded.changed_at, last_notified=excluded.last_notified,
+			acknowledged_at=excluded.acknowledged_at, acknowledged_by=excluded.acknowledged_by,
+			acknowledgement_note=excluded.acknowledgement_note, acknowledged_status=excluded.acknowledged_status`,
+		state.MonitorID, state.HostID, state.Status, state.Message, state.CheckedAt, state.ChangedAt, state.LastNotified,
+		state.AcknowledgedAt, state.AcknowledgedBy, state.AcknowledgementNote, state.AcknowledgedStatus)
 	return err
 }
 
+// AcknowledgeMonitorStates marks current non-OK alerts as acknowledged without
+// changing their status. An empty hostID acknowledges every non-OK host state
+// for the monitor.
+func (s *Store) AcknowledgeMonitorStates(monitorID, hostID, actor, note, at string) (int64, error) {
+	query := `UPDATE monitor_state SET acknowledged_at=?, acknowledged_by=?,
+		acknowledgement_note=?, acknowledged_status=status
+		WHERE monitor_id=? AND status<>'ok'`
+	args := []any{at, actor, note, monitorID}
+	if hostID != "" {
+		query += " AND host_id=?"
+		args = append(args, hostID)
+	}
+	result, err := s.db.Exec(query, args...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+// ClearMonitorAcknowledgements removes acknowledgements. An empty hostID clears
+// every host state for the monitor.
+func (s *Store) ClearMonitorAcknowledgements(monitorID, hostID string) (int64, error) {
+	query := `UPDATE monitor_state SET acknowledged_at='', acknowledged_by='',
+		acknowledgement_note='', acknowledged_status='' WHERE monitor_id=?`
+	args := []any{monitorID}
+	if hostID != "" {
+		query += " AND host_id=?"
+		args = append(args, hostID)
+	}
+	result, err := s.db.Exec(query, args...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 func (s *Store) ListMonitorStates(monitorID string) ([]MonitorState, error) {
-	rows, err := s.db.Query(`SELECT monitor_id,host_id,status,message,checked_at,changed_at,last_notified
+	rows, err := s.db.Query(`SELECT monitor_id,host_id,status,message,checked_at,changed_at,last_notified,
+		acknowledged_at,acknowledged_by,acknowledgement_note,acknowledged_status
 		FROM monitor_state WHERE monitor_id=? AND (host_id='' OR host_id IN (SELECT id FROM hosts))
 		ORDER BY host_id`, monitorID)
 	if err != nil {
@@ -340,7 +387,8 @@ func (s *Store) ListMonitorStates(monitorID string) ([]MonitorState, error) {
 	for rows.Next() {
 		var state MonitorState
 		if err := rows.Scan(&state.MonitorID, &state.HostID, &state.Status, &state.Message,
-			&state.CheckedAt, &state.ChangedAt, &state.LastNotified); err != nil {
+			&state.CheckedAt, &state.ChangedAt, &state.LastNotified, &state.AcknowledgedAt,
+			&state.AcknowledgedBy, &state.AcknowledgementNote, &state.AcknowledgedStatus); err != nil {
 			return nil, err
 		}
 		states = append(states, state)

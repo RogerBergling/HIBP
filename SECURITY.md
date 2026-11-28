@@ -182,6 +182,9 @@ cron-based patch schedules are implemented.
   **Show suppressed**. Policy changes are audited. Critical events,
   authentication failures, security threats, and protected kernel failures
   cannot be suppressed or downgraded.
+- Monitor acknowledgements keep the current critical/warning state visible,
+  suppress repeat email notifications, and clear automatically on recovery or
+  severity escalation. Ack/unack actions are audited.
 - The syslog receiver is disabled by default. When enabled it binds the
   configured address and accepts events only from source IPs mapped to a
   managed host (the host address plus its configured extra source IPs). Syslog

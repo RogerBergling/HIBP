@@ -394,7 +394,7 @@ HIBP_SSH_DIR=./secrets/ssh
 HIBP_PASSPHRASE_FILE=./secrets/db.passphrase
 ```
 
-`:edge` contains schema 27 and can migrate older local databases forward. It is
+`:edge` contains schema 28 and can migrate older local databases forward. It is
 an unreleased build; after validating the migration, switch to a pinned release
 or image digest.
 
@@ -1950,6 +1950,12 @@ read-only `auth_type=network` hosts. They have no SSH actions:
   - Network-host status is SNMP poll status. A syslog-only device can show
     `SNMP down` or `unknown` while still sending logs; the host row shows the
     last syslog/event and a **syslog active** badge.
+  - Current monitor alerts can be **acknowledged** per host or for every
+    affected host on a monitor. An acknowledgement keeps the critical/warning
+    state visible, suppresses repeat emails, and is cleared automatically on
+    recovery or severity escalation. Acknowledgement and unacknowledgement are
+    audited. Acknowledged alarms still count as critical/warning until the
+    monitor actually recovers.
 - **MIB library:** **Settings → MIB library** imports SMIv1 and SMIv2 MIB files.
   Imported symbols can be used instead of numeric OIDs in the host OID list and
   in `snmp.value` monitor targets. Scalars automatically get the `.0` instance;
@@ -4117,7 +4123,7 @@ not accept passwords, private keys, or scripts.
 
 ### Schema migrations
 
-- Current schema version: **27** (`027_syslog_policies.sql`). The `v0.6.9`
+- Current schema version: **28** (`028_monitor_acknowledgements.sql`). The `v0.6.9`
   release used schema 9; `v0.6.6` used schema 8; `v0.6.2` used schema 7;
   `v0.5.1` used schema 6; `v0.5.0` and earlier used their respective earlier
   migrations.

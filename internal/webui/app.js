@@ -1463,7 +1463,9 @@ function hostMonitorAlerts(hostID) {
   return {
     status: items[0].status,
     count: items.length,
-    title: items.map((item) => item.monitor.name + ': ' + item.status + ' — ' + (item.entry.message || 'no detail')).join('\n'),
+    acknowledged: items.filter((item) => item.entry.acknowledged_at).length,
+    title: items.map((item) => item.monitor.name + ': ' + item.status + ' — ' + (item.entry.message || 'no detail') +
+      (item.entry.acknowledged_at ? ' (acknowledged)' : '')).join('\n'),
   };
 }
 
@@ -1507,6 +1509,11 @@ function hostRow(host) {
       'monitor ' + monitorAlert.status);
     badge.title = monitorAlert.title;
     hostName.append(badge);
+    if (monitorAlert.acknowledged) {
+      const ack = el('span', 'badge amber', 'ack');
+      ack.title = monitorAlert.acknowledged + ' monitor alert(s) acknowledged';
+      hostName.append(ack);
+    }
   }
   if (Number(host.docker_project_count || 0) > 0 || Number(host.docker_container_count || 0) > 0) {
     const dockerToggle = el('button', 'host-docker-toggle', '+');
@@ -1881,7 +1888,20 @@ function monitorAggregate(monitor) {
   const detail = worstState
     ? monitorHostName(worstState.host_id) + ': ' + (worstState.message || worstState.status)
     : '';
-  return { status: worst, summary: parts.join(' · '), title, detail };
+  const nonOk = states.filter((entry) => entry.status !== 'ok');
+  const acknowledged = nonOk.filter((entry) => entry.acknowledged_at);
+  return {
+    status: worst,
+    summary: parts.join(' · '),
+    title,
+    detail,
+    nonOk: nonOk.length,
+    acknowledged: acknowledged.length,
+    ackTitle: acknowledged
+      .map((entry) => monitorHostName(entry.host_id) + ': acknowledged by ' +
+        (entry.acknowledged_by || '?') + (entry.acknowledgement_note ? ' — ' + entry.acknowledgement_note : ''))
+      .join('\n'),
+  };
 }
 
 // monitorStatusCounts returns enabled monitors grouped by their worst current
@@ -1943,6 +1963,13 @@ function showMonitorDetails(monitor) {
       const row = el('tr');
       const statusTd = el('td');
       statusTd.append(monitorStatusPill(entry.status));
+      if (entry.acknowledged_at) {
+        const ack = el('span', 'badge amber', 'acknowledged');
+        ack.style.marginLeft = '4px';
+        ack.title = 'Acknowledged by ' + (entry.acknowledged_by || '?') +
+          (entry.acknowledgement_note ? ' — ' + entry.acknowledgement_note : '');
+        statusTd.append(ack);
+      }
       const detailTd = el('td', 'alert-detail', entry.message || '—');
       detailTd.title = entry.message || '';
       const checkedTd = el('td');
@@ -1950,6 +1977,13 @@ function showMonitorDetails(monitor) {
       if (entry.checked_at) checked.title = new Date(entry.checked_at).toLocaleString();
       checkedTd.append(checked);
       const actionTd = el('td');
+      if (entry.status !== 'ok') {
+        if (entry.acknowledged_at) {
+          actionTd.append(actionButton('Unack', () => unacknowledgeMonitorState(monitor, entry, closeFn)));
+        } else {
+          actionTd.append(actionButton('Ack', () => acknowledgeMonitorState(monitor, entry, closeFn)));
+        }
+      }
       const host = entry.host_id ? (state.hosts || []).find((candidate) => candidate.id === entry.host_id) : null;
       if (host) {
         const tab = monitor.type.startsWith('docker.') ? 'containers'
@@ -1970,6 +2004,72 @@ function showMonitorDetails(monitor) {
   body.append(actions);
   const closeFn = openModal('Monitor details — ' + monitor.name, body, null, 'wide');
   close.addEventListener('click', closeFn);
+}
+
+async function acknowledgeMonitorState(monitor, entry, closeFn) {
+  const note = prompt('Acknowledge ' + monitor.name + ' for ' + monitorHostName(entry.host_id) +
+    '.\n\nThis keeps the alert visible but suppresses repeat emails until recovery or severity escalation.\n\nOptional note:');
+  if (note === null) return;
+  try {
+    const result = await api('/api/v1/monitors/' + encodeURIComponent(monitor.id) + '/ack', {
+      method: 'POST',
+      body: JSON.stringify({ host_id: entry.host_id || '', note }),
+    });
+    toast('Acknowledged ' + (result.acknowledged || 0) + ' alert state(s)', 'ok');
+    await loadAll({ silent: true });
+    if (closeFn) closeFn();
+    const updated = (state.monitors || []).find((candidate) => candidate.id === monitor.id);
+    if (updated) showMonitorDetails(updated);
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
+async function unacknowledgeMonitorState(monitor, entry, closeFn) {
+  if (!confirm('Clear the acknowledgement for ' + monitorHostName(entry.host_id) + '?')) return;
+  try {
+    const result = await api('/api/v1/monitors/' + encodeURIComponent(monitor.id) + '/unack', {
+      method: 'POST',
+      body: JSON.stringify({ host_id: entry.host_id || '' }),
+    });
+    toast('Cleared ' + (result.cleared || 0) + ' acknowledgement(s)', 'ok');
+    await loadAll({ silent: true });
+    if (closeFn) closeFn();
+    const updated = (state.monitors || []).find((candidate) => candidate.id === monitor.id);
+    if (updated) showMonitorDetails(updated);
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
+async function acknowledgeMonitor(monitor) {
+  const note = prompt('Acknowledge all current non-OK alerts for ' + monitor.name +
+    '.\n\nThe alerts stay visible as critical/warning. Repeat emails are suppressed until recovery or severity escalation.\n\nOptional note:');
+  if (note === null) return;
+  try {
+    const result = await api('/api/v1/monitors/' + encodeURIComponent(monitor.id) + '/ack', {
+      method: 'POST',
+      body: JSON.stringify({ host_id: '', note }),
+    });
+    toast('Acknowledged ' + (result.acknowledged || 0) + ' alert state(s)', 'ok');
+    await loadAll();
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
+async function unacknowledgeMonitor(monitor) {
+  if (!confirm('Clear all acknowledgements for ' + monitor.name + '?')) return;
+  try {
+    const result = await api('/api/v1/monitors/' + encodeURIComponent(monitor.id) + '/unack', {
+      method: 'POST',
+      body: JSON.stringify({ host_id: '' }),
+    });
+    toast('Cleared ' + (result.cleared || 0) + ' acknowledgement(s)', 'ok');
+    await loadAll();
+  } catch (error) {
+    toast(error.message, 'error');
+  }
 }
 
 function monitorMapScopeKey(monitor) {
@@ -2744,6 +2844,12 @@ function renderMonitoring() {
     const statusSummary = el('div', 'muted monitor-status-summary', statusText);
     statusSummary.title = aggregate.title;
     statusTd.append(statusSummary);
+    if (Number(aggregate.acknowledged || 0) > 0) {
+      const ack = el('span', 'badge amber', 'acknowledged ' + aggregate.acknowledged);
+      ack.style.marginTop = '3px';
+      ack.title = aggregate.ackTitle || '';
+      statusTd.append(ack);
+    }
 
     const checkedTd = el('td');
     const checked = el('span', 'nowrap', relativeTime(monitor.last_checked_at));
@@ -2754,6 +2860,12 @@ function renderMonitoring() {
     const actions = el('div', 'actions');
     actions.append(actionButton('Edit', () => showMonitorModal(monitor)));
     actions.append(actionButton('Details', () => showMonitorDetails(monitor)));
+    if (Number(aggregate.nonOk || 0) > Number(aggregate.acknowledged || 0)) {
+      actions.append(actionButton('Ack', () => acknowledgeMonitor(monitor)));
+    }
+    if (Number(aggregate.acknowledged || 0) > 0) {
+      actions.append(actionButton('Unack', () => unacknowledgeMonitor(monitor)));
+    }
     const check = actionButton('Check', () => checkMonitorNow(monitor));
     check.disabled = !monitor.enabled;
     if (!monitor.enabled) check.title = 'Enable the monitor first';

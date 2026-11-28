@@ -325,6 +325,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/v1/monitors/{id}", s.auth(s.handleUpdateMonitor))
 	s.mux.HandleFunc("DELETE /api/v1/monitors/{id}", s.auth(s.handleDeleteMonitor))
 	s.mux.HandleFunc("POST /api/v1/monitors/{id}/check", s.auth(s.handleCheckMonitor))
+	s.mux.HandleFunc("POST /api/v1/monitors/{id}/ack", s.auth(s.handleAcknowledgeMonitor))
+	s.mux.HandleFunc("POST /api/v1/monitors/{id}/unack", s.auth(s.handleUnacknowledgeMonitor))
 	s.mux.HandleFunc("GET /api/v1/hosts/{id}/agent", s.auth(s.handleGetAgent))
 	s.mux.HandleFunc("POST /api/v1/hosts/{id}/agent", s.auth(s.handleCreateAgent))
 	s.mux.HandleFunc("DELETE /api/v1/hosts/{id}/agent", s.auth(s.handleDeleteAgent))

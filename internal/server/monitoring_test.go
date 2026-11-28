@@ -536,6 +536,113 @@ func TestRecordMonitorResultCooldownAndRecovery(t *testing.T) {
 	}
 }
 
+func TestMonitorAcknowledgementSuppressesRepeatsAndClearsOnEscalation(t *testing.T) {
+	app, db, host := newMonitorTestApp(t)
+	monitor, err := db.CreateMonitor(store.Monitor{
+		Name: "CPU", Type: "host.cpu", Warning: 80, Critical: 90,
+		IntervalSeconds: 60, RepeatMinutes: 1, CooldownMinutes: 0, Enabled: true,
+		Assignments: []store.MonitorAssignment{{Scope: "host", Target: host.ID}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	app.recordMonitorResult(monitor, host.ID, host.Name, monitorResult{status: "critical", message: "95%"}, now)
+	events, err := db.ListAlertEvents(10)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("expected initial alert, got %+v %v", events, err)
+	}
+	count, err := db.AcknowledgeMonitorStates(monitor.ID, host.ID, "tester", "known issue", now.Add(10*time.Second).Format(time.RFC3339Nano))
+	if err != nil || count != 1 {
+		t.Fatalf("acknowledge: count=%d err=%v", count, err)
+	}
+	state, err := db.GetMonitorState(monitor.ID, host.ID)
+	if err != nil || state.AcknowledgedAt == "" || state.AcknowledgedBy != "tester" ||
+		state.AcknowledgementNote != "known issue" || state.AcknowledgedStatus != "critical" {
+		t.Fatalf("unexpected acknowledged state: %+v %v", state, err)
+	}
+	// Repeat while acknowledged must not create a new alert.
+	app.recordMonitorResult(monitor, host.ID, host.Name, monitorResult{status: "critical", message: "96%"}, now.Add(2*time.Minute))
+	events, _ = db.ListAlertEvents(10)
+	if len(events) != 1 {
+		t.Fatalf("acknowledged repeat alerted: %+v", events)
+	}
+	// A downgrade keeps the acknowledgement and stays quiet.
+	app.recordMonitorResult(monitor, host.ID, host.Name, monitorResult{status: "warning", message: "85%"}, now.Add(3*time.Minute))
+	events, _ = db.ListAlertEvents(10)
+	if len(events) != 1 {
+		t.Fatalf("acknowledged downgrade alerted: %+v", events)
+	}
+	state, _ = db.GetMonitorState(monitor.ID, host.ID)
+	if state.AcknowledgedAt == "" {
+		t.Fatalf("acknowledgement was lost on downgrade: %+v", state)
+	}
+	// Escalation clears the acknowledgement and sends a new critical alert.
+	app.recordMonitorResult(monitor, host.ID, host.Name, monitorResult{status: "critical", message: "97%"}, now.Add(4*time.Minute))
+	events, _ = db.ListAlertEvents(10)
+	if len(events) != 2 || events[0].Status != "critical" {
+		t.Fatalf("escalation did not alert: %+v", events)
+	}
+	state, _ = db.GetMonitorState(monitor.ID, host.ID)
+	if state.AcknowledgedAt != "" {
+		t.Fatalf("escalation did not clear acknowledgement: %+v", state)
+	}
+	// Recovery clears acknowledgement and alerts normally.
+	app.recordMonitorResult(monitor, host.ID, host.Name, monitorResult{status: "ok", message: "20%"}, now.Add(5*time.Minute))
+	events, _ = db.ListAlertEvents(10)
+	if len(events) != 3 || events[0].Status != "ok" {
+		t.Fatalf("recovery did not alert: %+v", events)
+	}
+	state, _ = db.GetMonitorState(monitor.ID, host.ID)
+	if state.AcknowledgedAt != "" || state.Status != "ok" {
+		t.Fatalf("recovery did not clear acknowledgement: %+v", state)
+	}
+}
+
+func TestMonitorAckAPI(t *testing.T) {
+	ts, db, app := testServerWithApp(t, true)
+	host, err := db.CreateHost(store.Host{
+		Name: "jump", Address: "10.0.0.70", Port: 22, Username: "ubuntu",
+		AuthType: "key", KeyPath: "/home/ops/.ssh/id_ed25519",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	monitor, err := db.CreateMonitor(store.Monitor{
+		Name: "Service baseline", Type: "service.baseline",
+		IntervalSeconds: 60, RepeatMinutes: 60, CooldownMinutes: 15, Enabled: true,
+		Assignments: []store.MonitorAssignment{{Scope: "fleet"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.recordMonitorResult(monitor, host.ID, host.Name,
+		monitorResult{status: "critical", message: "jump: not running: snapd.service"}, time.Now().UTC())
+	resp := request(t, http.MethodPost, ts.URL+"/api/v1/monitors/"+monitor.ID+"/ack", "test-token",
+		`{"host_id":"`+host.ID+`","note":"known issue"}`)
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		t.Fatalf("ack failed: %d %s", resp.StatusCode, raw)
+	}
+	_ = resp.Body.Close()
+	state, err := db.GetMonitorState(monitor.ID, host.ID)
+	if err != nil || state.AcknowledgedAt == "" || state.AcknowledgementNote != "known issue" {
+		t.Fatalf("expected acknowledged state: %+v %v", state, err)
+	}
+	resp = request(t, http.MethodPost, ts.URL+"/api/v1/monitors/"+monitor.ID+"/unack", "test-token",
+		`{"host_id":"`+host.ID+`"}`)
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		t.Fatalf("unack failed: %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+	state, _ = db.GetMonitorState(monitor.ID, host.ID)
+	if state.AcknowledgedAt != "" {
+		t.Fatalf("expected cleared acknowledgement: %+v", state)
+	}
+}
+
 func TestDisablingMonitorClearsRecordedStates(t *testing.T) {
 	ts, db, app := testServerWithApp(t, true)
 	host, err := db.CreateHost(store.Host{

@@ -826,9 +826,15 @@ func (s *Server) recordMonitorResult(monitor store.Monitor, hostID, hostName str
 		changedAt = now.Format(time.RFC3339Nano)
 	}
 	lastNotified := previous.LastNotified
+	acknowledgedAt := previous.AcknowledgedAt
+	acknowledgedBy := previous.AcknowledgedBy
+	acknowledgementNote := previous.AcknowledgementNote
+	acknowledgedStatus := previous.AcknowledgedStatus
+	acknowledged := acknowledgedAt != ""
 	notify := false
 	recovery := false
 	statusChanged := previous.Status != result.status
+	escalated := statusChanged && monitorStatusRank(result.status) > monitorStatusRank(previous.Status)
 	if statusChanged {
 		if result.status == "ok" {
 			// A first successful check is not a recovery. Only alert recovery
@@ -838,11 +844,15 @@ func (s *Server) recordMonitorResult(monitor store.Monitor, hostID, hostName str
 				notify = true
 			}
 		} else if result.status != "ok" {
-			notify = true
+			// An acknowledgement suppresses repeats and improvements, but a
+			// severity escalation always clears it and alerts again.
+			if !acknowledged || escalated {
+				notify = true
+			}
 		}
 	} else if result.status != "ok" && monitor.RepeatMinutes > 0 {
 		if last, err := time.Parse(time.RFC3339Nano, previous.LastNotified); err != nil || now.Sub(last) >= time.Duration(monitor.RepeatMinutes)*time.Minute {
-			notify = true
+			notify = !acknowledged
 		}
 	}
 	// Cooldown suppresses repeated reminders of the same state, never a
@@ -856,6 +866,12 @@ func (s *Server) recordMonitorResult(monitor store.Monitor, hostID, hostName str
 	// emailed. This avoids false alarms for hosts that do not have a capability.
 	if result.status == "unknown" {
 		notify = false
+	}
+	if result.status == "ok" || escalated {
+		acknowledgedAt = ""
+		acknowledgedBy = ""
+		acknowledgementNote = ""
+		acknowledgedStatus = ""
 	}
 	if notify {
 		subject, body := monitorEmail(monitor, hostName, result, recovery)
@@ -897,7 +913,22 @@ func (s *Server) recordMonitorResult(monitor store.Monitor, hostID, hostName str
 	_ = s.store.UpsertMonitorState(store.MonitorState{
 		MonitorID: monitor.ID, HostID: hostID, Status: result.status, Message: result.message,
 		CheckedAt: now.Format(time.RFC3339Nano), ChangedAt: changedAt, LastNotified: lastNotified,
+		AcknowledgedAt: acknowledgedAt, AcknowledgedBy: acknowledgedBy,
+		AcknowledgementNote: acknowledgementNote, AcknowledgedStatus: acknowledgedStatus,
 	})
+}
+
+func monitorStatusRank(status string) int {
+	switch status {
+	case "critical":
+		return 3
+	case "warning":
+		return 2
+	case "unknown":
+		return 1
+	default:
+		return 0
+	}
 }
 
 func monitorEmail(monitor store.Monitor, hostName string, result monitorResult, recovery bool) (string, string) {
