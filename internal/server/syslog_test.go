@@ -54,6 +54,17 @@ func TestParseSyslogWithoutPriority(t *testing.T) {
 	}
 }
 
+func TestUniFiKernelMC2UCCounterIsInfo(t *testing.T) {
+	msg := syslogMessage{
+		Severity: 4,
+		Message:  "[251670.599965] ra0: total mc2uc sta_cnt[1] pending[0] unknown_free[0] accu[0] !",
+	}
+	category, severity := syslogEventClass(msg)
+	if category != "network_wifi" || severity != "info" {
+		t.Fatalf("unexpected mc2uc classification: %s/%s", category, severity)
+	}
+}
+
 func TestHostapdRADIUSAccountingIsNotAuthFailure(t *testing.T) {
 	line := `d021f9e615c8,U6-Lite-6.7.60+15906: hostapd[4696]: ra2: STA ec:75:0c:9c:8e:34 RADIUS: starting accounting session EDC75FCE1CAABB2B`
 	msg, err := parseSyslogMessage(line, time.Now())

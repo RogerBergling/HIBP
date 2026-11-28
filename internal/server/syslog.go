@@ -491,6 +491,10 @@ func syslogEventClass(msg syslogMessage) (string, string) {
 		return "network_link", "warning"
 	case containsAny(lower, "access point", "ap ", "adopt", "disconnect", "roam", "ssid", "wifi", "hostapd"):
 		return "network_wifi", severity
+	case containsAny(lower, "mc2uc", "sta_cnt["):
+		// MediaTek/Ralink driver multicast-to-unicast diagnostics are periodic
+		// counters, not warnings, even when the AP sends them with a warning PRI.
+		return "network_wifi", "info"
 	case containsAny(lower, "firmware", "upgrade", "reboot", "config change", "configuration", "restart"):
 		return "system", severity
 	}
@@ -679,6 +683,8 @@ func cefEventClass(cef *cefEvent) (string, string) {
 		return "network_vpn", severity
 	case containsAny(lower, "wifi", "wireless", "ssid", "roam", "access point", "adopt", "hostapd"):
 		return "network_wifi", severity
+	case containsAny(lower, "mc2uc", "sta_cnt["):
+		return "network_wifi", "info"
 	case containsAny(lower, "wan", "pppoe", "failover"):
 		if containsAny(lower, "down", "fail", "disconnect", "lost") {
 			return "network_wan", "critical"
