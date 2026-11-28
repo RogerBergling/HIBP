@@ -54,6 +54,35 @@ func TestParseSyslogWithoutPriority(t *testing.T) {
 	}
 }
 
+func TestQNAPLoginFailIsCritical(t *testing.T) {
+	const qnapLine = `qulogd: conn log: Users: asdc, Source IP: 192.168.7.10, Computer name: ---, Connection type: HTTPS, Accessed resources: Administration, Action: Login Fail`
+	msg, err := parseSyslogMessage(qnapLine, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if category, severity := syslogEventClass(msg); category != "auth_failure" || severity != "critical" {
+		t.Fatalf("unexpected QNAP classification: %s/%s", category, severity)
+	}
+	_, db, app := testServerWithApp(t, true)
+	host, err := db.CreateHost(store.Host{
+		Name: "qnap", Address: "10.0.0.60", AuthType: "network",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.handleSyslogMessage("10.0.0.60",
+		`<134>Nov 28 00:12:34 QNAP qulogd: conn log: Users: asdc, Source IP: 192.168.7.10, Computer name: ---, Connection type: HTTPS, Accessed resources: Administration, Action: Login Fail`)
+	events, err := db.ListHostEvents(10)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("events: %+v %v", events, err)
+	}
+	event := events[0]
+	if event.HostID != host.ID || event.Category != "auth_failure" || event.Severity != "critical" ||
+		event.Username != "asdc" || event.RemoteIP != "192.168.7.10" {
+		t.Fatalf("unexpected QNAP event: %+v", event)
+	}
+}
+
 func TestParseCEFWithRFC3164Priority(t *testing.T) {
 	line := `<134>Nov 27 23:57:03 UDM CEF:0|Ubiquiti|UniFi Network|9.3.33|401|WiFi Client Disconnected|2|UNIFIcategory=Monitoring UNIFIsubCategory=WiFi UNIFIclientAlias=Kamera-Framsida UNIFIclientMac=aa:bb:cc:dd:ee:ff UNIFIwifiName=TV msg=Kamera-Framsida disconnected from TV. Time Connected: 2d 11h.`
 	msg, err := parseSyslogMessage(line, time.Now())

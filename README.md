@@ -1813,9 +1813,11 @@ Implemented check types:
   compared with warning/critical thresholds.
 - `snmp.poll` — critical when the latest SNMP poll failed; unknown when no poll
   has succeeded or the poll is stale.
-- `http` — HTTP/HTTPS status (2xx/3xx healthy) and optional latency thresholds.
-  HTTP monitors can opt into skipping TLS certificate verification for trusted
-  internal endpoints with self-signed or name-mismatched certificates.
+- `http` — HTTP/HTTPS status (2xx/3xx healthy) and latency thresholds.
+  New monitors default to 400 ms warning and 500 ms critical; set both to 0 to
+  disable latency checks. HTTP monitors can opt into skipping TLS certificate
+  verification for trusted internal endpoints with self-signed or
+  name-mismatched certificates.
 - `tcp` — TCP connect and optional latency thresholds.
 - `ssl` — TLS handshake plus certificate expiry in days.
 
@@ -1964,6 +1966,9 @@ read-only `auth_type=network` hosts. They have no SSH actions:
 - CEF messages are classified using the CEF event name and extension values, so
   UDM WAN, link, Wi-Fi, VPN, firewall, authentication, and system events appear
   with a useful category and severity instead of a generic `syslog`/`info` row.
+- QNAP QuLog `Action: Login Fail` messages are classified as
+  `auth_failure` / `critical`. The QNAP `Users:` and `Source IP:` fields are
+  stored as the event user and source IP.
 
 The SNMP MVP polls up to 20 scalar OIDs with `Get`; it does not walk interface
 tables.
@@ -3460,7 +3465,7 @@ Current status:
   the configured target and remain active even if a previous host assignment is
   stale.
 - **Web service** preset in the Monitoring view. It opens an HTTP monitor with
-  optional latency thresholds and no assignment section.
+  400/500 ms latency defaults and no assignment section.
 - Standalone state and alert labeling. Network probes record an empty host id,
   show as **Standalone** in the monitor table, and identify themselves as
   **standalone probe** in alert details and email bodies.

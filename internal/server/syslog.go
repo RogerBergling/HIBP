@@ -48,6 +48,8 @@ const (
 )
 
 var cefExtensionKey = regexp.MustCompile(`(^| )([A-Za-z0-9_.-]+)=`)
+var qnapUserPattern = regexp.MustCompile(`(?i)\bUsers?:\s*([^,]+)`)
+var qnapSourcePattern = regexp.MustCompile(`(?i)\bSource IP:\s*([0-9a-f:.]+)`)
 
 // RunSyslog supervises the configurable syslog receiver. UDM pushes messages;
 // HIBP never connects back to the device.
@@ -220,9 +222,21 @@ func (s *Server) handleSyslogMessage(sourceIP, line string) {
 		message = message[:syslogMessageLimit]
 	}
 	username := ""
+	remoteIP := sourceIP
 	if msg.CEF != nil {
 		username = truncateEventField(msg.CEF.firstExtension("suser", "duser", "unifi_user",
 			"unifi_username", "username", "user"), 128)
+		if value := msg.CEF.firstExtension("src", "source", "unificlientip", "clientip"); value != "" {
+			remoteIP = truncateEventField(value, 64)
+		}
+	}
+	if username == "" {
+		if match := qnapUserPattern.FindStringSubmatch(message); len(match) == 2 {
+			username = truncateEventField(strings.TrimSpace(match[1]), 128)
+		}
+	}
+	if match := qnapSourcePattern.FindStringSubmatch(message); len(match) == 2 {
+		remoteIP = truncateEventField(strings.TrimSpace(match[1]), 64)
 	}
 	event := store.HostEvent{
 		EventID:    syslogEventID(sourceIP, msg),
@@ -230,7 +244,7 @@ func (s *Server) handleSyslogMessage(sourceIP, line string) {
 		Category:   category,
 		Severity:   severity,
 		Username:   username,
-		RemoteIP:   sourceIP,
+		RemoteIP:   remoteIP,
 		Message:    message,
 		OccurredAt: msg.Timestamp.UTC().Format(time.RFC3339Nano),
 	}
@@ -463,7 +477,9 @@ func syslogEventClass(msg syslogMessage) (string, string) {
 		severity = "warning"
 	}
 	switch {
-	case containsAny(lower, "authentication failure", "auth failure", "failed password", "invalid user", "login failed", "radius", "802.1x"):
+	case containsAny(lower, "qulogd", "qulog") && containsAny(lower, "login fail"):
+		return "auth_failure", "critical"
+	case containsAny(lower, "authentication failure", "auth failure", "failed password", "invalid user", "login failed", "login fail", "radius", "802.1x"):
 		return "auth_failure", "warning"
 	case containsAny(lower, "wan", "pppoe", "failover") && containsAny(lower, "down", "up", "fail", "disconnect", "connect", "lost"):
 		if containsAny(lower, "down", "fail", "disconnect", "lost") {
@@ -623,6 +639,10 @@ func (cef *cefEvent) firstExtension(keys ...string) string {
 
 func (cef *cefEvent) searchable() string {
 	var builder strings.Builder
+	builder.WriteString(strings.ToLower(cef.Vendor))
+	builder.WriteByte(' ')
+	builder.WriteString(strings.ToLower(cef.Product))
+	builder.WriteByte(' ')
 	builder.WriteString(strings.ToLower(cef.EventID))
 	builder.WriteByte(' ')
 	builder.WriteString(strings.ToLower(cef.Name))
@@ -645,8 +665,10 @@ func cefEventClass(cef *cefEvent) (string, string) {
 		severity = "warning"
 	}
 	switch {
+	case containsAny(lower, "qulogd", "qulog") && containsAny(lower, "login fail"):
+		return "auth_failure", "critical"
 	case containsAny(lower, "failed password", "authentication failure", "auth failure",
-		"login failed", "invalid user", "radius", "802.1x", "failed login"):
+		"login failed", "invalid user", "radius", "802.1x", "failed login", "login fail"):
 		return "auth_failure", higherSeverity(severity, "warning")
 	case containsAny(lower, "intrusion", "malware", "exploit", "attack", "threat",
 		"botnet", "vulnerability", "ips ", "ids ", "c2 "):

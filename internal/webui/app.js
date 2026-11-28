@@ -1691,9 +1691,9 @@ const MONITOR_TYPES = {
   'http': {
     label: 'HTTP endpoint', target: 'url', targetLabel: 'URL',
     placeholder: 'https://example.com/health', threshold: 'latency',
-    warningLabel: 'Warning latency (ms)', criticalLabel: 'Critical latency (ms)', warning: 0, critical: 0,
+    warningLabel: 'Warning latency (ms)', criticalLabel: 'Critical latency (ms)', warning: 400, critical: 500,
     namePlaceholder: 'App availability',
-    note: '2xx and 3xx responses are healthy. Redirects are followed up to five times. Latency thresholds are optional; 0 disables them. Use the insecure TLS checkbox only for trusted internal endpoints with self-signed or name-mismatched certificates.',
+    note: '2xx and 3xx responses are healthy. Redirects are followed up to five times. Default latency thresholds are 400 ms warning and 500 ms critical; set both to 0 to disable latency checks. Use the insecure TLS checkbox only for trusted internal endpoints with self-signed or name-mismatched certificates.',
   },
   'tcp': {
     label: 'TCP port', target: 'address', targetLabel: 'host:port',
