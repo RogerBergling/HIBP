@@ -103,6 +103,9 @@ func TestAgentTokenSnapshotAndEvents(t *testing.T) {
 	if err != nil || len(stored) != 1 || stored[0].Category != "auth_failure" {
 		t.Fatalf("agent events not stored: %+v %v", stored, err)
 	}
+	if stored[0].Severity != "critical" {
+		t.Fatalf("agent auth failure must be critical: %+v", stored[0])
+	}
 
 	resp = postAgent("/api/v1/agent/v1/heartbeat", agentHeartbeat{Platform: "windows", Version: "test"}, "wrong-token")
 	if resp.StatusCode != http.StatusUnauthorized {

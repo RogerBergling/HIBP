@@ -1967,7 +1967,8 @@ read-only `auth_type=network` hosts. They have no SSH actions:
   UDM WAN, link, Wi-Fi, VPN, firewall, authentication, and system events appear
   with a useful category and severity instead of a generic `syslog`/`info` row.
 - Authentication failures from syslog/CEF and agent/journal events are
-  classified as `auth_failure` / `critical`. This includes QNAP
+  classified as `auth_failure` / `critical`. All event ingestion paths
+  normalize stored auth-failure severity to `critical`. This includes QNAP
   `Action: Login Fail` messages; the QNAP `Users:` and `Source IP:` fields are
   stored as the event user and source IP.
 

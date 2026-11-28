@@ -47,6 +47,11 @@ func (s *Store) AddHostEvents(hostID string, events []HostEvent) error {
 		if event.Category == "" {
 			event.Category = "log"
 		}
+		if event.Category == "auth_failure" {
+			// Authentication failures are critical regardless of which
+			// collector or device produced the event.
+			event.Severity = "critical"
+		}
 		if event.Severity == "" {
 			event.Severity = "info"
 		}

@@ -129,6 +129,9 @@ func TestHostEventsAreDeduplicatedAndCounted(t *testing.T) {
 	if err != nil || len(events) != 1 {
 		t.Fatalf("events: %+v %v", events, err)
 	}
+	if events[0].Severity != "critical" {
+		t.Fatalf("auth failures must be normalized to critical: %+v", events[0])
+	}
 	count, err := s.CountHostEventsSince(host.ID, "auth_failure", time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano))
 	if err != nil || count != 1 {
 		t.Fatalf("count: %d %v", count, err)
